@@ -1,0 +1,65 @@
+=== STEP 1: Get oai-did from homepage ===
+Homepage status: 200
+oai-did: 97439352-72f3-4375-8383-8fef832b59ac
+All cookies: ['__Host-next-auth.csrf-token', '__Secure-next-auth.callback-url', 'oai-chat-web-route', '__cflb', 'oai-did', '__cf_bm', '_cfuvid']
+
+=== STEP 2: Generate requirements token (gAAAAAC) ===
+p_token prefix: gAAAAACWzIzNDAsIlN1biBNYXkgMTA...
+session id (sid): 6b194066-85e4-4ee0-a083-9139424501be
+
+=== STEP 3: POST /backend-anon/sentinel/chat-requirements ===
+chat-requirements status: 200
+persona: chatgpt-noauth
+token prefix: gAAAAABqABFw7eLtTXUn7VfOp66JfB...
+turnstile.required: True
+proofofwork.required: True
+PoW seed: '0.7787084421536836'  difficulty: '0747ee'
+
+=== STEP 4: Solve PoW ===
+enforcement_token prefix: gAAAAABWzIzNDAsIlN1biBNYXkgMTA...
+
+=== STEP 5: Build sentinel token ===
+[VM-TRACE] STEP 32 [GET_IDX] dest=3.94 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=Reflect
+[VM-TRACE] STEP 36 [GET_IDX] dest=82.47 obj=None prop=set
+[VM-TRACE] STEP 39 [GET_IDX] dest=45.05 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=Object
+[VM-TRACE] STEP 41 [GET_IDX] dest=86.56 obj=None prop=create
+[VM-TRACE] STEP 43 [GET_IDX] dest=12.1 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=Math
+[VM-TRACE] STEP 45 [GET_IDX] dest=88.81 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=localStorage
+[VM-TRACE] STEP 48 [GET_IDX] dest=39.19 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=performance
+[VM-TRACE] STEP 61 [GET_IDX] dest=17.19 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=document
+[VM-TRACE] STEP 63 [GET_IDX] dest=44.13 obj=None prop=body
+[VM-TRACE] STEP 65 [GET_IDX] dest=23.01 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=history
+[VM-TRACE] STEP 68 [GET_IDX] dest=44.55 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=navigator
+[VM-TRACE] STEP 70 [GET_IDX] dest=80.97 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=screen
+[VM-TRACE] STEP 99 [GET_IDX] dest=73.81 obj=None prop=length
+[VM-TRACE] STEP 115 [GET_IDX] dest=64.12 obj=<function _VM.__init__.<locals>.make_handler.<locals>.<lambda> at 0x1082efc10> prop=__reactRouterContext
+[VM-TRACE] STEP 173 [GET_IDX] dest=30.21 obj=None prop=keys
+[VM-TRACE] STEP 186 [GET_IDX] dest=66.54 obj=None prop=random
+[VM-TRACE] STEP 455 [GET_IDX] dest=99.48 obj=None prop=location
+[VM-TRACE] STEP 473 [GET_IDX] dest=63.44 obj=None prop=style
+[VM-TRACE] STEP 518 [CALL] fn_reg=77.2 instr=[46.73, 20.01, 77.2]
+       Arg values: []
+[VM-TRACE] STEP 540 [CALL] fn_reg=77.2 instr=[73.33, 99.69, 77.2]
+       Arg values: []
+VM execute finished after 573 steps
+sentinel token keys: ['p', 't', 'c', 'id', 'flow']
+  p prefix: gAAAAABWzIzNDAsIlN1biBNYXkgMTA
+  t:        VmtkQ1h3PT0=
+  c prefix: gAAAAABqABFw7eLtTXUn7VfOp66JfB
+  id:       97439352-72f3-4375-8383-8fef832b59ac
+  flow:     __default__
+
+=== STEP 6: POST /backend-anon/conversation (single message) ===
+Request body (messages): [{"id": "68f2ac1b-db58-4817-96a5-6736e34a7160", "author": {"role": "user"}, "content": {"content_typ
+Sending to: https://chatgpt.com/backend-anon/conversation
+
+Conversation status: 403
+Response headers: Content-Type=application/json
+Request headers: Headers({'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36', 'Accept': 'text/event-stream', 'Accept-Language': 'en-US,en;q=0.9', 'Content-Type': 'application/json', 'oai-device-id': '97439352-72f3-4375-8383-8fef832b59ac', 'oai-language': 'en-US', 'Origin': 'https://chatgpt.com', 'Referer': 'https://chatgpt.com/', 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Site': 'same-origin', 'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"', 'Sec-Ch-Ua-Mobile': '?0', 'Sec-Ch-Ua-Platform': '"macOS"', 'openai-sentinel-chat-requirements-token': 'eyJwIjoiZ0FBQUFBQld6SXpOREFzSWxOMWJpQk5ZWGtnTVRBZ01qQXlOaUF4TXpvd01qbzBNU0JIVFZRck1EZ3dNQ0FvVUdocGJHbHdjR2x1WlNCVGRHRnVaR0Z5WkNCVWFXMWxLU0lzTkRJNU5EazJOekk1Tml3eE1pd2lUVzk2YVd4c1lTODFMakFnS0UxaFkybHVkRzl6YURzZ1NXNTBaV3dnVFdGaklFOVRJRmdnTVRCZk1UVmZOeWtnUVhCd2JHVlhaV0pMYVhRdk5UTTNMak0ySUNoTFNGUk5UQ3dnYkdsclpTQkhaV05yYnlrZ1EyaHliMjFsTHpFek1TNHdMakF1TUNCVFlXWmhjbWt2TlRNM0xqTTJJaXdpYUhSMGNITTZMeTl6Wlc1MGFXNWxiQzV2Y0dWdVlXa3VZMjl0TDNObGJuUnBibVZzTHpJd01qWXdNakU1WmpsbU5pOXpaR3N1YW5NaUxHNTFiR3dzSW1WdUxWVlRJaXdpWlc0dFZWTXNaVzRpTERFc0ltaGhjbVIzWVhKbFEyOXVZM1Z5Y21WdVkzbmlpSkl4TUNJc0ltaGxZV1FpTENKc2IyTmhkR2x2YmlJc01UVTNPVFF3TnpjdU56WTVNamt4TENJMllqRTVOREEyTmkwNE5XVTBMVFJsWlRBdFlUQTRNeTA1TVRNNU5ESTBOVEF4WW1VaUxDSWlMREV3TERFM056Z3pOek0xTmpjME16RXVNVEV3Tml3d0xEQXNNQ3d3TERBc01Dd3dYUT09flMiLCJ0IjoiVm10a1ExaDNQVDA9IiwiYyI6ImdBQUFBQUJxQUJGdzdlTHRUWFVuN1ZmT3A2NkpmQnNHNkZLalA2YjhNZ2JDTEppNml0ejhsYWxlNUIxOHRySVQ2b253blMza29oV0ZQemJaZTB2MG5Ud1gxN1ZfNFZESnJFN21yRkFJRTg5cnRwN1hGbWF3OFV3cVotckFHNUUyQmo3cEt1Q25FeVhxdTMzaG5HTDJxMWhwRnN1R1JTbVRvVF91TUszQTBEVmxYOW1FSnBOamdUMmM3SGxpSlduQk50VjdlTDdZTjIwZHV2ZE9DSjFVZUxDQ1VCOXpZamxaUTZyaUdRLW5QUkZCRG93Nk85azRUOEtqYXFJNzJmbEpaWmk3T0FvckJ4Qk0yYVd5VUlkaGJ2U25mLXJHWmhDdTJmSmE5YlIxSHo3cXRSMXp4cVhNbU1OMEJzbnZNeHB3a0FxbVJaN08zc1U4S2FRYlhMWVJDWU5Cc1RKeXg2VjVKNFRyTzYzN1BEZ3RaS3U4TG5LQ0xmeUlFZ25jcEJoQnRqd0hpY0p2R1N3N1JvZDBZOTFkekJaMlZSdFpZSUc3dnlXQlJnRlFrTkVUUHZHc3VMU2l2OEZxUlk4SGJfOXNGT1RWTXVNd2FWNmRBdzZXaUR5MThXdHFlNkU5d3hENWFvYUVUYmplalpSdlRwX2UyWUJDVnRYZEswcm5zSDJ3MTk5bGNELUhfY1Zfd0lxMDZmX1NnVTFZc1NJaW9tZDdVZDMzemdoLTBhOHdxLW1hSDZpTG1BMnJ4cTFGa0pfTEhFTFNYYnFtckZ2VmQ5TjRFNUdORnRPdGhwelozYXlndE1NWlEwQzVPeHRYNDA3R25Kd05yREVHTE9SMnpTZzVhX1JxRmpyTGtLWVlYTEhkOFRzYktlai1wNjlaSU5OdlZnSkc0ajlJV0JLVlp5WjdtbmxXM3ZiWk94SEJHOWtwTVhmdloteDBNLVcwREhfN1JvNkpaMUNfbENrOXY3QUkyNFowZHBEOFNCR1NkNXEwYWxja1B1SllibldFd01HSnh4bGFkZFNMalhXZFlVekVDdV9uSzNwX0tWRXZ6aWtuREZhT193TE5vRERNczNLNVBSemZjaDZxelZiN0NWUGFHMGFoeGx4NGFUSEE1Z2t3UkgzelVEaEFOeDdFdzhXT01FQ09SQjl6VEJHX3ZmckM2eEF0cktHWEZvNEQ0QTVfb2hHYkxEc3hZUDMyRFoyTE1Sa0dqWHZQOFRoNWlZSThYMktxYjdiZHYzM18wNVlrd2hrN043WUxIWk9BTHlvS3Y4OVJJWkhITEU3MDRHb0tsWktfUldKQ2Ewb2N3TkJVQ1pvTXZ5UUxQRHJUaks2MHY4SWxrbXp2RXpMWERWa1Y3eUk4Vkd5NElGSXJPLXZLb0ZXY29ucUVhUi1fbGFQbXMxUW54OFlsWXp0TFJjSWRSVy1fbUQtTHFiREt3ZHlReE1aMTR0SjIyNUd2N2VQd0NoUEFqNVR0SFNXT2NSTUppRmdleFVNTEt2cnRGUFRFTjJXZ1Y5RV81VjdjYnprNkFlYXlvc0wwWC1WRGJSMUpxMTRzU2NYcUJwT1ItWExobnpFZjJGQVFiLXBHNnVZTlUzbzc2bjVoZXd5R2JCN1lyM0E4UzlyVjU5QTVrR09paVpnOEhJeV9aLVhsZ0Zmci1pbUpRcTU1LVVhblduZGo2ZV9KNTI3WlhjMHE5Q1RhUnRsRU81S1czODc0S0RMUkV2N196NGVaZzlNMmo0RG8xWC1ZMlEzQTNxakdaSWFBTE1JV2dkQjVORkNDR2NBV2hWUDJWdjdCWV9BMDNDeU9OWnpmU2FyX1hsVTd0VXFma0cwaFpHa2gxOVZKT2xlQ25vYVRPcUtSa0ZZcmZSRTUyekJ1OHA2alQ2Smt2WFlXWUR4aGxrd3hCRjBxWGh5Q25iRHp0Zl9DUWlYYzNYXzZsUWFPWmhQYWFnN1VNTVlDVDNPSFZXRS0wdDFnWjBUUTJnZ2tlcHFqdVl3d19BNS1CVW1rc2J0UWZjbVFvWFhYcEduYkg3YklEa090N19uS0gydDFtdlEtZ0d3ZWM4S2Z2UzZoME9LdnpsWUU1S3BhR29ad3BWYTl5WWh3blNHWFFoeC0wU0JKVVRNV0ZzNzhwUlZtRnVoNmtfU1lFaE51UUVaRHJ3NDNGZGZJTVBLUHRoZW5UOEQzNGFCVkptLTNZRnlWS3gxLUsxVmRwLUw3UzRMa2NwZG1lN3RSYks0THN6bFdVYWZMZFFkM3NrUGI3OURVYUFPLUEtUnFrZFY3ekgwZDdKcFRxVzM1QVB1ZUNIMkZFNkwxX01kM1lZNmtxUWVwcHFZQzJBOXRhZFdDY08yNVRvY0pOQmM3eHU1RDYyS2dLR3JwblFOVFA3YWJ3NFhiZTY4TXZVVUlaMUdzNXBMNmZ6ZWU5Q2J1NVI0b2paRnAwaG5TZUhkaDR1VWxKc2Z3ZHQ2TWExQTRLTkxpRWlkOGU5Ykw4VWpWb3BkWG5penI5V0pObjhxeHNjVlI1N1A0VlFDeHFTWTkzNzJycmxsYTZJWFUyQVY4TTVEWnNrOHhEeXhSWklDeXJKbmV2clNWTFhhM1c5MG9zTm01Q1B4M29iZzZNV3c1YmUyVEI0dk82YTFsSldkVnBaNlZlRlNqMmdxY1ItQ3ROVXlvLTVWTkg1VG1jekpMeDJJa3RjTG9OUTBLM0R6UDdhVmU4MlBRZmRGMFZ6YlM3bUNLd1FydDd6bHZUMGJBdklCdWx4MGVmX1BWWU54enozVFNyN1NOTWtJeWx0T3QxaUVjbW9VMUNtdExLWXl0ZDlLRkstZm1yMnA4QnNsdlYyaklxcHVYYldCWmo0NmxVdnRVUXltSFFTUm84T1dTTTJKaWwxcVlvbnBMbzBNMm5GeHZPMVFLZHhvRFpkc2dqUno0YWticTRYQUtWX09lLWdSY3JxMnpORlI5dFBWelk4aFF2ZXZHMDNiS2hJb0tNVGxKN0Vubm1EMlA3WDFiRVhjdmNvQkRxS0hmOE1UbXl4YmdTZHI2MGhQd2JQdEw5WXNZWi1waFZoQy1YWVoxbEYzd1ZTWkF3N05RektsWEFfN0JsSnpXX3JyWlUxV3FNam1Ua1E9PSIsImlkIjoiOTc0MzkzNTItNzJmMy00Mzc1LTgzODMtOGZlZjgzMmI1OWFjIiwiZmxvdyI6Il9fZGVmYXVsdF9fIn0='})
+Session cookies: {'__Host-next-auth.csrf-token': '4753071abeed195a5756e429acfe5bc49cf412044d59a4eb3e5fba05a11a479f%7C898fe81bc714a524716de26449cd26ea94592c3932bed580e421784dcf83eb93', '__Secure-next-auth.callback-url': 'https%3A%2F%2Fchatgpt.com', 'oai-chat-web-route': 'ChIxMC4xMzIuMTUyLjk0OjMwMDAQpvp3', '__cflb': '0H28vzvP5FJafnkHxispCB9CkURGby1PwEeJxdqkr4K', 'oai-did': '97439352-72f3-4375-8383-8fef832b59ac', '__cf_bm': 'CdITMUSvwJSmNIxc4JSgHTLK3fEa.XgiwZrtLNpULlw-1778389360.1115086-1.0.1.1-eHAI8PmuSDTQKks5axzLN_9wKGapaIiJbeAaJxUac_sg919Duq9WDPq2HzzXH0rf4rI0PvTORTzunHbG4liouuV9kUZ.09_WFgNXGsomgDYpVVsAmUKCpvInJUk.XA_f', '_cfuvid': 'vL8BPDkBVOtVQj.ULZdeQQq.Bn.k4WMk57QgWGpRaOo-1778389360.1115086-1.0.1.1-dobU7NEK7gh5p2UDw0F8bZTKZHUkzpYlYOH2gPV5_GQ', 'oai-sc': '0gAAAAABqABFwJA3aOd_wdA5crAPjJvUstYukNFbZ64fdqUCnRAUWAk6xX4h8giIDuOW4AsNsMQm_PPpNIaRLWHNzWYAFG7Nu03bzl65Rke3Bs05bya4QUSBr0KnFrrX02Q9MhlW7JEl-vAYaUH06kElaIDU6Wpn1IL6bsRxKEhRaD2yn2B_56k5p-bkmBMbCgF0mBwoNo9fgthr9svb3-lhHtaA_jIYLOKq37sjGUIvakNT9VxC0u9k'}
+Raw response (first 1000 chars):
+{"detail":"Unusual activity has been detected from your device. Try again later. (311e7b7f-9543-4e4a-984e-c41b4c3dd198)"}
+
+[ERROR] 403 received. Trying /backend-anon/sentinel/req as fallback...
+/sentinel/req status: 200
+/sentinel/req body: {"persona":"chatgpt-noauth","token":"gAAAAABqABFya6-rYiw5kQKQYYtvAKA0_Xs_6bA6pAbHoB43b-S86DJIQbbITO9yLrmTucDEQ4aYe9wezZP9figUiSTRI9Smw9awb1hWez7Tg0293ab7Pw1Vgc1EewXJ1DRzyMCn5FnvLftk7T5g6StpSXP1Hmh1WKUYEA60721_YCZJknDfeZ8bNSvzhg6I0EtvU372v-eaH7YWUSEz5dSKKkZL9uNqHBMLE8vBUkLdWyAODdwNx-2RxO4EFv6Jxtz2Q3MITQHAvAiIud60id59BQu4MMtUepa5YZ8gzapo5-OtVjLHYYTiFhZgguzCC-baiWGpj3wJTbEjHNBitAQNpjXct-4qKZ-X-2sX8ud3PMHFu2SRI9NtDOt9sE1dYG2OOtcJETr2bpqrr9t-RtJbGnnzrY6tpe0DDAkr_CDDdQsMPVO8alFriJ6vRxVGVOl7dSJWa0Cwo_-

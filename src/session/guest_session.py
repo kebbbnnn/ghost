@@ -1,0 +1,399 @@
+"""
+guest_session.py — Anonymous guest session lifecycle manager.
+
+Handles:
+  1. Initial page load to obtain oai-did cookie
+  2. Calling /backend-anon/sentinel/chat-requirements
+  3. Solving PoW and generating sentinel token
+  4. Sending chat messages and streaming SSE responses
+"""
+import asyncio
+import json
+import time
+import uuid
+import logging
+from typing import AsyncIterator
+
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.exceptions import HTTPError
+
+from ..sentinel.token_generator import (
+    generate_requirements_token,
+    generate_enforcement_token,
+    build_sentinel_token,
+)
+
+log = logging.getLogger(__name__)
+
+BASE_URL = "https://chatgpt.com"
+REQUIREMENTS_URL = f"{BASE_URL}/backend-anon/sentinel/chat-requirements"
+CONVERSATION_URL = f"{BASE_URL}/backend-anon/conversation"
+MODELS_URL = f"{BASE_URL}/backend-anon/models"
+
+# Chat requirements token expires after ~540 seconds (9 min); refresh at 8 min
+TOKEN_TTL_SECONDS = 480
+
+
+class GuestSession:
+    """
+    A single anonymous ChatGPT guest session.
+    Manages device-id, chat-requirements token, and conversation state.
+    """
+
+    def __init__(self):
+        self._session: AsyncSession | None = None
+        self._oai_did: str = ""
+        self._chat_req: dict = {}
+        self._sentinel_token: str = ""
+        self._token_fetched_at: float = 0.0
+        self._lock = asyncio.Lock()
+
+    # ------------------------------------------------------------------
+    # Session lifecycle
+    # ------------------------------------------------------------------
+
+    async def _get_session(self) -> AsyncSession:
+        if self._session is None:
+            self._session = AsyncSession(impersonate="chrome131")
+        return self._session
+
+    async def _reset_session(self, hard: bool = True):
+        """Tear down the current HTTP session and wipe all device state.
+
+        Called on 403 so the next attempt gets completely fresh Cloudflare
+        cookies (oai-sc, __cf_bm, _cfuvid) and a new oai-did, rather than
+        reusing tainted cookies from the flagged session.
+        """
+        if self._session:
+            try:
+                await self._session.close()
+            except Exception:
+                pass
+            self._session = None
+        self._sentinel_headers = None
+        self._token_fetched_at = 0.0
+        
+        if hard:
+            self._oai_did = ""
+            log.warning("Session reset: all cookies and device state cleared")
+        else:
+            log.warning("Soft session reset: cookies and sentinel cleared, device state preserved")
+
+    async def close(self):
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    # ------------------------------------------------------------------
+    # Device ID provisioning
+    # ------------------------------------------------------------------
+
+    async def _ensure_device_id(self):
+        """Load the homepage to get oai-did cookie if we don't have one."""
+        if self._oai_did:
+            return
+        session = await self._get_session()
+        resp = await session.get(
+            f"{BASE_URL}/",
+            headers=self._base_headers(),
+        )
+        did = session.cookies.get("oai-did")
+        if did:
+            self._oai_did = did
+            log.info(f"Got oai-did: {did}")
+        else:
+            # Fallback: generate a random UUID (server will reject it but
+            # the chat-requirements endpoint will give us a real one)
+            self._oai_did = str(uuid.uuid4())
+            log.warning("oai-did not in cookies, using generated UUID")
+
+    # ------------------------------------------------------------------
+    # Chat requirements
+    # ------------------------------------------------------------------
+
+    def _is_token_expired(self) -> bool:
+        return (time.time() - self._token_fetched_at) > TOKEN_TTL_SECONDS
+
+    async def _refresh_chat_requirements(self):
+        """
+        POST /backend-anon/sentinel/chat-requirements to get a fresh
+        chat-requirements response, then solve PoW and build sentinel token.
+        """
+        await self._ensure_device_id()
+        session = await self._get_session()
+
+        # generate_requirements_token() returns (p_token, sid) — sid must be
+        # reused by generate_enforcement_token so both use the same config array.
+        p_token, sid = generate_requirements_token()
+
+        headers = {
+            **self._base_headers(),
+            "oai-device-id": self._oai_did,
+            "oai-language": "en-US",
+            "Content-Type": "application/json",
+        }
+
+        resp = await session.post(
+            REQUIREMENTS_URL,
+            headers=headers,
+            json={"p": p_token},
+        )
+        resp.raise_for_status()
+        self._chat_req = resp.json()
+        log.debug(f"chat-requirements response: persona={self._chat_req.get('persona')}")
+
+        # Update oai-did from response cookies if server issued a new one
+        did = session.cookies.get("oai-did")
+        if did:
+            self._oai_did = did
+
+        # Solve proof-of-work if required
+        pow_data = self._chat_req.get("proofofwork", {})
+        if pow_data.get("required"):
+            seed = pow_data["seed"]
+            difficulty = pow_data["difficulty"]
+            log.info(f"Solving PoW: seed={seed!r} difficulty={difficulty!r}")
+            enforcement_token = await asyncio.to_thread(
+                generate_enforcement_token, seed, difficulty, sid
+            )
+        else:
+            enforcement_token = p_token
+
+        from src.sentinel.token_generator import execute_turnstile_vm
+        
+        turnstile_token = ""
+        turnstile = self._chat_req.get("turnstile", {})
+        if turnstile.get("required") and turnstile.get("dx"):
+            turnstile_token = execute_turnstile_vm(turnstile["dx"], p_token)
+
+        self._sentinel_headers = {
+            "Openai-Sentinel-Chat-Requirements-Token": self._chat_req.get("token", ""),
+            "Openai-Sentinel-Proof-Token": enforcement_token,
+            "Openai-Sentinel-Turnstile-Token": turnstile_token,
+        }
+        self._token_fetched_at = time.time()
+        log.info("Sentinel token generated successfully")
+
+    # ------------------------------------------------------------------
+    # Chat
+    # ------------------------------------------------------------------
+
+    async def ensure_ready(self):
+        """Ensure we have valid sentinel headers; refresh if expired."""
+        async with self._lock:
+            if not getattr(self, "_sentinel_headers", None) or self._is_token_expired():
+                await self._refresh_chat_requirements()
+
+    async def stream_chat(
+        self,
+        messages: list[dict],
+        model: str = "auto",
+        conversation_id: str | None = None,
+        parent_message_id: str | None = None,
+    ) -> typing.AsyncGenerator[bytes, None]:
+        """
+        Send a chat message and yield raw SSE lines from the response.
+
+        Args:
+            messages:        OpenAI-format message list
+            model:           ChatGPT model slug (e.g. "gpt-5-5", "auto")
+            conversation_id: Optional existing conversation ID for multi-turn
+            parent_message_id: Optional parent message ID for multi-turn
+
+        Yields:
+            Raw SSE data lines (e.g. 'data: {"message": {...}}')
+        """
+        await self.ensure_ready()
+        
+        # Convert messages to ChatGPT format
+        chatgpt_messages = _convert_messages(messages)
+        
+        # If continuing a conversation, ChatGPT expects only the newest message
+        if conversation_id and parent_message_id:
+            chatgpt_messages = chatgpt_messages[-1:]
+
+        body = {
+            "action": "next",
+            "messages": chatgpt_messages,
+            "model": model,
+            "parent_message_id": parent_message_id or str(uuid.uuid4()),
+            "stream": True,
+            "timezone_offset_min": -480,
+        }
+        if conversation_id:
+            body["conversation_id"] = conversation_id
+            
+        max_retries = 1
+        for attempt in range(max_retries + 1):
+            await self.ensure_ready()
+            session = await self._get_session()
+            
+            headers = {
+                **self._base_headers(),
+                "oai-device-id": self._oai_did,
+                "oai-language": "en-US",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                **self._sentinel_headers,
+            }
+
+            try:
+                async with session.stream(
+                    "POST",
+                    CONVERSATION_URL,
+                    headers=headers,
+                    json=body,
+                ) as resp:
+                    if resp.status_code == 429:
+                        raise RateLimitError("ChatGPT rate limit hit (429)")
+                    if resp.status_code in (401, 403):
+                        hard_reset = not bool(conversation_id)
+                        await self._reset_session(hard=hard_reset)
+                        if attempt < max_retries:
+                            log.warning("Device flagged (%d). Resetting session and retrying...", resp.status_code)
+                            continue
+                        raise TokenExpiredError("Device flagged — session reset failed after retry")
+                    if resp.status_code == 404 and conversation_id:
+                        # Stale conversation — start fresh
+                        log.warning("404 on conversation %s — resetting state", conversation_id)
+                        conversation_id = None
+                        parent_message_id = None
+                        body.pop("conversation_id", None)
+                        body["parent_message_id"] = str(uuid.uuid4())
+                        # Re-include all messages for the fresh conversation
+                        chatgpt_messages = _convert_messages(messages)
+                        body["messages"] = chatgpt_messages
+                        await self._reset_session(hard=True)
+                        if attempt < max_retries:
+                            log.warning("Retrying as new conversation...")
+                            continue
+                        raise TokenExpiredError("Conversation not found and retry failed")
+                    
+                    resp.raise_for_status()
+
+                    async for chunk in resp.aiter_lines():
+                        if chunk:
+                            yield chunk.decode("utf-8")
+                    break
+            except HTTPError as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status in (401, 403):
+                    if attempt < max_retries:
+                        log.warning("Device flagged (%s). Resetting session and retrying...", status)
+                        hard_reset = not bool(conversation_id)
+                        await self._reset_session(hard=hard_reset)
+                        await asyncio.sleep(1)
+                        continue
+                raise TokenExpiredError("Session token expired or device blocked")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _base_headers(self) -> dict:
+        return {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://chatgpt.com",
+            "Referer": "https://chatgpt.com/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            # Client hint headers — must match impersonate="chrome131" + macOS UA
+            "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"macOS"',
+        }
+
+
+# ------------------------------------------------------------------
+# Message format conversion
+# ------------------------------------------------------------------
+
+def _convert_messages(messages: list[dict]) -> list[dict]:
+    """
+    Convert OpenAI Chat Completions messages to ChatGPT guest format.
+    """
+    out = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+
+        if role == "system":
+            # System messages become a user message with the instructions header
+            out.append({
+                "id": str(uuid.uuid4()),
+                "author": {"role": "user"},
+                "content": {
+                    "content_type": "text",
+                    "parts": [f"[System]: {content}"],
+                },
+            })
+        elif role == "user":
+            parts = _parse_content(content)
+            out.append({
+                "id": str(uuid.uuid4()),
+                "author": {"role": "user"},
+                "content": {
+                    "content_type": "multimodal_text" if any(isinstance(p, dict) for p in parts) else "text",
+                    "parts": parts,
+                },
+            })
+        elif role == "assistant":
+            text = content if isinstance(content, str) else _extract_text(content)
+            out.append({
+                "id": str(uuid.uuid4()),
+                "author": {"role": "assistant"},
+                "content": {
+                    "content_type": "text",
+                    "parts": [text],
+                },
+            })
+    return out
+
+
+def _parse_content(content):
+    """Parse content that may be a string or an array of content parts."""
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                t = item.get("type")
+                if t == "text":
+                    parts.append(item.get("text", ""))
+                elif t == "image_url":
+                    url_data = item.get("image_url", {})
+                    url = url_data.get("url", "") if isinstance(url_data, dict) else url_data
+                    parts.append({"content_type": "image_url", "asset_pointer": url})
+            elif isinstance(item, str):
+                parts.append(item)
+        return parts
+    return [str(content)]
+
+
+def _extract_text(content) -> str:
+    if isinstance(content, list):
+        return " ".join(
+            p.get("text", "") for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return str(content)
+
+
+# ------------------------------------------------------------------
+# Custom exceptions
+# ------------------------------------------------------------------
+
+class RateLimitError(Exception):
+    pass
+
+
+class TokenExpiredError(Exception):
+    pass
