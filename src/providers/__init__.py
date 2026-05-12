@@ -1,10 +1,15 @@
 from .chatgpt.session import ChatGPTProvider
+from .gemini.session import GeminiProvider
 
 # The ProviderRegistry holds instances of all available providers.
-# In the future, this can dynamically load providers from this directory.
 PROVIDERS = [
     ChatGPTProvider(),
+    GeminiProvider(),
 ]
+
+# Map provider classes to their instances for routing
+_PROVIDER_MAP = {type(p): p for p in PROVIDERS}
+
 
 async def get_all_models() -> list[dict]:
     """Aggregate models from all registered providers."""
@@ -18,11 +23,18 @@ async def get_all_models() -> list[dict]:
             pass
     return all_models
 
+
 def get_provider_for_model(model_name: str):
     """
     Find the provider that supports the given model.
-    For now, we simply return ChatGPTProvider as it is the only one.
-    Later, we can query `p.get_models()` to dynamically route.
+    Routes based on model name prefix:
+      - gemini* → GeminiProvider
+      - gpt-*, auto, or anything else → ChatGPTProvider (default)
     """
-    # Hardcode routing to ChatGPTProvider for now, since it supports "auto", "gpt-*" etc.
-    return PROVIDERS[0]
+    name = model_name.lower().strip()
+
+    if name.startswith("gemini"):
+        return _PROVIDER_MAP.get(GeminiProvider)
+
+    # Default to ChatGPT for gpt-*, auto, and unknown models
+    return _PROVIDER_MAP.get(ChatGPTProvider)
