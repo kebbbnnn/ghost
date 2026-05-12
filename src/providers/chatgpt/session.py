@@ -8,6 +8,7 @@ Handles:
   4. Sending chat messages and streaming SSE responses
 """
 import asyncio
+import typing
 import json
 import time
 import uuid
@@ -17,7 +18,17 @@ from typing import AsyncIterator
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import HTTPError
 
-from ..sentinel.token_generator import (
+from src.core.provider import BaseProvider
+from src.core.exceptions import RateLimitError, TokenExpiredError
+from .converter import (
+    map_model,
+    parse_chatgpt_sse,
+    chatgpt_event_to_openai_chunk,
+    format_openai_chunk,
+    build_non_streaming_response,
+)
+
+from .sentinel.token_generator import (
     generate_requirements_token,
     generate_enforcement_token,
     build_sentinel_token,
@@ -34,11 +45,128 @@ MODELS_URL = f"{BASE_URL}/backend-anon/models"
 TOKEN_TTL_SECONDS = 480
 
 
-class GuestSession:
+class ChatGPTProvider(BaseProvider):
     """
     A single anonymous ChatGPT guest session.
     Manages device-id, chat-requirements token, and conversation state.
     """
+
+    async def get_models(self) -> list[dict]:
+        return [
+            {"id": "gpt-5-5", "object": "model", "created": 1746057600, "owned_by": "openai"},
+            {"id": "auto", "object": "model", "created": 1746057600, "owned_by": "openai"},
+        ]
+
+    async def stream_chat(
+        self,
+        messages: list[dict],
+        model: str,
+        conversation_id: str | None = None,
+        parent_message_id: str | None = None,
+    ) -> typing.AsyncGenerator[str, None]:
+        target_model = map_model(model)
+        chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        content_tracker = []
+
+        try:
+            for attempt in range(2):
+                try:
+                    async for raw_line in self._stream_raw_chat(messages, target_model, conversation_id, parent_message_id):
+                        event = parse_chatgpt_sse(raw_line)
+                        if event is None:
+                            continue
+
+                        chunk = chatgpt_event_to_openai_chunk(event, target_model, chunk_id)
+                        if chunk is None:
+                            continue
+
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            delta_content = choices[0].get("delta", {}).get("content", "")
+                            if delta_content:
+                                new_text = self._get_incremental_text(content_tracker, delta_content)
+                                if new_text:
+                                    chunk["choices"][0]["delta"]["content"] = new_text
+                                else:
+                                    chunk["choices"][0]["delta"].pop("content", None)
+
+                        yield format_openai_chunk(chunk)
+
+                        if choices and choices[0].get("finish_reason"):
+                            break
+
+                    break  # success
+
+                except TokenExpiredError:
+                    if attempt == 0:
+                        log.warning("Token expired, refreshing and retrying...")
+                        await self.ensure_ready()
+                        content_tracker.clear()
+                    else:
+                        raise
+        except RateLimitError:
+            error_chunk = {"error": {"message": "Rate limited by ChatGPT", "type": "rate_limit_error"}}
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+        except Exception as exc:
+            log.exception("Stream error")
+            error_chunk = {"error": {"message": str(exc), "type": "server_error"}}
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    async def non_streaming_chat(
+        self,
+        messages: list[dict],
+        model: str,
+        conversation_id: str | None = None,
+        parent_message_id: str | None = None,
+    ) -> dict:
+        target_model = map_model(model)
+        full_content = ""
+        finish_reason = "stop"
+
+        try:
+            for attempt in range(2):
+                try:
+                    async for raw_line in self._stream_raw_chat(messages, target_model, conversation_id, parent_message_id):
+                        event = parse_chatgpt_sse(raw_line)
+                        if not event or event.get("done"):
+                            continue
+
+                        msg = event.get("message", {})
+                        parts = msg.get("content", {}).get("parts", [])
+                        for part in parts:
+                            if isinstance(part, str):
+                                full_content = part
+
+                        status = msg.get("status", "")
+                        if status == "max_tokens":
+                            finish_reason = "length"
+                    break
+                except TokenExpiredError:
+                    if attempt == 0:
+                        await self.ensure_ready()
+                    else:
+                        raise
+        except RateLimitError:
+            raise RateLimitError("Rate limited by ChatGPT")
+        except Exception as exc:
+            log.exception("Non-streaming error")
+            raise
+
+        return build_non_streaming_response(full_content, target_model, finish_reason)
+
+    def _get_incremental_text(self, tracker: list, new_full_text: str) -> str:
+        prev = tracker[0] if tracker else ""
+        if new_full_text.startswith(prev):
+            delta = new_full_text[len(prev):]
+        else:
+            delta = new_full_text
+        if tracker:
+            tracker[0] = new_full_text
+        else:
+            tracker.append(new_full_text)
+        return delta
 
     def __init__(self):
         self._session: AsyncSession | None = None
@@ -159,7 +287,7 @@ class GuestSession:
         else:
             enforcement_token = p_token
 
-        from src.sentinel.token_generator import execute_turnstile_vm
+        from .sentinel.token_generator import execute_turnstile_vm
         
         turnstile_token = ""
         turnstile = self._chat_req.get("turnstile", {})
@@ -184,7 +312,7 @@ class GuestSession:
             if not getattr(self, "_sentinel_headers", None) or self._is_token_expired():
                 await self._refresh_chat_requirements()
 
-    async def stream_chat(
+    async def _stream_raw_chat(
         self,
         messages: list[dict],
         model: str = "auto",
@@ -391,9 +519,3 @@ def _extract_text(content) -> str:
 # Custom exceptions
 # ------------------------------------------------------------------
 
-class RateLimitError(Exception):
-    pass
-
-
-class TokenExpiredError(Exception):
-    pass
