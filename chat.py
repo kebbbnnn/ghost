@@ -5,9 +5,20 @@ from curl_cffi.requests import AsyncSession
 
 PROXY_URL = "http://127.0.0.1:8100/v1/chat/completions"
 
-async def interactive_chat():
+MODEL_LABELS = {
+    "gemini": "Gemini",
+    "auto":   "ChatGPT",
+}
+
+def resolve_model(arg: str | None) -> tuple[str, str]:
+    """Return (model_id, display_label) from a CLI arg."""
+    model = (arg or "auto").strip().lower()
+    label = MODEL_LABELS.get(model, model.upper())
+    return model, label
+
+async def interactive_chat(model: str = "auto", label: str = "ChatGPT"):
     print("==================================================")
-    print("ChatGPT Proxy Interactive Test")
+    print(f"{label} Proxy Interactive Test")
     print("Type your message and press Enter. Type 'exit' to quit.")
     print("==================================================\n")
 
@@ -31,19 +42,21 @@ async def interactive_chat():
             messages.append({"role": "user", "content": user_input})
 
             payload = {
-                "model": "auto",
+                "model": model,
                 "messages": messages,
                 "stream": True
             }
-            if conversation_id and parent_message_id:
+            if conversation_id:
                 payload["conversation_id"] = conversation_id
+            if parent_message_id:
                 payload["parent_message_id"] = parent_message_id
 
-            print("\nChatGPT: ", end="")
+            print(f"\n{label}: ", end="")
             sys.stdout.flush()
             
             full_response = ""
             last_msg_id = None
+            got_parent_from_chunk = False
 
             try:
                 resp = await s.post(PROXY_URL, json=payload, stream=True)
@@ -63,9 +76,13 @@ async def interactive_chat():
                                     print(f"\n[Proxy Error: {data['error'].get('message', data['error'])}]")
                                     break
                                     
-                                if "conversation_id" in data and data["conversation_id"]:
+                                if data.get("conversation_id"):
                                     conversation_id = data["conversation_id"]
-                                if "id" in data and data["id"]:
+                                # Gemini returns parent_message_id in the chunk envelope
+                                if data.get("parent_message_id"):
+                                    parent_message_id = data["parent_message_id"]
+                                    got_parent_from_chunk = True
+                                if data.get("id"):
                                     last_msg_id = data["id"]
                                     
                                 delta = data.get("choices", [{}])[0].get("delta", {})
@@ -84,8 +101,12 @@ async def interactive_chat():
             
             if full_response:
                 messages.append({"role": "assistant", "content": full_response})
-                if last_msg_id:
+                # Only fall back to last_msg_id for ChatGPT (which doesn't embed
+                # parent_message_id in chunks). For Gemini, it was already captured
+                # correctly from the chunk envelope above — don't overwrite it.
+                if last_msg_id and not got_parent_from_chunk:
                     parent_message_id = last_msg_id
 
 if __name__ == "__main__":
-    asyncio.run(interactive_chat())
+    _model, _label = resolve_model(sys.argv[1] if len(sys.argv) > 1 else None)
+    asyncio.run(interactive_chat(model=_model, label=_label))
