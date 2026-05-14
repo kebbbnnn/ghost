@@ -174,6 +174,7 @@ class GeminiProvider(BaseProvider):
             self._http = httpx.AsyncClient(
                 timeout=60.0,
                 follow_redirects=True,
+                http2=True,
             )
         return self._http
 
@@ -185,6 +186,28 @@ class GeminiProvider(BaseProvider):
         async with self._lock:
             if not self._at_token or self._is_token_expired():
                 await self._refresh_tokens()
+
+    async def start_background_tasks(self):
+        self._bg_task = asyncio.create_task(self._maintain_session_loop())
+
+    async def stop_background_tasks(self):
+        if hasattr(self, "_bg_task") and self._bg_task:
+            self._bg_task.cancel()
+            try:
+                await self._bg_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _maintain_session_loop(self):
+        """Periodically checks and refreshes the token in the background before it expires."""
+        while True:
+            try:
+                async with self._lock:
+                    if not self._at_token or self._is_token_expired():
+                        await self._refresh_tokens()
+            except Exception as e:
+                log.error(f"Gemini background token refresh failed: {e}")
+            await asyncio.sleep(10)
 
     async def _refresh_tokens(self):
         """

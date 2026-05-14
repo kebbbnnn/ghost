@@ -312,6 +312,30 @@ class ChatGPTProvider(BaseProvider):
             if not getattr(self, "_sentinel_headers", None) or self._is_token_expired():
                 await self._refresh_chat_requirements()
 
+    async def start_background_tasks(self):
+        # Pre-initialize the HTTP session
+        await self._get_session()
+        self._bg_task = asyncio.create_task(self._maintain_session_loop())
+
+    async def stop_background_tasks(self):
+        if hasattr(self, "_bg_task") and self._bg_task:
+            self._bg_task.cancel()
+            try:
+                await self._bg_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _maintain_session_loop(self):
+        """Periodically checks and refreshes the chat requirements in the background."""
+        while True:
+            try:
+                async with self._lock:
+                    if not getattr(self, "_sentinel_headers", None) or self._is_token_expired():
+                        await self._refresh_chat_requirements()
+            except Exception as e:
+                log.error(f"ChatGPT background token refresh failed: {e}")
+            await asyncio.sleep(10)
+
     async def _stream_raw_chat(
         self,
         messages: list[dict],

@@ -14,7 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from src.providers import get_all_models, get_provider_for_model
+from contextlib import asynccontextmanager
+from src.providers import get_all_models, get_provider_for_model, PROVIDERS
 from src.core.exceptions import RateLimitError
 
 # ---------------------------------------------------------------------------
@@ -23,10 +24,21 @@ from src.core.exceptions import RateLimitError
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start background tasks for all providers
+    for p in PROVIDERS:
+        await p.start_background_tasks()
+    yield
+    # Stop background tasks on shutdown
+    for p in PROVIDERS:
+        await p.stop_background_tasks()
+
 app = FastAPI(
     title="GhostTunnel Multi-Platform Proxy",
     description="OpenAI-compatible API proxy using isolated guest sessions",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

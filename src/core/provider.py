@@ -43,3 +43,17 @@ class BaseProvider(ABC):
         Return a complete OpenAI chat completion response dictionary.
         """
         pass
+
+    async def start_background_tasks(self):
+        """
+        Start any background tasks, such as proactive token refresh loops or
+        connection warm-ups. Base implementation does nothing.
+        """
+        pass
+
+    async def stop_background_tasks(self):
+        """
+        Stop background tasks and clean up resources cleanly.
+        Base implementation does nothing.
+        """
+        pass
