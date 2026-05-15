@@ -9,7 +9,7 @@ Endpoints:
 """
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -17,6 +17,11 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from src.providers import get_all_models, get_provider_for_model, PROVIDERS
 from src.core.exceptions import RateLimitError
+from src.converters.anthropic import (
+    anthropic_to_openai_request,
+    openai_to_anthropic_stream,
+    openai_to_anthropic_json,
+)
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -115,6 +120,54 @@ async def chat_completions(req: ChatCompletionRequest):
         except Exception as e:
             log.exception("Non-streaming error")
             raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages
+# ---------------------------------------------------------------------------
+
+@app.post("/v1/messages")
+async def anthropic_messages(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+        
+    try:
+        openai_req = anthropic_to_openai_request(body)
+    except Exception as e:
+        log.exception("Error converting Anthropic request")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    model = openai_req.get("model", "auto")
+    provider = get_provider_for_model(model)
+    if not provider:
+        raise HTTPException(status_code=400, detail=f"No provider supports model '{model}'")
+        
+    messages = openai_req.get("messages", [])
+    stream = openai_req.get("stream", False)
+    
+    if stream:
+        return StreamingResponse(
+            openai_to_anthropic_stream(provider.stream_chat(messages, model), model=model),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    else:
+        try:
+            resp_dict = await provider.non_streaming_chat(messages, model)
+            anthropic_resp = await openai_to_anthropic_json(resp_dict)
+            return JSONResponse(anthropic_resp)
+        except RateLimitError as e:
+            raise HTTPException(status_code=429, detail=str(e))
+        except Exception as e:
+            log.exception("Non-streaming error")
+            raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # ---------------------------------------------------------------------------
