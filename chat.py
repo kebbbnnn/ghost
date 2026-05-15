@@ -8,6 +8,9 @@ PROXY_URL = "http://127.0.0.1:8100/v1/chat/completions"
 MODEL_LABELS = {
     "gemini": "Gemini",
     "auto":   "ChatGPT",
+    "claude-3-5-sonnet-20241022": "Claude Sonnet",
+    "claude-3-opus-20240229": "Claude Opus",
+    "claude-3-5-haiku-20241022": "Claude Haiku",
 }
 
 def resolve_model(arg: str | None) -> tuple[str, str]:
