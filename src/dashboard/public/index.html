@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GhostTunnel Dashboard</title>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Custom Styles -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <header class="glass-panel">
+            <div class="logo">
+                <div class="logo-icon"></div>
+                <h1>GhostTunnel</h1>
+            </div>
+            <div class="status-indicator">
+                <span class="pulse-dot active"></span>
+                <span class="status-text" id="server-status">System Online</span>
+            </div>
+        </header>
+
+        <main>
+            <!-- System Overview -->
+            <section class="metrics-grid">
+                <div class="metric-card glass-panel">
+                    <h3>Active Providers</h3>
+                    <p class="metric-value" id="active-providers">-</p>
+                </div>
+                <div class="metric-card glass-panel">
+                    <h3>Total Models</h3>
+                    <p class="metric-value" id="total-models">-</p>
+                </div>
+                <div class="metric-card glass-panel">
+                    <h3>Uptime</h3>
+                    <p class="metric-value" id="uptime">-</p>
+                </div>
+            </section>
+
+            <!-- Claude Accounts -->
+            <section class="accounts-section">
+                <div class="section-header">
+                    <h2>Claude Accounts</h2>
+                    <span class="badge" id="claude-total">0 Loaded</span>
+                </div>
+                
+                <div class="accounts-grid" id="accounts-container">
+                    <!-- Accounts will be dynamically inserted here -->
+                    <div class="loading-state">Loading accounts data...</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Application Logic -->
+    <script src="app.js"></script>
+</body>
+</html>

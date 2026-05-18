@@ -12,7 +12,11 @@ import logging
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import time
+
+SERVER_START_TIME = int(time.time())
 
 from contextlib import asynccontextmanager
 from src.providers import get_all_models, get_provider_for_model, PROVIDERS
@@ -52,6 +56,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount dashboard static files
+import os
+dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard/public")
+app.mount("/dashboard", StaticFiles(directory=dashboard_path, html=True), name="dashboard")
 
 # ---------------------------------------------------------------------------
 # Models
@@ -171,12 +180,38 @@ async def anthropic_messages(req: Request):
 
 
 # ---------------------------------------------------------------------------
-# Health check
+# Health & Status check
 # ---------------------------------------------------------------------------
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/api/status")
+async def get_status():
+    from src.providers.claude.session import ClaudeProvider
+    
+    models = await get_all_models()
+    
+    claude_data = {}
+    for p in PROVIDERS:
+        if isinstance(p, ClaudeProvider):
+            # Access rotator state
+            await p.rotator._load_accounts_if_changed()
+            claude_data = {
+                "accounts": p.rotator.active_accounts,
+                "cooldowns": p.rotator.cooldowns,
+                "current_index": p.rotator.current_index
+            }
+            break
+            
+    return {
+        "status": "ok",
+        "start_time": SERVER_START_TIME,
+        "providers_count": len(PROVIDERS),
+        "models_count": len(models),
+        "claude": claude_data
+    }
 
 
 # ---------------------------------------------------------------------------
