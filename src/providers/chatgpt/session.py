@@ -34,11 +34,14 @@ from .sentinel.token_generator import (
     build_sentinel_token,
 )
 
+from .uploader import preprocess_images
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://chatgpt.com"
 REQUIREMENTS_URL = f"{BASE_URL}/backend-anon/sentinel/chat-requirements"
 CONVERSATION_URL = f"{BASE_URL}/backend-anon/conversation"
+CONVERSATION_URL_FILES = f"{BASE_URL}/backend-anon/f/conversation"
 MODELS_URL = f"{BASE_URL}/backend-anon/models"
 
 # Chat requirements token expires after ~540 seconds (9 min); refresh at 8 min
@@ -357,28 +360,59 @@ class ChatGPTProvider(BaseProvider):
         """
         await self.ensure_ready()
         
-        # Convert messages to ChatGPT format
-        chatgpt_messages = _convert_messages(messages)
-        
-        # If continuing a conversation, ChatGPT expects only the newest message
-        if conversation_id and parent_message_id:
-            chatgpt_messages = chatgpt_messages[-1:]
-
-        body = {
-            "action": "next",
-            "messages": chatgpt_messages,
-            "model": model,
-            "parent_message_id": parent_message_id or str(uuid.uuid4()),
-            "stream": True,
-            "timezone_offset_min": -480,
-        }
-        if conversation_id:
-            body["conversation_id"] = conversation_id
-            
         max_retries = 1
         for attempt in range(max_retries + 1):
             await self.ensure_ready()
             session = await self._get_session()
+
+            # Pre-process images inside retry loop: if session resets,
+            # file IDs from the old session become stale and must be re-uploaded
+            processed_messages, has_images = await preprocess_images(
+                messages, session, self._base_headers(), self._oai_did
+            )
+            
+            # Convert messages to ChatGPT format
+            chatgpt_messages = _convert_messages(processed_messages)
+            
+            # If continuing a conversation, ChatGPT expects only the newest message
+            if conversation_id and parent_message_id:
+                chatgpt_messages = chatgpt_messages[-1:]
+
+            body = {
+                "action": "next",
+                "messages": chatgpt_messages,
+                "model": model,
+                "parent_message_id": parent_message_id or "client-created-root",
+                "timezone_offset_min": -480,
+                "timezone": "Asia/Manila",
+            }
+            if conversation_id:
+                body["conversation_id"] = conversation_id
+                
+            if has_images:
+                body["conversation_mode"] = {"kind": "primary_assistant"}
+                body["supported_encodings"] = ["v1"]
+                body["client_contextual_info"] = {
+                    "is_dark_mode": True,
+                    "time_since_loaded": 320,
+                    "page_height": 916,
+                    "page_width": 816,
+                    "pixel_ratio": 1,
+                    "screen_height": 1050,
+                    "screen_width": 1680,
+                    "app_name": "chatgpt.com"
+                }
+                body["force_parallel_switch"] = "auto"
+                body["client_prepare_state"] = "sent"
+                body["enable_message_followups"] = True
+                body["system_hints"] = []
+                body["supports_buffering"] = True
+                body["no_auth_ad_preferences"] = {
+                    "personalization_enabled": True,
+                    "history_enabled": True,
+                    "bazaar_consent_set": False
+                }
+                body["paragen_cot_summary_display_override"] = "allow"
             
             headers = {
                 **self._base_headers(),
@@ -388,11 +422,16 @@ class ChatGPTProvider(BaseProvider):
                 "Accept": "text/event-stream",
                 **self._sentinel_headers,
             }
+            
+            if has_images:
+                log.info("Sending multimodal payload: %s", json.dumps(body))
 
             try:
+                conversation_url = CONVERSATION_URL_FILES if has_images else CONVERSATION_URL
+                log.info("Requesting conversation from URL: %s", conversation_url)
                 async with session.stream(
                     "POST",
-                    CONVERSATION_URL,
+                    conversation_url,
                     headers=headers,
                     json=body,
                 ) as resp:
@@ -421,7 +460,15 @@ class ChatGPTProvider(BaseProvider):
                             continue
                         raise TokenExpiredError("Conversation not found and retry failed")
                     
-                    resp.raise_for_status()
+                    if resp.status_code >= 400:
+                        body_text = ""
+                        try:
+                            async for chunk in resp.aiter_lines():
+                                body_text += chunk.decode("utf-8") + "\n"
+                        except:
+                            pass
+                        log.error(f"HTTP {resp.status_code} Error Body: {body_text}")
+                        resp.raise_for_status()
 
                     async for chunk in resp.aiter_lines():
                         if chunk:
@@ -488,14 +535,19 @@ def _convert_messages(messages: list[dict]) -> list[dict]:
             })
         elif role == "user":
             parts = _parse_content(content)
-            out.append({
+            user_msg = {
                 "id": str(uuid.uuid4()),
                 "author": {"role": "user"},
+                "create_time": time.time(),
                 "content": {
                     "content_type": "multimodal_text" if any(isinstance(p, dict) for p in parts) else "text",
                     "parts": parts,
                 },
-            })
+            }
+            # Pass through attachment metadata from image preprocessing
+            if msg.get("metadata"):
+                user_msg["metadata"] = msg["metadata"]
+            out.append(user_msg)
         elif role == "assistant":
             text = content if isinstance(content, str) else _extract_text(content)
             out.append({
@@ -517,6 +569,10 @@ def _parse_content(content):
         parts = []
         for item in content:
             if isinstance(item, dict):
+                # Pass through image_asset_pointer dicts from uploader
+                if item.get("content_type") == "image_asset_pointer":
+                    parts.append(item)
+                    continue
                 t = item.get("type")
                 if t == "text":
                     parts.append(item.get("text", ""))
