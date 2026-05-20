@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import json
+import os
 import sys
 from curl_cffi.requests import AsyncSession
 
@@ -13,27 +15,72 @@ MODEL_LABELS = {
     "claude-3-5-haiku-20241022": "Claude Haiku",
 }
 
+SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+
 def resolve_model(arg: str | None) -> tuple[str, str]:
     """Return (model_id, display_label) from a CLI arg."""
     model = (arg or "auto").strip().lower()
     label = MODEL_LABELS.get(model, model.upper())
     return model, label
 
+
+def image_to_data_uri(path: str) -> str:
+    """Read a local image file and return a data URI."""
+    path = path.strip().strip("'\"")  # handle drag-and-drop quoted paths
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"File not found: {path}")
+    
+    ext = os.path.splitext(path)[1].lower()
+    mime_map = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".gif": "image/gif",
+        ".webp": "image/webp", ".bmp": "image/bmp",
+    }
+    mime = mime_map.get(ext, "image/jpeg")
+    
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    return f"data:{mime};base64,{b64}"
+
+
+def build_content(text: str, image_urls: list[str]) -> list[dict] | str:
+    """Build the content field for a message, with optional images."""
+    if not image_urls:
+        return text
+    
+    parts = []
+    for url in image_urls:
+        parts.append({"type": "image_url", "image_url": {"url": url}})
+    parts.append({"type": "text", "text": text})
+    return parts
+
+
 async def interactive_chat(model: str = "auto", label: str = "ChatGPT"):
     print("==================================================")
     print(f"{label} Proxy Interactive Test")
     print("Type your message and press Enter. Type 'exit' to quit.")
+    print("")
+    print("  Vision commands:")
+    print("  /image <path>   — attach a local image file")
+    print("  /url <url>      — attach an image from URL")
+    print("  /clear          — clear attached images")
+    print("  (then type your prompt on the next line)")
     print("==================================================\n")
 
     # Keep a simple conversation history and conversation tracking IDs
     messages = []
     conversation_id = None
     parent_message_id = None
+    pending_images: list[str] = []  # data URIs or URLs to attach
 
     async with AsyncSession() as s:
         while True:
             try:
-                user_input = input("\nYou: ")
+                # Show pending image count in prompt
+                if pending_images:
+                    user_input = input(f"\nYou [{len(pending_images)} image(s) attached]: ")
+                else:
+                    user_input = input("\nYou: ")
             except (KeyboardInterrupt, EOFError):
                 break
                 
@@ -41,8 +88,51 @@ async def interactive_chat(model: str = "auto", label: str = "ChatGPT"):
                 continue
             if user_input.strip().lower() in ["exit", "quit"]:
                 break
-                
-            messages.append({"role": "user", "content": user_input})
+
+            # --- Handle /image command ---
+            if user_input.strip().lower().startswith("/image "):
+                path = user_input.strip()[7:].strip()
+                try:
+                    data_uri = image_to_data_uri(path)
+                    pending_images.append(data_uri)
+                    size_kb = len(data_uri) * 3 // 4 // 1024  # approximate decoded size
+                    print(f"  ✅ Image attached ({size_kb} KB). Type your prompt next.")
+                except FileNotFoundError as e:
+                    print(f"  ❌ {e}")
+                except Exception as e:
+                    print(f"  ❌ Failed to read image: {e}")
+                continue
+
+            # --- Handle /url command ---
+            if user_input.strip().lower().startswith("/url "):
+                url = user_input.strip()[5:].strip()
+                pending_images.append(url)
+                print(f"  ✅ Image URL attached. Type your prompt next.")
+                continue
+
+            # --- Handle /clear command ---
+            if user_input.strip().lower() == "/clear":
+                pending_images.clear()
+                print("  🗑️  Cleared all attached images.")
+                continue
+
+            # --- Check if input looks like a dragged file path ---
+            clean_input = user_input.strip().strip("'\"")
+            if os.path.isfile(clean_input) and os.path.splitext(clean_input)[1].lower() in SUPPORTED_IMAGE_EXTS:
+                try:
+                    data_uri = image_to_data_uri(clean_input)
+                    pending_images.append(data_uri)
+                    size_kb = len(data_uri) * 3 // 4 // 1024
+                    print(f"  ✅ Image attached ({size_kb} KB). Type your prompt next.")
+                except Exception as e:
+                    print(f"  ❌ Failed to read image: {e}")
+                continue
+
+            # --- Build and send message ---
+            content = build_content(user_input, pending_images)
+            messages.append({"role": "user", "content": content})
+            images_sent = len(pending_images)
+            pending_images.clear()
 
             payload = {
                 "model": model,
@@ -54,7 +144,10 @@ async def interactive_chat(model: str = "auto", label: str = "ChatGPT"):
             if parent_message_id:
                 payload["parent_message_id"] = parent_message_id
 
-            print(f"\n{label}: ", end="")
+            if images_sent:
+                print(f"\n{label} (🖼️ analyzing {images_sent} image(s)): ", end="")
+            else:
+                print(f"\n{label}: ", end="")
             sys.stdout.flush()
             
             full_response = ""

@@ -49,6 +49,8 @@ def chatgpt_event_to_openai_chunk(event: dict, model: str, chunk_id: str) -> dic
     Convert a parsed ChatGPT SSE event into an OpenAI-compatible chunk dict.
     Returns None if the event carries no useful content.
     """
+    if not isinstance(event, dict):
+        return None
     if event.get("done"):
         return {
             "id": chunk_id,

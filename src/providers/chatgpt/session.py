@@ -271,7 +271,7 @@ class ChatGPTProvider(BaseProvider):
         )
         resp.raise_for_status()
         self._chat_req = resp.json()
-        log.debug(f"chat-requirements response: persona={self._chat_req.get('persona')}")
+        log.info(f"chat-requirements response: {json.dumps(self._chat_req)}")
 
         # Update oai-did from response cookies if server issued a new one
         did = session.cookies.get("oai-did")
@@ -368,7 +368,7 @@ class ChatGPTProvider(BaseProvider):
             # Pre-process images inside retry loop: if session resets,
             # file IDs from the old session become stale and must be re-uploaded
             processed_messages, has_images = await preprocess_images(
-                messages, session, self._base_headers(), self._oai_did
+                messages, session, self._base_headers(), self._oai_did, self._sentinel_headers
             )
             
             # Convert messages to ChatGPT format
@@ -391,7 +391,6 @@ class ChatGPTProvider(BaseProvider):
                 
             if has_images:
                 body["conversation_mode"] = {"kind": "primary_assistant"}
-                body["supported_encodings"] = ["v1"]
                 body["client_contextual_info"] = {
                     "is_dark_mode": True,
                     "time_since_loaded": 320,
@@ -414,17 +413,92 @@ class ChatGPTProvider(BaseProvider):
                 }
                 body["paragen_cot_summary_display_override"] = "allow"
             
+            # The backend proxy (Cloudflare/NextJS) requires these target path headers
+            # to properly route the request internally without crashing, especially for /f/.
+            # NOTE: Browser uses /backend-api/ (not -anon) in the target path headers,
+            # even though the actual URL is /backend-anon/.
+            target_path = "/backend-api/f/conversation" if has_images else "/backend-api/conversation"
+            turn_trace_id = str(uuid.uuid4())
+            
             headers = {
                 **self._base_headers(),
                 "oai-device-id": self._oai_did,
                 "oai-language": "en-US",
+                "oai-session-id": str(uuid.uuid4()),
+                "oai-client-build-number": "6708908",
+                "oai-client-version": "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887",
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream",
+                "x-openai-target-path": target_path,
+                "x-openai-target-route": target_path,
+                "x-oai-turn-trace-id": turn_trace_id,
                 **self._sentinel_headers,
             }
             
             if has_images:
-                log.info("Sending multimodal payload: %s", json.dumps(body))
+                prompt_text = ""
+                for msg in reversed(messages):
+                    if msg.get("role") == "user":
+                        content = msg.get("content")
+                        if isinstance(content, str):
+                            prompt_text = content
+                            break
+                        elif isinstance(content, list):
+                            for part in content:
+                                if part.get("type") == "text":
+                                    prompt_text = part.get("text", "")
+                            break
+                
+                prepare_payload = {
+                    "action": "next",
+                    "fork_from_shared_post": False,
+                    "parent_message_id": parent_message_id or "client-created-root",
+                    "model": model,
+                    "client_prepare_state": "success",
+                    "timezone_offset_min": -480,
+                    "timezone": "Asia/Manila",
+                    "conversation_mode": {"kind": "primary_assistant"},
+                    "system_hints": [],
+                    "attachment_mime_types": ["image/jpeg"],
+                    "partial_query": {
+                        "id": str(uuid.uuid4()),
+                        "author": {"role": "user"},
+                        "content": {
+                            "content_type": "text",
+                            "parts": [prompt_text]
+                        }
+                    },
+                    "supports_buffering": True,
+                    "client_contextual_info": {"app_name": "chatgpt.com"}
+                }
+                
+                prepare_headers = headers.copy()
+                prepare_headers["x-openai-target-path"] = "/backend-anon/f/conversation/prepare"
+                prepare_headers["x-openai-target-route"] = "/backend-anon/f/conversation/prepare"
+                prepare_headers["Accept"] = "*/*"
+                # Remove sentinel from prepare (browser doesn't send them here)
+                for k in list(prepare_headers.keys()):
+                    if k.lower().startswith("openai-sentinel"):
+                        del prepare_headers[k]
+                
+                log.info("Sending /prepare pre-flight request...")
+                resp = await session.post(
+                    f"{CONVERSATION_URL_FILES}/prepare",
+                    headers=prepare_headers,
+                    json=prepare_payload
+                )
+                
+                if resp.status_code == 200:
+                    prepare_data = resp.json()
+                    conduit_token = prepare_data.get("conduit_token")
+                    if conduit_token:
+                        log.info("Successfully obtained conduit token from /prepare")
+                        headers["x-conduit-token"] = conduit_token
+                    else:
+                        log.warning(f"No conduit_token in /prepare response: {prepare_data}")
+                else:
+                    log.warning(f"/prepare returned {resp.status_code}: {resp.text}")
+            
 
             try:
                 conversation_url = CONVERSATION_URL_FILES if has_images else CONVERSATION_URL

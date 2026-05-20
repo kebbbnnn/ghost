@@ -18,20 +18,15 @@ PROXY_URL = "http://127.0.0.1:8100/v1/chat/completions"
 
 
 def make_tiny_red_png() -> str:
-    """Fetch a real image to use as base64 to avoid backend crashes on solid color squares."""
-    import urllib.request
+    """Generate a 1024x1024 JPEG image to test if the backend crashes on small dimensions."""
     from PIL import Image
     import io
-    url = "https://raw.githubusercontent.com/python/pythondotorg/master/static/img/python-logo.png"
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req) as response:
-        img_bytes = response.read()
     
-    # Convert to JPEG
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    img = Image.new("RGB", (1024, 1024), color=(255, 0, 0))
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
     b64 = base64.b64encode(buf.getvalue()).decode()
+    return f"data:image/jpeg;base64,{b64}"
     return f"data:image/jpeg;base64,{b64}"
 
 

@@ -46,6 +46,7 @@ async def preprocess_images(
     session: AsyncSession,
     base_headers: dict,
     oai_did: str,
+    sentinel_headers: dict | None = None,
 ) -> tuple[list[dict], bool]:
     """
     Scan messages for image_url content parts, upload them to ChatGPT's
@@ -111,6 +112,7 @@ async def preprocess_images(
                 "oai-device-id": oai_did,
                 "oai-language": "en-US",
                 "Content-Type": "application/json",
+                **(sentinel_headers or {}),
             }
             file_id, upload_url = await _register_file(
                 session, headers, filename, file_size
@@ -121,7 +123,24 @@ async def preprocess_images(
             await _upload_blob(upload_url, image_bytes, mime_type)
             log.info("Uploaded %d bytes to blob storage", file_size)
 
-            # Step 5: Build the image_asset_pointer part
+            # Step 5: Finalize file by calling process_upload_stream
+            # This tells the backend the file is ready for use
+            process_url = f"{BASE_URL}/backend-anon/files/process_upload_stream"
+            process_body = {
+                "file_id": file_id,
+                "use_case": "multimodal",
+                "index_for_retrieval": False,
+                "file_name": filename,
+                "entry_surface": "chat_composer",
+            }
+            process_resp = await session.post(process_url, headers=headers, json=process_body)
+            if process_resp.status_code == 200:
+                log.info("File processing confirmed for %s", file_id)
+            else:
+                log.warning("process_upload_stream returned %d: %s", 
+                           process_resp.status_code, process_resp.text)
+
+            # Step 6: Build the image_asset_pointer part
             new_parts.append({
                 "content_type": "image_asset_pointer",
                 "asset_pointer": f"file-service://{file_id}",
