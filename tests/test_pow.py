@@ -6,8 +6,8 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from src.sentinel.pow_solver import solve_pow, build_requirements_token, _fnv1a_32, _encode_config
-from src.sentinel.token_generator import _build_config, generate_requirements_token
+from src.providers.chatgpt.sentinel.pow_solver import solve_pow, build_requirements_token, _fnv1a_32, _encode_config
+from src.providers.chatgpt.sentinel.token_generator import _build_config, generate_requirements_token
 import time
 import uuid
 
@@ -40,7 +40,7 @@ def test_pow_easy():
 
 def test_pow_verification():
     """Verify the solved token actually passes the difficulty check."""
-    from src.sentinel.pow_solver import _encode_config, _fnv1a_32
+    from src.providers.chatgpt.sentinel.pow_solver import _encode_config, _fnv1a_32
     seed = "verify_test"
     difficulty = "0ffff0"
     sid = str(uuid.uuid4())

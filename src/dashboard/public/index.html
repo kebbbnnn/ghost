@@ -3,61 +3,241 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GhostTunnel Dashboard</title>
+    <title>GhostTunnel Desktop Suite</title>
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Custom Styles -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="dashboard-container">
-        <!-- Header -->
-        <header class="glass-panel">
+    <div class="app-layout">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar glass-panel">
             <div class="logo">
                 <div class="logo-icon"></div>
-                <h1>GhostTunnel</h1>
+                <h2>GhostTunnel</h2>
             </div>
-            <div class="status-indicator">
-                <span class="pulse-dot active"></span>
-                <span class="status-text" id="server-status">System Online</span>
-            </div>
-        </header>
+            
+            <nav class="nav-links">
+                <button class="nav-btn active" data-tab="monitor-tab">
+                    <span class="nav-icon">📊</span>
+                    <span>System Monitor</span>
+                </button>
+                <button class="nav-btn" data-tab="chat-tab">
+                    <span class="nav-icon">💬</span>
+                    <span>Chat Playground</span>
+                </button>
+                <button class="nav-btn" data-tab="settings-tab">
+                    <span class="nav-icon">⚙️</span>
+                    <span>Accounts & Settings</span>
+                </button>
+            </nav>
 
-        <main>
-            <!-- System Overview -->
-            <section class="metrics-grid">
-                <div class="metric-card glass-panel">
-                    <h3>Active Providers</h3>
-                    <p class="metric-value" id="active-providers">-</p>
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <span class="pulse-dot active"></span>
+                    <span class="status-text" id="server-status">Connecting...</span>
                 </div>
-                <div class="metric-card glass-panel">
-                    <h3>Total Models</h3>
-                    <p class="metric-value" id="total-models">-</p>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- 📊 Monitor Tab -->
+            <section id="monitor-tab" class="tab-content active">
+                <header class="tab-header">
+                    <h1>System Monitor</h1>
+                </header>
+
+                <div class="metrics-grid">
+                    <div class="metric-card glass-panel">
+                        <h3>Active Providers</h3>
+                        <p class="metric-value" id="active-providers">-</p>
+                    </div>
+                    <div class="metric-card glass-panel">
+                        <h3>Total Models</h3>
+                        <p class="metric-value" id="total-models">-</p>
+                    </div>
+                    <div class="metric-card glass-panel">
+                        <h3>Server Uptime</h3>
+                        <p class="metric-value" id="uptime">-</p>
+                    </div>
                 </div>
-                <div class="metric-card glass-panel">
-                    <h3>Uptime</h3>
-                    <p class="metric-value" id="uptime">-</p>
+
+                <!-- Visual Routing Schematic -->
+                <div class="routing-section glass-panel">
+                    <h3>Real-Time Request Routing</h3>
+                    <div class="schematic-container">
+                        <div class="schematic-node" id="node-client">
+                            <div class="node-icon">💻</div>
+                            <span class="node-label">Client</span>
+                        </div>
+                        <div class="schematic-line-wrapper">
+                            <div class="schematic-line" id="line-client-proxy"></div>
+                        </div>
+                        <div class="schematic-node pulse-glow" id="node-proxy">
+                            <div class="node-icon">🛡️</div>
+                            <span class="node-label">GhostTunnel Proxy</span>
+                        </div>
+                        <div class="schematic-line-wrapper-fork">
+                            <div class="fork-line" id="line-proxy-chatgpt">
+                                <span class="fork-label">ChatGPT</span>
+                            </div>
+                            <div class="fork-line" id="line-proxy-gemini">
+                                <span class="fork-label">Gemini</span>
+                            </div>
+                            <div class="fork-line" id="line-proxy-claude">
+                                <span class="fork-label">Claude</span>
+                            </div>
+                        </div>
+                        <div class="schematic-fork-destinations">
+                            <div class="schematic-node mini" id="node-chatgpt">
+                                <div class="node-icon">🟢</div>
+                                <span class="node-label">ChatGPT (Guest)</span>
+                            </div>
+                            <div class="schematic-node mini" id="node-gemini">
+                                <div class="node-icon">🔵</div>
+                                <span class="node-label">Gemini (Anon)</span>
+                            </div>
+                            <div class="schematic-node mini" id="node-claude">
+                                <div class="node-icon">🟠</div>
+                                <span class="node-label">Claude (Auth)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Telemetry Terminal Console -->
+                <div class="console-section glass-panel">
+                    <div class="console-header">
+                        <h3>Telemetry Console</h3>
+                        <button class="console-clear-btn" id="clear-console-btn">Clear Logs</button>
+                    </div>
+                    <div class="console-output" id="console-output">
+                        <div class="console-line system">[System] Telemetry stream initialized. Listening for local requests...</div>
+                    </div>
                 </div>
             </section>
 
-            <!-- Claude Accounts -->
-            <section class="accounts-section">
-                <div class="section-header">
-                    <h2>Claude Accounts</h2>
-                    <span class="badge" id="claude-total">0 Loaded</span>
+            <!-- 💬 Chat Tab -->
+            <section id="chat-tab" class="tab-content">
+                <div class="chat-container">
+                    <!-- Thread History Sidebar -->
+                    <aside class="chat-threads-sidebar glass-panel">
+                        <button class="new-thread-btn" id="new-thread-btn">
+                            <span>+</span> New Conversation
+                        </button>
+                        <div class="threads-list" id="threads-list">
+                            <!-- Populated via Javascript -->
+                        </div>
+                    </aside>
+
+                    <!-- Chat Window Area -->
+                    <div class="chat-window-wrapper glass-panel">
+                        <!-- Chat Header -->
+                        <div class="chat-header">
+                            <div class="model-select-wrapper">
+                                <label for="playground-model">Active Model:</label>
+                                <select id="playground-model">
+                                    <option value="auto">ChatGPT (auto)</option>
+                                    <option value="gemini">Gemini (gemini)</option>
+                                    <option value="claude-3-5-sonnet-20241022">Claude Sonnet (claude-3.5)</option>
+                                    <option value="claude-3-opus-20240229">Claude Opus (claude-3)</option>
+                                    <option value="claude-3-5-haiku-20241022">Claude Haiku (claude-3.5-haiku)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Chat Messages Screen -->
+                        <div class="empty-chat-welcome" id="empty-chat-welcome">
+                            <div class="welcome-icon">💬</div>
+                            <h2>Local LLM Playground</h2>
+                            <p>Select a model and type a message below. This client routes completions through the local GhostTunnel proxy with context retention across multiple turns.</p>
+                        </div>
+
+                        <div class="chat-messages-area" id="chat-messages-area">
+                        </div>
+
+                        <!-- Chat Attachment Previews Overlay -->
+                        <div class="attachment-previews-bar" id="attachment-previews-bar" style="display: none;">
+                            <!-- Attached files previews will be placed here -->
+                        </div>
+
+                        <!-- Chat Input Tray -->
+                        <div class="chat-input-area">
+                            <button class="attach-btn" id="attach-file-btn" title="Attach local image file">🖼️</button>
+                            <textarea class="chat-textarea" id="chat-input" placeholder="Type a message... (Shift + Enter for new lines, drag & drop images here)"></textarea>
+                            <button class="send-btn" id="send-chat-btn">Send</button>
+                        </div>
+                    </div>
                 </div>
-                
-                <div class="accounts-grid" id="accounts-container">
-                    <!-- Accounts will be dynamically inserted here -->
-                    <div class="loading-state">Loading accounts data...</div>
+
+                <!-- Hidden inputs for file loading -->
+                <input type="file" id="hidden-file-input" accept="image/*" style="display: none;" multiple>
+            </section>
+
+            <!-- ⚙️ Settings Tab -->
+            <section id="settings-tab" class="tab-content">
+                <header class="tab-header">
+                    <h1>Accounts & Settings</h1>
+                </header>
+
+                <div class="settings-grid">
+                    <!-- Claude Rotator Section -->
+                    <div class="settings-card glass-panel full-width">
+                        <div class="card-header">
+                            <h2>Claude Account Rotation Pool</h2>
+                            <button class="btn btn-primary" id="btn-add-claude">Add Claude Account</button>
+                        </div>
+                        <p class="settings-description">Claude routing requires cookies. Add multiple accounts to automatically bypass rate limits through circular rotation.</p>
+                        
+                        <div class="settings-table-container">
+                            <table class="settings-table">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Email Address</th>
+                                        <th>Added Date</th>
+                                        <th>Rotation Status</th>
+                                        <th>Session Key</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="claude-accounts-tbody">
+                                    <!-- Populated via Javascript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Config options -->
+                    <div class="settings-card glass-panel">
+                        <h2>Proxy API Details</h2>
+                        <div class="settings-form-row">
+                            <span class="form-label">Proxy Base URL</span>
+                            <span class="form-value font-monospace">http://127.0.0.1:8100/v1</span>
+                        </div>
+                        <div class="settings-form-row">
+                            <span class="form-label">OpenAI SDK API Key</span>
+                            <span class="form-value font-monospace">not-needed (or any value)</span>
+                        </div>
+                    </div>
+
+                    <div class="settings-card glass-panel">
+                        <h2>Developer Reference</h2>
+                        <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">
+                            Point your IDE or CLI agents to the local loopback URL to utilize GhostTunnel reverse proxies transparently:
+                        </p>
+                        <pre class="code-block">export ANTHROPIC_BASE_URL=http://127.0.0.1:8100/v1
+export OPENAI_BASE_URL=http://127.0.0.1:8100/v1</pre>
+                    </div>
                 </div>
             </section>
         </main>
     </div>
 
-    <!-- Application Logic -->
+    <!-- Application Script -->
     <script src="app.js"></script>
 </body>
 </html>

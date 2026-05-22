@@ -1,0 +1,20 @@
+[
+  {
+    "id": "thread_1779276857842",
+    "model": "auto",
+    "title": "hello",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello"
+      },
+      {
+        "role": "assistant",
+        "content": "Hello! \ud83d\ude04 How\u2019s your day going so far?"
+      }
+    ],
+    "conversationId": "6a0d9c3a-68a0-83ea-87c3-2893e5c10d29",
+    "parentMessageId": null,
+    "created": 1779276857842
+  }
+]
