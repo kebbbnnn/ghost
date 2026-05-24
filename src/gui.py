@@ -133,11 +133,21 @@ def main():
     server_thread.start()
     print(f"FastAPI Server started programmatically on http://127.0.0.1:{PORT}")
 
+    # Wait for server to start listening
+    print("[GUI Setup] Waiting for FastAPI server to start listening...")
+    for _ in range(50):  # wait up to 5 seconds
+        if is_port_in_use(PORT):
+            print("[GUI Setup] FastAPI server is ready.")
+            break
+        time.sleep(0.1)
+    else:
+        print("[GUI Setup] Warning: FastAPI server did not start in time.")
+
     # Initialize PyWebView main window
     api = GUIBridgeAPI()
     main_window = webview.create_window(
         title="GhostTunnel All-in-One Suite",
-        url=f"http://127.0.0.1:{PORT}/dashboard",
+        url=f"http://127.0.0.1:{PORT}/dashboard/",
         width=1200,
         height=800,
         resizable=True,

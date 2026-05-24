@@ -8,19 +8,19 @@ import base64
 import json
 import time
 
+# ---------------------------------------------------------------------------
+# FNV-1a 32-bit hash
+# ---------------------------------------------------------------------------
 
-def _encode_config(config: list) -> str:
-    """Base64(JSON(config)) — mirrors the JS U() function."""
-    payload = json.dumps(config, separators=(",", ":"), ensure_ascii=False)
-    return base64.b64encode(payload.encode("utf-8")).decode("utf-8")
-
+_FNV_OFFSET = 2166136261
+_FNV_PRIME  = 16777619
 
 def _fnv1a_32(s: str) -> str:
     """FNV-1a 32-bit hash — mirrors the JS hash lambda in _runCheck."""
-    h = 2166136261
+    h = _FNV_OFFSET
     for ch in s:
         h ^= ord(ch)
-        h = (h * 16777619) & 0xFFFFFFFF
+        h = (h * _FNV_PRIME) & 0xFFFFFFFF
     h ^= h >> 16
     h = (h * 2246822507) & 0xFFFFFFFF
     h ^= h >> 13
@@ -29,27 +29,35 @@ def _fnv1a_32(s: str) -> str:
     return f"{h:08x}"
 
 
-def _run_check(t0_ms: float, seed: str, difficulty: str, config: list, attempt: int):
+def _fnv1a_32_continue(s: str, h: int) -> str:
     """
-    Mirrors _runCheck(t, n, e, r, o):
-      r[3] = o (attempt index)
-      r[9] = Math.round(performance.now() - t)
-      c    = U(r) = base64(json(config))
-      s    = fnv1a(seed + c)
-      return c + "~S" if s[:len(difficulty)] <= difficulty else None
+    Continue an FNV-1a hash from an existing state `h`.
+    Used to avoid rehashing the static seed prefix on every PoW iteration.
+    """
+    for ch in s:
+        h ^= ord(ch)
+        h = (h * _FNV_PRIME) & 0xFFFFFFFF
+    h ^= h >> 16
+    h = (h * 2246822507) & 0xFFFFFFFF
+    h ^= h >> 13
+    h = (h * 3266489909) & 0xFFFFFFFF
+    h ^= h >> 16
+    return f"{h:08x}"
 
-    t0_ms here is the performance.now() value at challenge start (NOT system time),
-    so elapsed = current_perf_now - t0_ms accumulates from a realistic starting point.
-    """
-    config[3] = attempt
-    # current_perf_now advances from the simulated page-load value
-    current_perf_now = t0_ms + (time.monotonic() * 1000 % 10000)
-    config[9] = round(current_perf_now - t0_ms)
-    encoded = _encode_config(config)
-    digest = _fnv1a_32(seed + encoded)
-    if digest[: len(difficulty)] <= difficulty:
-        return encoded + "~S"
-    return None
+
+def _fnv1a_state(s: str) -> int:
+    """Compute partial FNV-1a hash state (without finalization) for a prefix string."""
+    h = _FNV_OFFSET
+    for ch in s:
+        h ^= ord(ch)
+        h = (h * _FNV_PRIME) & 0xFFFFFFFF
+    return h
+
+
+def _encode_config(config: list) -> str:
+    """Base64(JSON(config)) — mirrors the JS U() function."""
+    payload = json.dumps(config, separators=(",", ":"), ensure_ascii=False)
+    return base64.b64encode(payload.encode("utf-8")).decode("utf-8")
 
 
 def solve_pow(
@@ -60,24 +68,32 @@ def solve_pow(
     """
     Solve proof-of-work and return the gAAAAAB-prefixed token.
 
+    Optimization: pre-compute the FNV-1a partial hash state for `seed` so that
+    each iteration only processes the varying `encoded` suffix rather than
+    rehashing the entire (seed + encoded) string from scratch.
+
     page_load_ms: the simulated performance.now() value at the point the SDK
     was initialised (i.e., config[13]). The PoW timer starts there so that
     config[9] = elapsed ms from page-load, not from system boot.
     """
-    # The JS SDK records performance.now() when it starts the check loop.
-    # We simulate by anchoring to the real monotonic clock offset by page_load_ms.
+    diff_len = len(difficulty)
+
+    # Pre-compute the FNV-1a partial hash state for the constant seed string.
+    # This eliminates up to 500,000 redundant re-hashes of the same prefix.
+    seed_hash_state = _fnv1a_state(seed)
+
     solve_start_real = time.monotonic() * 1000     # real ms now
     t0_ms = page_load_ms                           # perf.now at challenge start
 
     for i in range(max_attempts):
-        # Simulate perf.now() advancing: real elapsed since solve_start, added to t0
         real_elapsed = time.monotonic() * 1000 - solve_start_real
         current_perf = t0_ms + real_elapsed
         config[3] = i
         config[9] = round(current_perf - t0_ms)   # = real elapsed, realistic
         encoded = _encode_config(config)
-        digest = _fnv1a_32(seed + encoded)
-        if digest[:len(difficulty)] <= difficulty:
+        # Continue hashing from the pre-computed seed state
+        digest = _fnv1a_32_continue(encoded, seed_hash_state)
+        if digest[:diff_len] <= difficulty[:diff_len]:
             return "gAAAAAB" + encoded + "~S"
     raise RuntimeError(f"PoW not solved in {max_attempts} attempts (seed={seed!r})")
 
@@ -89,9 +105,9 @@ def build_requirements_token(config: list, page_load_ms: float = 1500.0) -> str:
       config[3] = 1
       config[9] = elapsed_ms (time since page load, not system boot)
     """
+    import random
     config[3] = 1
     # JS: t[9] = performance.now() - e (time since SDK init, not since page load)
     # We simulate a small elapsed since page load, e.g. 50-200ms for requirements
-    import random
     config[9] = page_load_ms + random.uniform(50, 200)
     return "gAAAAAC" + _encode_config(config)

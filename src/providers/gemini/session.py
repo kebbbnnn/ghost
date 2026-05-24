@@ -188,6 +188,13 @@ class GeminiProvider(BaseProvider):
                 await self._refresh_tokens()
 
     async def start_background_tasks(self):
+        # Pre-warm the connection and fetch tokens eagerly at startup.
+        # This ensures the first real request doesn't pay the page-fetch + regex cost.
+        try:
+            await self._refresh_tokens()
+            log.info("Gemini: tokens pre-fetched at startup")
+        except Exception as e:
+            log.warning(f"Gemini: startup token pre-fetch failed (will retry on first request): {e}")
         self._bg_task = asyncio.create_task(self._maintain_session_loop())
 
     async def stop_background_tasks(self):

@@ -691,9 +691,29 @@ async function init() {
         });
     }
 
+    const modelSelect = document.getElementById('playground-model');
+    if (modelSelect) {
+        modelSelect.addEventListener('change', (e) => {
+            const newModel = e.target.value;
+            let threads = getThreads();
+            let current = threads.find(t => t.id === activeThreadId);
+            if (current) {
+                current.model = newModel;
+                if (current.title.startsWith("Chat with ")) {
+                    current.title = `Chat with ${newModel}`;
+                }
+                saveThreads(threads);
+                renderThreadsSidebar();
+            }
+        });
+    }
+
     const newThreadBtn = document.getElementById('new-thread-btn');
     if (newThreadBtn) {
-        newThreadBtn.addEventListener('click', () => createThread());
+        newThreadBtn.addEventListener('click', () => {
+            const currentModel = document.getElementById('playground-model').value;
+            createThread(currentModel);
+        });
     }
 
     const sendBtn = document.getElementById('send-chat-btn');

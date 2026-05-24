@@ -141,12 +141,10 @@ async def chat_completions(req: ChatCompletionRequest):
                 "stream": True,
                 "messages_count": len(messages),
             })
+            token_count = 0
             try:
                 async for chunk in provider.stream_chat(messages, req.model, req.conversation_id, req.parent_message_id):
-                    await broadcast_event("request_token", {
-                        "id": request_id,
-                        "model": req.model,
-                    })
+                    token_count += 1
                     yield chunk
             except Exception as e:
                 await broadcast_event("request_error", {
@@ -157,6 +155,7 @@ async def chat_completions(req: ChatCompletionRequest):
             finally:
                 await broadcast_event("request_end", {
                     "id": request_id,
+                    "tokens": token_count,
                 })
 
         return StreamingResponse(
@@ -177,10 +176,6 @@ async def chat_completions(req: ChatCompletionRequest):
         })
         try:
             resp_dict = await provider.non_streaming_chat(messages, req.model, req.conversation_id, req.parent_message_id)
-            await broadcast_event("request_token", {
-                "id": request_id,
-                "model": req.model,
-            })
             await broadcast_event("request_end", {
                 "id": request_id,
             })

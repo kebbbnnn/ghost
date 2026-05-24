@@ -178,6 +178,12 @@ class ChatGPTProvider(BaseProvider):
         self._sentinel_token: str = ""
         self._token_fetched_at: float = 0.0
         self._lock = asyncio.Lock()
+        # Double-buffered sentinel tokens.
+        # _sentinel_headers: currently in-use token set (None until first fetch)
+        # _next_sentinel_headers: pre-computed next token, ready to swap in
+        self._sentinel_headers: dict | None = None
+        self._next_sentinel_headers: dict | None = None
+        self._next_token_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -202,8 +208,18 @@ class ChatGPTProvider(BaseProvider):
                 pass
             self._session = None
         self._sentinel_headers = None
+        self._next_sentinel_headers = None
         self._token_fetched_at = 0.0
-        
+
+        # Cancel any in-flight next-token computation
+        if self._next_token_task and not self._next_token_task.done():
+            self._next_token_task.cancel()
+            try:
+                await self._next_token_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._next_token_task = None
+
         if hard:
             self._oai_did = ""
             log.warning("Session reset: all cookies and device state cleared")
@@ -220,10 +236,25 @@ class ChatGPTProvider(BaseProvider):
     # ------------------------------------------------------------------
 
     async def _ensure_device_id(self):
-        """Load the homepage to get oai-did cookie if we don't have one."""
+        """Use a HEAD request to get oai-did cookie — avoids downloading the full homepage HTML."""
         if self._oai_did:
             return
         session = await self._get_session()
+        try:
+            resp = await session.head(
+                f"{BASE_URL}/",
+                headers=self._base_headers(),
+                allow_redirects=True,
+            )
+            did = session.cookies.get("oai-did")
+            if did:
+                self._oai_did = did
+                log.info(f"Got oai-did via HEAD: {did}")
+                return
+        except Exception as e:
+            log.warning(f"HEAD request for device ID failed ({e}), falling back to GET")
+
+        # Fallback to GET if HEAD doesn't set the cookie (some CDN configs differ)
         resp = await session.get(
             f"{BASE_URL}/",
             headers=self._base_headers(),
@@ -231,10 +262,9 @@ class ChatGPTProvider(BaseProvider):
         did = session.cookies.get("oai-did")
         if did:
             self._oai_did = did
-            log.info(f"Got oai-did: {did}")
+            log.info(f"Got oai-did via GET: {did}")
         else:
-            # Fallback: generate a random UUID (server will reject it but
-            # the chat-requirements endpoint will give us a real one)
+            # Last resort: generate a random UUID
             self._oai_did = str(uuid.uuid4())
             log.warning("oai-did not in cookies, using generated UUID")
 
@@ -245,16 +275,20 @@ class ChatGPTProvider(BaseProvider):
     def _is_token_expired(self) -> bool:
         return (time.time() - self._token_fetched_at) > TOKEN_TTL_SECONDS
 
-    async def _refresh_chat_requirements(self):
+    async def _fetch_sentinel_headers(self) -> dict:
         """
-        POST /backend-anon/sentinel/chat-requirements to get a fresh
-        chat-requirements response, then solve PoW and build sentinel token.
+        Fetch chat-requirements, solve PoW and run Turnstile VM concurrently,
+        and return a fresh sentinel headers dict.
+
+        PoW solving and Turnstile VM execution both run in threads and are
+        dispatched in parallel via asyncio.gather — cutting token-generation
+        time roughly in half compared to sequential execution.
         """
         await self._ensure_device_id()
         session = await self._get_session()
 
-        # generate_requirements_token() returns (p_token, sid) — sid must be
-        # reused by generate_enforcement_token so both use the same config array.
+        # generate_requirements_token() returns (p_token, sid)
+        # sid must be reused by generate_enforcement_token (same config array).
         p_token, sid = generate_requirements_token()
 
         headers = {
@@ -270,54 +304,109 @@ class ChatGPTProvider(BaseProvider):
             json={"p": p_token},
         )
         resp.raise_for_status()
-        self._chat_req = resp.json()
-        log.info(f"chat-requirements response: {json.dumps(self._chat_req)}")
+        chat_req = resp.json()
+        log.info(f"chat-requirements response: {json.dumps(chat_req)}")
 
         # Update oai-did from response cookies if server issued a new one
         did = session.cookies.get("oai-did")
         if did:
             self._oai_did = did
 
-        # Solve proof-of-work if required
-        pow_data = self._chat_req.get("proofofwork", {})
-        if pow_data.get("required"):
-            seed = pow_data["seed"]
-            difficulty = pow_data["difficulty"]
-            log.info(f"Solving PoW: seed={seed!r} difficulty={difficulty!r}")
-            enforcement_token = await asyncio.to_thread(
-                generate_enforcement_token, seed, difficulty, sid
-            )
-        else:
-            enforcement_token = p_token
-
         from .sentinel.token_generator import execute_turnstile_vm
-        
-        turnstile_token = ""
-        turnstile = self._chat_req.get("turnstile", {})
-        if turnstile.get("required") and turnstile.get("dx"):
-            turnstile_token = execute_turnstile_vm(turnstile["dx"], p_token)
 
-        self._sentinel_headers = {
-            "Openai-Sentinel-Chat-Requirements-Token": self._chat_req.get("token", ""),
+        # Build coroutines for PoW and Turnstile VM — run them concurrently.
+        pow_data = chat_req.get("proofofwork", {})
+        turnstile = chat_req.get("turnstile", {})
+
+        async def _solve_pow():
+            if pow_data.get("required"):
+                seed = pow_data["seed"]
+                difficulty = pow_data["difficulty"]
+                log.info(f"Solving PoW: seed={seed!r} difficulty={difficulty!r}")
+                return await asyncio.to_thread(generate_enforcement_token, seed, difficulty, sid)
+            return p_token
+
+        async def _run_turnstile():
+            if turnstile.get("required") and turnstile.get("dx"):
+                return await asyncio.to_thread(execute_turnstile_vm, turnstile["dx"], p_token)
+            return ""
+
+        # Dispatch both CPU-bound tasks concurrently in thread pool
+        enforcement_token, turnstile_token = await asyncio.gather(
+            _solve_pow(),
+            _run_turnstile(),
+        )
+
+        sentinel_headers = {
+            "Openai-Sentinel-Chat-Requirements-Token": chat_req.get("token", ""),
             "Openai-Sentinel-Proof-Token": enforcement_token,
-            "Openai-Sentinel-Turnstile-Token": turnstile_token,
+            "Openai-Sentinel-Turnstile-Token": turnstile_token or "",
         }
-        self._token_fetched_at = time.time()
         log.info("Sentinel token generated successfully")
+        return sentinel_headers
+
+    async def _refresh_chat_requirements(self):
+        """
+        Refresh sentinel headers and prime the double-buffer.
+        After fetching the current token, immediately start computing the next
+        one in the background so it's ready before it's needed.
+        """
+        self._sentinel_headers = await self._fetch_sentinel_headers()
+        self._token_fetched_at = time.time()
+        # Start computing the next token in the background
+        self._schedule_next_token_prefetch()
+
+    def _schedule_next_token_prefetch(self):
+        """Fire-and-forget task to pre-compute the next sentinel token."""
+        if self._next_token_task and not self._next_token_task.done():
+            return  # Already computing
+        self._next_token_task = asyncio.create_task(self._prefetch_next_token())
+
+    async def _prefetch_next_token(self):
+        """Compute and store the next sentinel token without blocking requests."""
+        try:
+            next_headers = await self._fetch_sentinel_headers()
+            self._next_sentinel_headers = next_headers
+            log.info("Double-buffer: next sentinel token pre-computed and ready")
+        except Exception as e:
+            log.warning(f"Failed to pre-compute next sentinel token: {e}")
+            self._next_sentinel_headers = None
 
     # ------------------------------------------------------------------
     # Chat
     # ------------------------------------------------------------------
 
     async def ensure_ready(self):
-        """Ensure we have valid sentinel headers; refresh if expired."""
+        """
+        Ensure we have valid sentinel headers, using the double-buffer strategy.
+
+        If a pre-computed 'next' token is available, swap it in immediately
+        (zero wait) and start computing a new 'next' in the background.
+        If no pre-computed token is available (cold start or post-reset),
+        block and compute one now.
+        """
         async with self._lock:
-            if not getattr(self, "_sentinel_headers", None) or self._is_token_expired():
-                await self._refresh_chat_requirements()
+            if not self._sentinel_headers or self._is_token_expired():
+                # Check if we have a pre-computed next token to swap in
+                if self._next_sentinel_headers:
+                    log.info("Double-buffer swap: using pre-computed next sentinel token")
+                    self._sentinel_headers = self._next_sentinel_headers
+                    self._next_sentinel_headers = None
+                    self._token_fetched_at = time.time()
+                    # Immediately start computing the next one
+                    self._schedule_next_token_prefetch()
+                else:
+                    # Cold start or buffer miss — block and compute now
+                    await self._refresh_chat_requirements()
 
     async def start_background_tasks(self):
-        # Pre-initialize the HTTP session
+        # Pre-initialize the HTTP session and fetch the first sentinel token
         await self._get_session()
+        try:
+            await self._refresh_chat_requirements()
+            log.info("ChatGPT: initial sentinel token fetched and next token pre-compute started")
+        except Exception as e:
+            log.warning(f"ChatGPT: initial token pre-fetch failed (will retry on first request): {e}")
         self._bg_task = asyncio.create_task(self._maintain_session_loop())
 
     async def stop_background_tasks(self):
@@ -327,14 +416,30 @@ class ChatGPTProvider(BaseProvider):
                 await self._bg_task
             except asyncio.CancelledError:
                 pass
+        # Cancel any pending next-token prefetch
+        if self._next_token_task and not self._next_token_task.done():
+            self._next_token_task.cancel()
+            try:
+                await self._next_token_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def _maintain_session_loop(self):
-        """Periodically checks and refreshes the chat requirements in the background."""
+        """
+        Periodically ensures the double-buffer is healthy.
+        - If sentinel headers are expired, refreshes them (which also kicks off next-token prefetch)
+        - If next token slot is empty, schedules a prefetch
+        """
         while True:
             try:
                 async with self._lock:
-                    if not getattr(self, "_sentinel_headers", None) or self._is_token_expired():
+                    if not self._sentinel_headers or self._is_token_expired():
                         await self._refresh_chat_requirements()
+                    elif not self._next_sentinel_headers and (
+                        not self._next_token_task or self._next_token_task.done()
+                    ):
+                        # Buffer is empty — proactively fill it
+                        self._schedule_next_token_prefetch()
             except Exception as e:
                 log.error(f"ChatGPT background token refresh failed: {e}")
             await asyncio.sleep(10)
