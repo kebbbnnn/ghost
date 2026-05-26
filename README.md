@@ -122,6 +122,34 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8100/v1
 
 ---
 
+## Desktop GUI (All-in-One Mode)
+
+Instead of running the proxy server and chat client separately, you can launch
+GhostTunnel as a **desktop application** with a built-in web dashboard:
+
+```bash
+# Activate the virtual environment first
+source venv/bin/activate
+
+# Launch the desktop GUI
+python3 -m src.gui
+```
+
+This will:
+
+1. Auto-start the FastAPI proxy on `http://127.0.0.1:8100`
+2. Open a native desktop window (via [pywebview](https://pywebview.flowrl.com))
+   pointing at the built-in dashboard
+3. Provide a **Claude Login Helper** — log in to Claude directly from the GUI
+   (no CLI needed)
+
+> **Extra dependency:** `pywebview>=5.1` is already listed in `requirements.txt`.
+> If you haven't installed it yet, run `pip install pywebview`.
+
+When you close the window, the proxy server shuts down automatically.
+
+---
+
 ## Claude Setup
 
 Claude requires authenticated session cookies. Use the CLI tool to log in:
