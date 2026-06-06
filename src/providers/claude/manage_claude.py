@@ -4,11 +4,17 @@ import os
 from datetime import datetime, timezone
 from playwright.async_api import async_playwright
 
-ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), "accounts.json")
 try:
+    import sys
+    # Add project root to sys.path to ensure src can be imported
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, PROJECT_ROOT)
     from src.core.config import ACCOUNTS_FILE
 except ImportError:
-    pass  # Fallback to local path when run standalone
+    # Fallback to data directory at project root
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    ACCOUNTS_FILE = os.path.join(PROJECT_ROOT, "data", "accounts.json")
 
 
 async def extract_session_key(context):

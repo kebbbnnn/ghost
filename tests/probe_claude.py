@@ -7,7 +7,14 @@ import os
 import uuid
 from curl_cffi.requests import AsyncSession
 
-ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "providers", "claude", "accounts.json")
+try:
+    import sys
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, PROJECT_ROOT)
+    from src.core.config import ACCOUNTS_FILE
+except ImportError:
+    ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "accounts.json")
 BASE_URL = "https://claude.ai"
 
 def load_session_key():
