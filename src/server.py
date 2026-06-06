@@ -549,4 +549,5 @@ async def sse_events(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.server:app", host="0.0.0.0", port=8100, reload=False)
+    port = int(os.environ.get("PORT", 8100))
+    uvicorn.run("src.server:app", host="0.0.0.0", port=port, reload=False)

@@ -1,0 +1,14 @@
+# Render.com Blueprint — Free Tier Deployment
+services:
+  - type: web
+    name: ghosttunnel
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: GHOSTTUNNEL_ACCOUNTS_JSON
+        sync: false # Set securely via the Render Dashboard UI
+      - key: GHOSTTUNNEL_THREADS_JSON
+        value: "[]"
