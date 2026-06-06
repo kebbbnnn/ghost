@@ -22,8 +22,8 @@ from pydantic import BaseModel
 import time
 
 SERVER_START_TIME = int(time.time())
-ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), "providers/claude/accounts.json")
-THREADS_FILE = os.path.join(os.path.dirname(__file__), "threads.json")
+
+from src.core.config import ACCOUNTS_FILE, THREADS_FILE
 listeners = []
 
 async def broadcast_event(event_type: str, data: dict):

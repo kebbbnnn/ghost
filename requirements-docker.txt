@@ -1,0 +1,11 @@
+# Same as requirements.txt but without pywebview (requires GTK/Qt display server)
+fastapi>=0.110.0
+python-multipart>=0.0.6
+uvicorn[standard]>=0.27.0
+curl-cffi>=0.6.2
+httpx[http2]>=0.27.0
+pydantic>=2.6.0
+python-dotenv>=1.0.0
+Pillow>=10.0.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0

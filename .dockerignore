@@ -1,0 +1,39 @@
+# Virtual environments
+venv/
+venv_playwright/
+
+# Node modules (rebuilt in container)
+node_modules/
+
+# Research / tooling
+research/
+agent/
+tests/
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.claude/
+.gemini/
+.DS_Store
+*.code-workspace
+
+# Runtime data (mounted at runtime)
+data/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore

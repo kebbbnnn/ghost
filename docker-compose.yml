@@ -1,0 +1,12 @@
+services:
+  ghosttunnel:
+    build: .
+    container_name: ghosttunnel
+    ports:
+      - "8100:8100"
+    volumes:
+      # Mount the data directory for persistent runtime state
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

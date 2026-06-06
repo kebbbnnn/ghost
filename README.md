@@ -132,7 +132,7 @@ GhostTunnel as a **desktop application** with a built-in web dashboard:
 source venv/bin/activate
 
 # Launch the desktop GUI
-python3 -m src.gui
+python3 examples/gui.py
 ```
 
 This will:

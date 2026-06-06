@@ -1,0 +1,10 @@
+{
+  "accounts": [
+    {
+      "email": "your-email@example.com",
+      "sessionKey": "sk-ant-sid01-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "added_at": "2024-01-01T00:00:00+00:00",
+      "status": "active"
+    }
+  ]
+}

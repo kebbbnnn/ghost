@@ -1,8 +1,13 @@
+import sys
+import os
+
+# Add project root to sys.path so that we can import src.server when running from examples/
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import socket
 import subprocess
 import threading
 import time
-import os
 import uvicorn
 import webview
 from src.server import app

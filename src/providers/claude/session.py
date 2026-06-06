@@ -19,7 +19,8 @@ BASE_URL = "https://claude.ai"
 class ClaudeProvider(BaseProvider):
     def __init__(self, rotator_file_path: str = None):
         if rotator_file_path is None:
-            rotator_file_path = os.path.join(os.path.dirname(__file__), "accounts.json")
+            from src.core.config import ACCOUNTS_FILE
+            rotator_file_path = ACCOUNTS_FILE
         self.rotator = AccountRotator(rotator_file_path)
         # Cache: {email: {org_id: str, conv_uuid: str}}
         # Reuse conversations until they error out or context limit is hit.

@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 from playwright.async_api import async_playwright
 
 ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), "accounts.json")
+try:
+    from src.core.config import ACCOUNTS_FILE
+except ImportError:
+    pass  # Fallback to local path when run standalone
 
 
 async def extract_session_key(context):
