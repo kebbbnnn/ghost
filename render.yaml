@@ -1,4 +1,5 @@
 # Render.com Blueprint — Free Tier Deployment
+blueprintName: ghosttunnel
 services:
   - type: web
     name: ghosttunnel
@@ -12,3 +13,8 @@ services:
         sync: false # Set securely via the Render Dashboard UI
       - key: GHOSTTUNNEL_THREADS_JSON
         value: "[]"
+      - key: HTTP_PROXY
+        sync: false # Set custom proxy if Cloudflare Turnstile blocks datacenter IPs
+      - key: HTTPS_PROXY
+        sync: false # Set custom proxy if Cloudflare Turnstile blocks datacenter IPs
+
