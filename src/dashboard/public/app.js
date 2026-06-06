@@ -5,6 +5,7 @@ let currentPollInterval = null;
 let eventSource = null;
 let activeThreadId = null;
 let attachedImages = []; // Array of base64 data URIs
+let attachedVideo = null; // { file: File, thumbnail: string (base64), duration: string, name: string }
 
 // ---------------------------------------------------------------------------
 // 🛠️ Utilities
@@ -347,6 +348,7 @@ function renderChatMessages() {
         welcome.style.display = 'flex';
         // Reset inputs
         attachedImages = [];
+        attachedVideo = null;
         document.getElementById('attachment-previews-bar').style.display = 'none';
         document.getElementById('attachment-previews-bar').innerHTML = '';
         return;
@@ -396,6 +398,84 @@ function renderChatMessages() {
     area.scrollTop = area.scrollHeight;
 }
 
+// ---------------------------------------------------------------------------
+// 🎬 Video Attachment Handling
+// ---------------------------------------------------------------------------
+function attachVideoFile(file) {
+    // Clear any existing image attachments (mutual exclusion)
+    attachedImages = [];
+
+    // Create a temporary video element to extract thumbnail and duration
+    const videoEl = document.createElement('video');
+    videoEl.preload = 'metadata';
+    videoEl.muted = true;
+
+    const objectUrl = URL.createObjectURL(file);
+    videoEl.src = objectUrl;
+
+    videoEl.onloadedmetadata = () => {
+        const duration = videoEl.duration;
+        const durationStr = formatDuration(Math.floor(duration));
+
+        // Seek to 1 second (or start) to get a representative thumbnail
+        videoEl.currentTime = Math.min(1, duration / 2);
+    };
+
+    videoEl.onseeked = () => {
+        // Draw the current frame to a canvas for thumbnail
+        const canvas = document.createElement('canvas');
+        const maxThumb = 320;
+        let w = videoEl.videoWidth;
+        let h = videoEl.videoHeight;
+
+        if (w > maxThumb || h > maxThumb) {
+            if (w > h) {
+                h = Math.round((h * maxThumb) / w);
+                w = maxThumb;
+            } else {
+                w = Math.round((w * maxThumb) / h);
+                h = maxThumb;
+            }
+        }
+
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(videoEl, 0, 0, w, h);
+
+        const thumbnail = canvas.toDataURL('image/jpeg', 0.7);
+        const durationStr = formatDuration(Math.floor(videoEl.duration));
+
+        attachedVideo = {
+            file: file,
+            thumbnail: thumbnail,
+            duration: durationStr,
+            name: file.name
+        };
+
+        URL.revokeObjectURL(objectUrl);
+        renderAttachmentPreviews();
+    };
+
+    videoEl.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        console.error('Failed to load video for thumbnail extraction');
+        // Still attach without thumbnail
+        attachedVideo = {
+            file: file,
+            thumbnail: null,
+            duration: '?',
+            name: file.name
+        };
+        renderAttachmentPreviews();
+    };
+}
+
+function removeVideoAttachment() {
+    attachedVideo = null;
+    renderAttachmentPreviews();
+}
+
 // Image Loading and drag/drop
 function addImageAttachment(base64Uri) {
     if (attachedImages.length >= 3) {
@@ -415,23 +495,53 @@ function renderAttachmentPreviews() {
     const bar = document.getElementById('attachment-previews-bar');
     if (!bar) return;
 
-    if (attachedImages.length === 0) {
+    if (attachedImages.length === 0 && !attachedVideo) {
         bar.style.display = 'none';
         bar.innerHTML = '';
         return;
     }
 
     bar.style.display = 'flex';
-    bar.innerHTML = attachedImages.map((uri, idx) => `
+    let html = '';
+
+    // Video preview (if attached)
+    if (attachedVideo) {
+        const thumbStyle = attachedVideo.thumbnail
+            ? `background-image: url('${attachedVideo.thumbnail}')`
+            : `background: var(--bg-tertiary)`;
+        html += `
+            <div class="preview-thumbnail video-preview" style="${thumbStyle}">
+                <div class="video-badge">🎬 ${attachedVideo.duration}</div>
+                <div class="video-name">${attachedVideo.name}</div>
+                <button class="remove-btn" onclick="removeVideoAttachment()">×</button>
+            </div>
+        `;
+    }
+
+    // Image previews
+    html += attachedImages.map((uri, idx) => `
         <div class="preview-thumbnail" style="background-image: url('${uri}')">
             <button class="remove-btn" onclick="removeImageAttachment(${idx})">×</button>
         </div>
     `).join('');
+
+    bar.innerHTML = html;
 }
 
 function handleFileSelect(files) {
     for (let file of files) {
+        if (file.type.startsWith('video/')) {
+            // Video attachment (mutual exclusion with images)
+            attachVideoFile(file);
+            return; // Only one video at a time
+        }
         if (!file.type.startsWith('image/')) continue;
+
+        // Image attachment — clear any video first (mutual exclusion)
+        if (attachedVideo) {
+            attachedVideo = null;
+        }
+
         const reader = new FileReader();
         reader.onload = (e) => {
             const img = new Image();
@@ -461,7 +571,7 @@ function handleFileSelect(files) {
                     addImageAttachment(compressedBase64);
                 } catch (err) {
                     console.error("Failed to compress image:", err);
-                    addImageAttachment(e.target.result); // Fallback to raw if canvas export fails
+                    addImageAttachment(e.target.result);
                 }
             };
             img.src = e.target.result;
@@ -474,7 +584,7 @@ function handleFileSelect(files) {
 async function sendMessage() {
     const textarea = document.getElementById('chat-input');
     const text = textarea.value.trim();
-    if (!text && attachedImages.length === 0) return;
+    if (!text && attachedImages.length === 0 && !attachedVideo) return;
 
     let threads = getThreads();
     let current = threads.find(t => t.id === activeThreadId);
@@ -497,6 +607,118 @@ async function sendMessage() {
         renderThreadsSidebar();
     }
 
+    const selectModel = document.getElementById('playground-model').value;
+    current.model = selectModel;
+
+    // --- VIDEO PATH ---
+    if (attachedVideo) {
+        // Store user message with a video marker for display
+        const displayContent = `\uD83C\uDFAC [Video: ${attachedVideo.name}]\n\n${text}`;
+        const userMsg = { role: 'user', content: displayContent };
+        current.messages.push(userMsg);
+
+        if (current.messages.length === 1 && text) {
+            current.title = text.length > 25 ? text.slice(0, 22) + '...' : text;
+        }
+
+        // Clear UI state
+        const videoFile = attachedVideo.file;
+        textarea.value = '';
+        attachedVideo = null;
+        attachedImages = [];
+        renderAttachmentPreviews();
+        saveThreads(threads);
+        renderThreadsSidebar();
+        renderChatMessages();
+
+        // Append streaming skeleton bubble with video processing indicator
+        const area = document.getElementById('chat-messages-area');
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble assistant';
+        bubble.innerHTML = `
+            <div class="message-avatar">A</div>
+            <div class="message-content">
+                <div class="video-processing-indicator">
+                    <div class="processing-spinner"></div>
+                    <span>Processing video frames...</span>
+                </div>
+            </div>
+        `;
+        area.appendChild(bubble);
+        area.scrollTop = area.scrollHeight;
+
+        const bubbleContent = bubble.querySelector('.message-content');
+        let fullResponse = '';
+
+        try {
+            // Build FormData for video upload
+            const formData = new FormData();
+            formData.append('video', videoFile);
+            formData.append('prompt', text);
+            formData.append('model', selectModel);
+            if (current.conversationId) formData.append('conversation_id', current.conversationId);
+            if (current.parentMessageId) formData.append('parent_message_id', current.parentMessageId);
+            // Send prior messages as history (exclude the video message we just added)
+            const priorMessages = current.messages.slice(0, -1);
+            formData.append('history', JSON.stringify(priorMessages));
+
+            const response = await fetch('/api/video/chat', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`HTTP ${response.status}: ${errText}`);
+            }
+
+            // Stream SSE response (identical to normal chat)
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+
+                for (let line of lines) {
+                    line = line.trim();
+                    if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            if (data.conversation_id) current.conversationId = data.conversation_id;
+                            if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
+                            const contentChunk = data.choices?.[0]?.delta?.content;
+                            if (contentChunk) {
+                                fullResponse += contentChunk;
+                                bubbleContent.innerHTML = parseMarkdown(fullResponse);
+                                area.scrollTop = area.scrollHeight;
+                            }
+                        } catch (err) {
+                            // ignore malformed lines
+                        }
+                    }
+                }
+            }
+
+            if (fullResponse) {
+                current.messages.push({ role: 'assistant', content: fullResponse });
+                saveThreads(threads);
+                renderChatMessages();
+            } else {
+                bubble.remove();
+            }
+        } catch (e) {
+            console.error(e);
+            bubbleContent.innerHTML = `<span style="color: var(--danger-color); font-weight: 500;">Video Processing Failed: ${e.message}</span>`;
+            logToConsole(`Video chat failure: ${e.message}`, 'error');
+        }
+        return;
+    }
+
+    // --- NORMAL IMAGE/TEXT PATH ---
     // Build standard message payload content
     let content = text;
     if (attachedImages.length > 0) {
@@ -523,10 +745,6 @@ async function sendMessage() {
     saveThreads(threads);
     renderThreadsSidebar();
     renderChatMessages();
-
-    // Prepare completions call
-    const selectModel = document.getElementById('playground-model').value;
-    current.model = selectModel;
 
     // Build request body
     const payload = {

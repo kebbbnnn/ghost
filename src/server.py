@@ -6,6 +6,7 @@ Endpoints:
   GET  /v1/models
   GET  /v1/models/{model_id}
   POST /v1/chat/completions
+  POST /api/video/chat
 """
 import logging
 import json
@@ -13,7 +14,7 @@ import asyncio
 import os
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -42,6 +43,7 @@ async def broadcast_event(event_type: str, data: dict):
 from contextlib import asynccontextmanager
 from src.providers import get_all_models, get_provider_for_model, PROVIDERS
 from src.core.exceptions import RateLimitError
+from src.core.video_processor import extract_keyframes
 from src.converters.anthropic import (
     anthropic_to_openai_request,
     openai_to_anthropic_stream,
@@ -194,6 +196,114 @@ async def chat_completions(req: ChatCompletionRequest):
             })
             raise HTTPException(status_code=500, detail=str(e))
 
+
+
+# ---------------------------------------------------------------------------
+# Video Chat (All-in-one: upload + extract + complete)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/video/chat")
+async def video_chat(
+    video: UploadFile = File(...),
+    prompt: str = Form(...),
+    model: str = Form("auto"),
+    conversation_id: str = Form(None),
+    parent_message_id: str = Form(None),
+    history: str = Form("[]"),
+):
+    """All-in-one video understanding endpoint.
+
+    Accepts a video file + prompt via multipart form data.
+    Extracts keyframes server-side using OpenCV + pHash deduplication,
+    constructs a timestamped multi-image message, and streams the
+    model's response back as SSE.
+    """
+    # Validate content type
+    content_type = video.content_type or ""
+    if not content_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail=f"Expected a video file, got '{content_type}'")
+
+    # Read video bytes
+    video_bytes = await video.read()
+    if len(video_bytes) > 100 * 1024 * 1024:  # 100MB limit
+        raise HTTPException(status_code=413, detail="Video file too large (max 100MB)")
+
+    log.info("Video chat: received %s (%.1f MB), model=%s", video.filename, len(video_bytes) / 1e6, model)
+
+    # Extract keyframes in a thread pool (CPU-bound OpenCV work)
+    try:
+        keyframes = await asyncio.to_thread(extract_keyframes, video_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log.exception("Video frame extraction failed")
+        raise HTTPException(status_code=500, detail=f"Frame extraction failed: {e}")
+
+    if not keyframes:
+        raise HTTPException(status_code=400, detail="No keyframes could be extracted from the video.")
+
+    log.info("Extracted %d keyframes from video", len(keyframes))
+
+    # Build the user message content array with timestamped frames
+    content_parts = []
+    for kf in keyframes:
+        content_parts.append({"type": "text", "text": f"[Frame at {kf['timestamp']}]"})
+        content_parts.append({"type": "image_url", "image_url": {"url": kf["base64"]}})
+    content_parts.append({"type": "text", "text": prompt})
+
+    user_message = {"role": "user", "content": content_parts}
+
+    # Parse prior conversation history
+    try:
+        prior_messages = json.loads(history)
+    except (json.JSONDecodeError, TypeError):
+        prior_messages = []
+
+    messages = prior_messages + [user_message]
+
+    # Route to provider
+    provider = get_provider_for_model(model)
+    if not provider:
+        raise HTTPException(status_code=400, detail=f"No provider supports model '{model}'")
+
+    request_id = str(time.time())
+
+    # Stream the response (same SSE format as /v1/chat/completions)
+    async def video_stream_generator():
+        await broadcast_event("request_start", {
+            "id": request_id,
+            "model": model,
+            "stream": True,
+            "messages_count": len(messages),
+            "video": True,
+            "keyframes": len(keyframes),
+        })
+        token_count = 0
+        try:
+            async for chunk in provider.stream_chat(messages, model, conversation_id, parent_message_id):
+                token_count += 1
+                yield chunk
+        except Exception as e:
+            await broadcast_event("request_error", {
+                "id": request_id,
+                "error": str(e),
+            })
+            raise e
+        finally:
+            await broadcast_event("request_end", {
+                "id": request_id,
+                "tokens": token_count,
+            })
+
+    return StreamingResponse(
+        video_stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

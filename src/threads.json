@@ -1,5 +1,77 @@
 [
   {
+    "id": "thread_1780639662205",
+    "model": "auto",
+    "title": "hello",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello"
+      },
+      {
+        "role": "assistant",
+        "content": "Hello! How can I help you today? \ud83d\ude0a"
+      }
+    ],
+    "conversationId": "6a2267b2-4188-83ea-8740-cad639145659",
+    "parentMessageId": null,
+    "created": 1780639662205
+  },
+  {
+    "id": "thread_1779945148909",
+    "model": "auto",
+    "title": "describe the bug happe...",
+    "messages": [
+      {
+        "role": "user",
+        "content": "\ud83c\udfac [Video: Simulator Screen Recording - iPhone 17 Pro - 2026-05-28 at 12.57.19.mov]\n\ndescribe the bug happened when we scroll the search test dropdown"
+      },
+      {
+        "role": "assistant",
+        "content": "From the screenshots you provided, the bug seems to be happening in the **search test dropdown** of your app. Here\u2019s what I observe:\n\n1. **Dropdown items get duplicated or not refreshed correctly**  \n   - In frames 4\u20137, the dropdown initially shows the right set of items (like `2D Biophysical Scoring Ultrasound`, `2D Congenital Anomaly Ultrasound`, etc.).  \n   - When you scroll, some items appear disabled or partially duplicated (e.g., `2D Congenital Anomaly Ultrasound` becomes greyed out in frame 7).\n\n2. **Dropdown reset/scroll issue**  \n   - In frame 8, after scrolling or reopening the dropdown, it shows a completely different set of items (`Ankle-Brachial Index`, `Appendix Ultrasound`\u2026), which suggests that the dropdown might be **resetting its data source incorrectly** or fetching a new list mid-scroll.\n\n3. **Keyboard interaction problem**  \n   - The keyboard is visible during scrolling (frames 3\u20137), and the dropdown list seems to **not account for the keyboard height**, leading to possible clipping or partial visibility of items when scrolling.\n\n**Summary of the bug:**  \n- The dropdown list for test search **does not maintain consistent data** while scrolling.  \n- Items appear **duplicated, disabled, or change unexpectedly** mid-scroll.  \n- Keyboard overlay might interfere with proper rendering or scroll behavior.  \n\nThis likely points to an **issue in the dropdown\u2019s state management or data binding**\u2014for example, the list being rebuilt on every scroll event or on input focus, rather than maintaining a stable dataset.\n\nIf you want, I can provide a **step-by-step debugging checklist** specifically for this dropdown issue in React Native or Flutter (whichever you are using). This can help isolate whether the problem is **UI rendering, state management, or keyboard handling**. Do you want me to do that?"
+      }
+    ],
+    "conversationId": "6a17cf2b-8850-83ea-9817-6f7072c52a7e",
+    "parentMessageId": null,
+    "created": 1779945148909
+  },
+  {
+    "id": "thread_1779944728027",
+    "model": "auto",
+    "title": "describe what\u2019s happen...",
+    "messages": [
+      {
+        "role": "user",
+        "content": "\ud83c\udfac [Video: Simulator Screen Recording - iPhone 17 Pro - 2026-05-28 at 12.57.19.mov]\n\ndescribe what\u2019s happening in the video"
+      },
+      {
+        "role": "assistant",
+        "content": "The video shows a user interacting with the mobile app for \ue200entity\ue202[\"company\",\"Hi-Precision Diagnostics\",\"Philippines\"]\ue201, specifically testing the \u201cWhat test do you need?\u201d search section on the home screen.\n\nHere\u2019s the sequence of actions:\n\n1. **Initial screen**\n   - The app home page is visible with shortcut icons such as:\n     - Online Results\n     - Home Service\n     - Forms\n     - Test Directory\n     - Locations\n     - Doctor\u2019s Directory\n     - Price Inquiry\n     - HMO Approval\n     - Accredited HMOs\n     - Vaccination Records\n     - News\n   - Below these icons is a search area labeled \u201cWhat test do you need?\u201d with a search input field.\n\n2. **User taps the search field**\n   - The on-screen keyboard appears.\n   - The cursor is placed inside the \u201cSearch test name\u201d field.\n\n3. **Autocomplete/search results appear**\n   - A dropdown list of medical tests appears above the search box even though no visible text is entered.\n   - The list includes items such as:\n     - \u201c2D Biophysical Scoring Ultrasound\u201d\n     - \u201c2D Biophysical Scoring Ultrasound (OB Sono)\u201d\n     - \u201c2D Congenital Anomaly Ultrasound\u201d\n     - \u201c2D Echo With Doppler (Adult)\u201d\n     - \u201c2D Echo With Doppler (Fetal)\u201d\n\n4. **Dropdown behavior changes**\n   - The results briefly disappear and reappear multiple times while the keyboard remains open.\n   - At one point, the dropdown scrolls slightly, revealing additional entries.\n   - Near the end, a different section of the test list is shown, including:\n     - \u201cAnkle-Brachial Index\u201d\n     - \u201cAppendix Ultrasound\u201d\n     - \u201cArterial Duplex Lower Extremities\u201d\n     - \u201cArterial Duplex Upper Extremities\u201d\n\n5. **Overall interaction**\n   - The clip appears to demonstrate or test the search/autocomplete functionality of the app\u2019s medical test directory.\n   - No test is selected and no text entry is clearly visible during the recording."
+      }
+    ],
+    "conversationId": "6a17cd4d-50f4-83ea-a49e-63f13bcafd70",
+    "parentMessageId": null,
+    "created": 1779944728028
+  },
+  {
+    "id": "thread_1779848583062",
+    "model": "auto",
+    "title": "describe what\u2019s happen...",
+    "messages": [
+      {
+        "role": "user",
+        "content": "\ud83c\udfac [Video: 6981614-hd_1920_1080_30fps.mp4]\n\ndescribe what\u2019s happening in the video please"
+      },
+      {
+        "role": "assistant",
+        "content": "The video shows a glass hourglass filled with sparkling gold sand or glitter on a white table against a plain white background.\n\nAt the start, the hourglass is upright with most of the glitter settled in the bottom chamber. A person\u2019s hand enters from the right side, grasps the narrow middle section, lifts the hourglass, and flips it upside down.\n\nAfter being turned over, the glitter begins flowing steadily through the narrow neck from the upper chamber into the lower chamber. Over the next several seconds, the stream continues continuously, forming a growing cone-shaped pile in the bottom half while the amount of glitter in the top half gradually decreases.\n\nThe camera remains still throughout, focusing closely on the hourglass and the flowing glitter."
+      }
+    ],
+    "conversationId": "6a1656b9-e3f4-83ea-9ee3-a80bf93cbcdb",
+    "parentMessageId": null,
+    "created": 1779848583062
+  },
+  {
     "id": "thread_1779613025098",
     "model": "auto",
     "title": "Hello",

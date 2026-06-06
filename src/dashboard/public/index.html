@@ -166,15 +166,15 @@
 
                         <!-- Chat Input Tray -->
                         <div class="chat-input-area">
-                            <button class="attach-btn" id="attach-file-btn" title="Attach local image file">🖼️</button>
-                            <textarea class="chat-textarea" id="chat-input" placeholder="Type a message... (Shift + Enter for new lines, drag & drop images here)"></textarea>
+                            <button class="attach-btn" id="attach-file-btn" title="Attach image or video file">📎</button>
+                            <textarea class="chat-textarea" id="chat-input" placeholder="Type a message... (Shift + Enter for new lines, drag & drop images/videos here)"></textarea>
                             <button class="send-btn" id="send-chat-btn">Send</button>
                         </div>
                     </div>
                 </div>
 
                 <!-- Hidden inputs for file loading -->
-                <input type="file" id="hidden-file-input" accept="image/*" style="display: none;" multiple>
+                <input type="file" id="hidden-file-input" accept="image/*,video/*" style="display: none;" multiple>
             </section>
 
             <!-- ⚙️ Settings Tab -->
