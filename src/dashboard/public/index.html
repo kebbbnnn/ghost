@@ -87,9 +87,6 @@
                             <div class="fork-line" id="line-proxy-gemini">
                                 <span class="fork-label">Gemini</span>
                             </div>
-                            <div class="fork-line" id="line-proxy-claude">
-                                <span class="fork-label">Claude</span>
-                            </div>
                         </div>
                         <div class="schematic-fork-destinations">
                             <div class="schematic-node mini" id="node-chatgpt">
@@ -99,10 +96,6 @@
                             <div class="schematic-node mini" id="node-gemini">
                                 <div class="node-icon">🔵</div>
                                 <span class="node-label">Gemini (Anon)</span>
-                            </div>
-                            <div class="schematic-node mini" id="node-claude">
-                                <div class="node-icon">🟠</div>
-                                <span class="node-label">Claude (Auth)</span>
                             </div>
                         </div>
                     </div>
@@ -142,9 +135,6 @@
                                 <select id="playground-model">
                                     <option value="auto">ChatGPT (auto)</option>
                                     <option value="gemini">Gemini (gemini)</option>
-                                    <option value="claude-3-5-sonnet-20241022">Claude Sonnet (claude-3.5)</option>
-                                    <option value="claude-3-opus-20240229">Claude Opus (claude-3)</option>
-                                    <option value="claude-3-5-haiku-20241022">Claude Haiku (claude-3.5-haiku)</option>
                                 </select>
                             </div>
                         </div>
@@ -184,32 +174,6 @@
                 </header>
 
                 <div class="settings-grid">
-                    <!-- Claude Rotator Section -->
-                    <div class="settings-card glass-panel full-width">
-                        <div class="card-header">
-                            <h2>Claude Account Rotation Pool</h2>
-                            <button class="btn btn-primary" id="btn-add-claude">Add Claude Account</button>
-                        </div>
-                        <p class="settings-description">Claude routing requires cookies. Add multiple accounts to automatically bypass rate limits through circular rotation.</p>
-                        
-                        <div class="settings-table-container">
-                            <table class="settings-table">
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Email Address</th>
-                                        <th>Added Date</th>
-                                        <th>Rotation Status</th>
-                                        <th>Session Key</th>
-                                        <th>Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="claude-accounts-tbody">
-                                    <!-- Populated via Javascript -->
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
 
                     <!-- Config options -->
                     <div class="settings-card glass-panel">

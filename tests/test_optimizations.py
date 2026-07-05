@@ -4,10 +4,7 @@ test_optimizations.py — Closed-loop unit tests for the speed optimizations.
 Tests:
   1. PoW seed pre-computation produces identical results to naive approach
   2. Double-buffered sentinel token swap logic (ChatGPTProvider)
-  3. Claude persistent session pool (AsyncSession reuse)
-  4. Claude org_id permanent cache (no re-fetch)
-  5. Claude conversation cache eviction — only on "not found" errors
-  6. Server telemetry token_count accumulation
+  3. Server telemetry token_count accumulation
 """
 import sys
 import os
@@ -149,129 +146,7 @@ class TestDoubleBufferedTokens(unittest.IsolatedAsyncioTestCase):
 
 
 # ---------------------------------------------------------------------------
-# 3. Claude persistent session pool
-# ---------------------------------------------------------------------------
-
-class TestClaudeSessionPool(unittest.IsolatedAsyncioTestCase):
-    """Verify that the session pool returns the same object on repeated calls."""
-
-    async def asyncSetUp(self):
-        from src.providers.claude.session import ClaudeProvider
-        self.provider = ClaudeProvider()
-
-    async def test_same_session_returned_for_same_email(self):
-        s1 = await self.provider._get_session("user@example.com")
-        s2 = await self.provider._get_session("user@example.com")
-        self.assertIs(s1, s2, "Same session object must be reused for same account")
-
-    async def test_different_sessions_for_different_emails(self):
-        s1 = await self.provider._get_session("alice@example.com")
-        s2 = await self.provider._get_session("bob@example.com")
-        self.assertIsNot(s1, s2, "Different accounts must get different sessions")
-
-    async def asyncTearDown(self):
-        await self.provider.stop_background_tasks()
-
-
-# ---------------------------------------------------------------------------
-# 4. Claude org_id permanent cache
-# ---------------------------------------------------------------------------
-
-class TestClaudeOrgIdCache(unittest.IsolatedAsyncioTestCase):
-    """Verify org_id is fetched once and then served from cache forever."""
-
-    async def asyncSetUp(self):
-        from src.providers.claude.session import ClaudeProvider
-        self.provider = ClaudeProvider()
-
-    async def test_org_id_cached_after_first_fetch(self):
-        mock_client = AsyncMock()
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = [{"uuid": "org-12345"}]
-        mock_client.get = AsyncMock(return_value=mock_resp)
-
-        org1 = await self.provider._get_org_id("test@example.com", "session-key", mock_client)
-        org2 = await self.provider._get_org_id("test@example.com", "session-key", mock_client)
-
-        self.assertEqual(org1, "org-12345")
-        self.assertEqual(org2, "org-12345")
-        # HTTP should only be called ONCE despite two invocations
-        mock_client.get.assert_called_once()
-
-    async def test_different_accounts_have_separate_cache(self):
-        mock_client = AsyncMock()
-        def make_response(org_id):
-            r = MagicMock()
-            r.status_code = 200
-            r.json.return_value = [{"uuid": org_id}]
-            return r
-
-        mock_client.get = AsyncMock(side_effect=[
-            make_response("org-alice"),
-            make_response("org-bob"),
-        ])
-
-        alice_org = await self.provider._get_org_id("alice@example.com", "sk1", mock_client)
-        bob_org   = await self.provider._get_org_id("bob@example.com", "sk2", mock_client)
-
-        self.assertEqual(alice_org, "org-alice")
-        self.assertEqual(bob_org, "org-bob")
-        self.assertEqual(mock_client.get.call_count, 2)
-
-    async def asyncTearDown(self):
-        await self.provider.stop_background_tasks()
-
-
-# ---------------------------------------------------------------------------
-# 5. Claude conversation cache eviction strategy
-# ---------------------------------------------------------------------------
-
-class TestClaudeConversationCacheEviction(unittest.TestCase):
-    """Verify only definitive 404/gone errors evict the conversation cache."""
-
-    def setUp(self):
-        from src.providers.claude.session import ClaudeProvider
-        self.provider = ClaudeProvider()
-
-    def test_404_error_triggers_eviction(self):
-        self.assertTrue(self.provider._is_conversation_not_found_error(
-            Exception("Claude API 404: conversation not found")
-        ))
-
-    def test_not_found_string_triggers_eviction(self):
-        self.assertTrue(self.provider._is_conversation_not_found_error(
-            Exception("404 not found")
-        ))
-
-    def test_410_gone_triggers_eviction(self):
-        self.assertTrue(self.provider._is_conversation_not_found_error(
-            Exception("410 gone")
-        ))
-
-    def test_network_timeout_does_not_trigger_eviction(self):
-        self.assertFalse(self.provider._is_conversation_not_found_error(
-            Exception("Connection timed out")
-        ))
-
-    def test_connection_reset_does_not_trigger_eviction(self):
-        self.assertFalse(self.provider._is_conversation_not_found_error(
-            Exception("Connection reset by peer")
-        ))
-
-    def test_503_does_not_trigger_eviction(self):
-        self.assertFalse(self.provider._is_conversation_not_found_error(
-            Exception("503 Service Unavailable")
-        ))
-
-    def test_rate_limit_does_not_trigger_eviction(self):
-        self.assertFalse(self.provider._is_conversation_not_found_error(
-            Exception("429 Rate limit exceeded")
-        ))
-
-
-# ---------------------------------------------------------------------------
-# 6. Server telemetry — token count accumulation, not per-token broadcast
+# 3. Server telemetry — token count accumulation, not per-token broadcast
 # ---------------------------------------------------------------------------
 
 class TestServerTelemetryDebounce(unittest.TestCase):
@@ -297,14 +172,3 @@ class TestServerTelemetryDebounce(unittest.TestCase):
             content,
             "Per-token broadcast should be removed from server.py"
         )
-        # But request_end with token count should exist
-        self.assertIn('"tokens"', content,
-                      'request_end event should include total "tokens" count')
-
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

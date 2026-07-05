@@ -41,7 +41,7 @@ WORKDIR /app
 COPY src/ ./src/
 
 # Create data directories (for volume mounts)
-RUN mkdir -p /app/src/providers/claude
+RUN mkdir -p /app/data
 
 # Expose the API port
 EXPOSE 8100

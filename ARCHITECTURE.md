@@ -1,6 +1,6 @@
 # GhostTunnel Multi-Platform Proxy — Architecture
 
-> **Purpose:** This document outlines the high-level architecture of GhostTunnel, a modular, multi-platform proxy that exposes a unified OpenAI-compatible API while sandboxing individual AI provider implementations (ChatGPT, Claude, Gemini, etc.).
+> **Purpose:** This document outlines the high-level architecture of GhostTunnel, a modular, multi-platform proxy that exposes a unified OpenAI-compatible API while sandboxing individual AI provider implementations (ChatGPT, Gemini, etc.).
 
 ---
 
@@ -39,12 +39,8 @@ Client (curl / chat.py / any OpenAI SDK)
          │    │   └── sentinel/                        │
          │    └────────────────────────────────────────┘
          │
-         ├──► ┌────────────────────────────────────────┐
-         │    │ src/providers/claude/ (Future)         │  ◄── Claude Sandbox
-         │    └────────────────────────────────────────┘
-         │
          └──► ┌────────────────────────────────────────┐
-              │ src/providers/gemini/ (Future)         │  ◄── Gemini Sandbox
+              │ src/providers/gemini/                  │  ◄── Gemini Sandbox
               └────────────────────────────────────────┘
 ```
 

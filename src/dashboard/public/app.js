@@ -93,82 +93,9 @@ function updateDashboard(data) {
     
     const uptimeSecs = Math.floor(Date.now() / 1000) - data.start_time;
     document.getElementById('uptime').textContent = formatDuration(uptimeSecs);
-
-    // Settings tab: Claude accounts tbody
-    const tbody = document.getElementById('claude-accounts-tbody');
-    const rawAccounts = data.raw_accounts || [];
-    const activeAccounts = data.claude?.accounts || [];
-    const cooldowns = data.claude?.cooldowns || {};
-    const currentIndex = data.claude?.current_index || 0;
-
-    if (!tbody) return;
-
-    if (rawAccounts.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" class="loading-state">No Claude accounts configured. Click "Add Claude Account" above to connect.</td></tr>`;
-        return;
-    }
-
-    let html = '';
-    const now = Math.floor(Date.now() / 1000);
-
-    rawAccounts.forEach((acc, index) => {
-        const email = acc.email;
-        const addedAt = acc.added_at ? new Date(acc.added_at).toLocaleString() : 'N/A';
-        const rawKey = acc.sessionKey || '';
-        const maskedKey = rawKey.length > 12 ? `${rawKey.slice(0, 8)}...${rawKey.slice(-4)}` : rawKey;
-        
-        let statusText = 'Inactive';
-        let statusStyle = 'color: var(--text-muted); font-weight: 500;';
-
-        // Check if active and cooldown status
-        const isActive = activeAccounts.some(a => a.email === email);
-        if (isActive) {
-            statusText = 'Active / Available';
-            statusStyle = 'color: var(--success-color); font-weight: 600;';
-
-            if (cooldowns[email] && now < cooldowns[email]) {
-                const remaining = cooldowns[email] - now;
-                statusText = `Rate Limited (Cooldown: ${formatDuration(remaining)})`;
-                statusStyle = 'color: var(--warning-color); font-weight: 600;';
-            } else if (index === currentIndex) {
-                statusText = 'Next Up';
-                statusStyle = 'color: var(--accent-cyan); font-weight: 700;';
-            }
-        }
-
-        html += `
-            <tr>
-                <td style="font-family: monospace;">${index + 1}</td>
-                <td style="font-weight: 500;">${email}</td>
-                <td style="color: var(--text-secondary); font-size: 0.8rem;">${addedAt}</td>
-                <td style="${statusStyle}">${statusText}</td>
-                <td class="font-monospace" style="font-size: 0.75rem;">${maskedKey}</td>
-                <td>
-                    <button class="btn btn-danger" onclick="deleteClaudeAccount(${index})">Delete</button>
-                </td>
-            </tr>
-        `;
-    });
-
-    tbody.innerHTML = html;
 }
 
-async function deleteClaudeAccount(index) {
-    if (!confirm("Are you sure you want to delete this Claude account?")) return;
-    try {
-        const response = await fetch(`${API_ACCOUNTS_URL}/${index}`, { method: 'DELETE' });
-        const result = await response.json();
-        if (response.ok) {
-            logToConsole(`Account ${result.deleted} deleted successfully.`, 'system');
-            fetchStatus();
-        } else {
-            alert(`Error: ${result.detail || 'Failed to delete account'}`);
-        }
-    } catch (e) {
-        console.error(e);
-        alert(`Request failed: ${e}`);
-    }
-}
+
 
 // Telemetry SSE listener
 function startTelemetryStream() {
@@ -219,14 +146,12 @@ function triggerRoutingAnimation(model, active) {
     
     const lines = {
         chatgpt: document.getElementById('line-proxy-chatgpt'),
-        gemini: document.getElementById('line-proxy-gemini'),
-        claude: document.getElementById('line-proxy-claude')
+        gemini: document.getElementById('line-proxy-gemini')
     };
     
     const nodes = {
         chatgpt: document.getElementById('node-chatgpt'),
-        gemini: document.getElementById('node-gemini'),
-        claude: document.getElementById('node-claude')
+        gemini: document.getElementById('node-gemini')
     };
 
     // Reset all
@@ -243,8 +168,6 @@ function triggerRoutingAnimation(model, active) {
         const lowerModel = model.toLowerCase();
         if (lowerModel.startsWith('gemini')) {
             provider = 'gemini';
-        } else if (lowerModel.startsWith('claude')) {
-            provider = 'claude';
         }
 
         if (lines[provider]) lines[provider].classList.add('active');
@@ -890,16 +813,7 @@ async function init() {
     renderChatMessages();
 
     // Event Bindings
-    const addClaudeBtn = document.getElementById('btn-add-claude');
-    if (addClaudeBtn) {
-        addClaudeBtn.addEventListener('click', () => {
-            if (window.pywebview && window.pywebview.api) {
-                window.pywebview.api.open_claude_login();
-            } else {
-                alert("Desktop wrapper API not detected. Playwright is required for cookie extraction in standard web environments.");
-            }
-        });
-    }
+
 
     const clearConsoleBtn = document.getElementById('clear-console-btn');
     if (clearConsoleBtn) {

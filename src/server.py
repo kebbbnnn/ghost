@@ -1,6 +1,6 @@
 """
 server.py — FastAPI proxy server exposing an OpenAI-compatible API
-backed by isolated platform providers (ChatGPT, Claude, Gemini, etc.).
+backed by isolated platform providers (ChatGPT, Gemini, etc.).
 
 Endpoints:
   GET  /v1/models
@@ -12,7 +12,7 @@ import logging
 import json
 import asyncio
 import os
-from datetime import datetime, timezone
+
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +23,7 @@ import time
 
 SERVER_START_TIME = int(time.time())
 
-from src.core.config import ACCOUNTS_FILE, THREADS_FILE
+from src.core.config import THREADS_FILE
 listeners = []
 
 async def broadcast_event(event_type: str, data: dict):
@@ -364,121 +364,16 @@ async def health():
 
 @app.get("/api/status")
 async def get_status():
-    from src.providers.claude.session import ClaudeProvider
-    
     models = await get_all_models()
-    
-    claude_data = {}
-    for p in PROVIDERS:
-        if isinstance(p, ClaudeProvider):
-            # Access rotator state
-            await p.rotator._load_accounts_if_changed()
-            claude_data = {
-                "accounts": p.rotator.active_accounts,
-                "cooldowns": p.rotator.cooldowns,
-                "current_index": p.rotator.current_index
-            }
-            break
-
-    raw_accounts = []
-    if os.path.exists(ACCOUNTS_FILE):
-        try:
-            with open(ACCOUNTS_FILE, "r") as f:
-                raw_accounts = json.load(f).get("accounts", [])
-        except Exception:
-            pass
             
     return {
         "status": "ok",
         "start_time": SERVER_START_TIME,
         "providers_count": len(PROVIDERS),
         "models_count": len(models),
-        "claude": claude_data,
-        "raw_accounts": raw_accounts
     }
 
 
-class ClaudeAccountAddRequest(BaseModel):
-    email: str
-    sessionKey: str
-
-
-@app.post("/api/accounts/add")
-async def add_claude_account(req: ClaudeAccountAddRequest):
-    # Load existing accounts
-    accounts_data = {"accounts": []}
-    if os.path.exists(ACCOUNTS_FILE):
-        try:
-            with open(ACCOUNTS_FILE, "r") as f:
-                accounts_data = json.load(f)
-        except Exception:
-            pass
-
-    # Check if email already exists and update, or append new
-    updated = False
-    for account in accounts_data.get("accounts", []):
-        if account.get("email") == req.email:
-            account["sessionKey"] = req.sessionKey
-            account["added_at"] = datetime.now(tz=timezone.utc).isoformat()
-            account["status"] = "active"
-            updated = True
-            break
-
-    if not updated:
-        accounts_data.setdefault("accounts", []).append({
-            "email": req.email,
-            "sessionKey": req.sessionKey,
-            "added_at": datetime.now(tz=timezone.utc).isoformat(),
-            "status": "active"
-        })
-
-    try:
-        os.makedirs(os.path.dirname(ACCOUNTS_FILE), exist_ok=True)
-        with open(ACCOUNTS_FILE, "w") as f:
-            json.dump(accounts_data, f, indent=2)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save account: {e}")
-
-    # Force rotator reloading
-    from src.providers.claude.session import ClaudeProvider
-    for p in PROVIDERS:
-        if isinstance(p, ClaudeProvider):
-            await p.rotator._load_accounts_if_changed()
-
-    return {"status": "ok"}
-
-
-@app.delete("/api/accounts/{index}")
-async def delete_claude_account(index: int):
-    # Load existing accounts
-    if not os.path.exists(ACCOUNTS_FILE):
-        raise HTTPException(status_code=404, detail="Accounts file not found")
-
-    try:
-        with open(ACCOUNTS_FILE, "r") as f:
-            accounts_data = json.load(f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read accounts: {e}")
-
-    accounts = accounts_data.get("accounts", [])
-    if index < 0 or index >= len(accounts):
-        raise HTTPException(status_code=400, detail="Invalid account index")
-
-    deleted = accounts.pop(index)
-
-    try:
-        with open(ACCOUNTS_FILE, "w") as f:
-            json.dump(accounts_data, f, indent=2)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save accounts: {e}")
-
-    # Force rotator reloading
-    from src.providers.claude.session import ClaudeProvider
-    for p in PROVIDERS:
-        if isinstance(p, ClaudeProvider):
-            await p.rotator._load_accounts_if_changed()
-
-    return {"status": "ok", "deleted": deleted.get("email")}
 
 
 # ---------------------------------------------------------------------------
