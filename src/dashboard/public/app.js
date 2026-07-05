@@ -164,14 +164,20 @@ function triggerRoutingAnimation(model, active) {
         clientLine.classList.add('active');
         proxyNode.classList.add('active');
         
-        let provider = 'chatgpt';
         const lowerModel = model.toLowerCase();
-        if (lowerModel.startsWith('gemini')) {
-            provider = 'gemini';
+        if (lowerModel.startsWith('spectre')) {
+            if (lines['chatgpt']) lines['chatgpt'].classList.add('active');
+            if (nodes['chatgpt']) nodes['chatgpt'].classList.add('active');
+            if (lines['gemini']) lines['gemini'].classList.add('active');
+            if (nodes['gemini']) nodes['gemini'].classList.add('active');
+        } else {
+            let provider = 'chatgpt';
+            if (lowerModel.startsWith('gemini')) {
+                provider = 'gemini';
+            }
+            if (lines[provider]) lines[provider].classList.add('active');
+            if (nodes[provider]) nodes[provider].classList.add('active');
         }
-
-        if (lines[provider]) lines[provider].classList.add('active');
-        if (nodes[provider]) nodes[provider].classList.add('active');
     }
 }
 

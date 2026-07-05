@@ -10,6 +10,8 @@ PROXY_URL = "http://127.0.0.1:8100/v1/chat/completions"
 MODEL_LABELS = {
     "gemini": "Gemini",
     "auto":   "ChatGPT",
+    "spectre": "Spectre",
+    "spectre-ultra": "Spectre-Ultra",
 }
 
 SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
