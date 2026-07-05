@@ -79,7 +79,8 @@ def main():
         url=f"http://127.0.0.1:{PORT}/dashboard/",
         width=1200,
         height=800,
-        resizable=True
+        resizable=True,
+        text_select=True
     )
 
     # Lifecycle teardown on close
