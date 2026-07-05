@@ -39,9 +39,24 @@ Client (curl / chat.py / any OpenAI SDK)
          │    │   └── sentinel/                        │
          │    └────────────────────────────────────────┘
          │
-         └──► ┌────────────────────────────────────────┐
-              │ src/providers/gemini/                  │  ◄── Gemini Sandbox
-              └────────────────────────────────────────┘
+         ├──► ┌────────────────────────────────────────┐
+         │    │ src/providers/gemini/                  │  ◄── Gemini Sandbox
+         │    └────────────────────────────────────────┘
+         │
+         └──► ┌────────────────────────────────────────────────────┐
+              │ src/providers/spectre/                             │  ◄── Spectre Orchestrator
+              │   └── session.py (SpectreProvider)                │
+              │         │                                         │
+              │   ┌─────▼──────────────────────────────────────┐  │
+              │   │ src/orchestrator/                          │  │
+              │   │   ├── coordinator.py  (routing + workflow) │  │
+              │   │   ├── executor.py     (DAG execution)      │  │
+              │   │   ├── strategies.py   (built-in patterns)  │  │
+              │   │   ├── prompts.py      (prompt templates)   │  │
+              │   │   └── types.py        (Workflow, Step)     │  │
+              │   └────────────┬───────────────────────────────┘  │
+              │                │ Dispatches to ChatGPT / Gemini   │
+              └────────────────────────────────────────────────────┘
 ```
 
 ### Data Flow
@@ -52,6 +67,14 @@ Client (curl / chat.py / any OpenAI SDK)
 4. **Execution:** The isolated provider handles all authentication, rate limits, proof-of-work, and API calls independently.
 5. **Conversion:** The provider converts its native response format back into the standard OpenAI format.
 6. **Response:** The server returns the OpenAI-formatted response back to the client.
+
+### Spectre Data Flow (models: `spectre`, `spectre-ultra`)
+
+1. **Coordination:** SpectreProvider sends the user query to the coordinator model (ChatGPT by default) to make a routing or workflow decision.
+2. **Fast mode (`spectre`):** The coordinator selects the single best worker model. The query is forwarded directly to that worker.
+3. **Ultra mode (`spectre-ultra`):** The coordinator generates a multi-step workflow DAG — decomposing the query into subtasks, assigning worker models, and defining communication topologies via access lists.
+4. **DAG execution:** The executor topologically sorts the workflow into layers. Steps in the same layer run in parallel via `asyncio.gather`. Each worker only sees outputs from steps in its access list (intra-workflow agent isolation).
+5. **Streaming:** All steps except the final one run non-streaming. The final step streams its output back to the client.
 
 ---
 
@@ -74,3 +97,27 @@ Because each AI platform has drastically different bot-protection mechanisms, da
 These local architecture files serve as implementation journals, explaining the reverse-engineering discoveries, the API structures, and any specific bug fixes for that platform.
 
 - **ChatGPT:** Read the [ChatGPT Provider Architecture](./src/providers/chatgpt/ARCHITECTURE.md) for details on Cloudflare Turnstile evasion, Proof of Work solving, and the SSE conversion logic.
+
+---
+
+## 5. Spectre Orchestrator
+
+Spectre is a Fugu-style multi-agent orchestration system that coordinates multiple LLM providers to exceed the performance of any individual model. Based on SakanaAI's [TRINITY](https://arxiv.org/abs/2512.04695) and [Conductor](https://arxiv.org/abs/2512.04388) papers.
+
+### Architecture
+
+| Component | File | Role |
+|-----------|------|------|
+| **SpectreProvider** | `src/providers/spectre/session.py` | BaseProvider wrapper — exposes `spectre` and `spectre-ultra` models |
+| **Coordinator** | `src/orchestrator/coordinator.py` | Analyzes queries and generates routing decisions or workflow DAGs |
+| **Executor** | `src/orchestrator/executor.py` | Runs workflows — topological sort, parallel execution, context assembly |
+| **Strategies** | `src/orchestrator/strategies.py` | Built-in workflow patterns (debate, build-and-debug, specialist routing) |
+| **Prompts** | `src/orchestrator/prompts.py` | All coordinator prompt templates and model capability profiles |
+| **Types** | `src/orchestrator/types.py` | `Workflow`, `WorkflowStep`, `WorkerResult`, `RoutingDecision` |
+
+### Configuration
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `SPECTRE_COORDINATOR_MODEL` | `auto` (ChatGPT) | Which model serves as coordinator |
+| `SPECTRE_WORKERS` | `auto,gemini` | Comma-separated list of worker model IDs |
