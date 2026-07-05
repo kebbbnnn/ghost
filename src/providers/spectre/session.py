@@ -27,9 +27,9 @@ import typing
 import uuid
 
 from src.core.provider import BaseProvider
-from src.orchestrator.coordinator import Coordinator
-from src.orchestrator.executor import WorkflowExecutor
-from src.orchestrator.types import OrchestratorMode
+from .orchestrator.coordinator import Coordinator
+from .orchestrator.executor import WorkflowExecutor
+from .orchestrator.types import OrchestratorMode
 
 log = logging.getLogger(__name__)
 

@@ -45,17 +45,14 @@ Client (curl / chat.py / any OpenAI SDK)
          │
          └──► ┌────────────────────────────────────────────────────┐
               │ src/providers/spectre/                             │  ◄── Spectre Orchestrator
-              │   └── session.py (SpectreProvider)                │
-              │         │                                         │
-              │   ┌─────▼──────────────────────────────────────┐  │
-              │   │ src/orchestrator/                          │  │
-              │   │   ├── coordinator.py  (routing + workflow) │  │
-              │   │   ├── executor.py     (DAG execution)      │  │
-              │   │   ├── strategies.py   (built-in patterns)  │  │
-              │   │   ├── prompts.py      (prompt templates)   │  │
-              │   │   └── types.py        (Workflow, Step)     │  │
-              │   └────────────┬───────────────────────────────┘  │
-              │                │ Dispatches to ChatGPT / Gemini   │
+              │   ├── session.py (SpectreProvider)                │
+              │   │                                               │
+              │   └── orchestrator/                               │
+              │       ├── coordinator.py  (routing + workflow)    │
+              │       ├── executor.py     (DAG execution)         │
+              │       ├── strategies.py   (built-in patterns)     │
+              │       ├── prompts.py      (prompt templates)      │
+              │       └── types.py        (Workflow, Step)        │
               └────────────────────────────────────────────────────┘
 ```
 
@@ -109,11 +106,11 @@ Spectre is a Fugu-style multi-agent orchestration system that coordinates multip
 | Component | File | Role |
 |-----------|------|------|
 | **SpectreProvider** | `src/providers/spectre/session.py` | BaseProvider wrapper — exposes `spectre` and `spectre-ultra` models |
-| **Coordinator** | `src/orchestrator/coordinator.py` | Analyzes queries and generates routing decisions or workflow DAGs |
-| **Executor** | `src/orchestrator/executor.py` | Runs workflows — topological sort, parallel execution, context assembly |
-| **Strategies** | `src/orchestrator/strategies.py` | Built-in workflow patterns (debate, build-and-debug, specialist routing) |
-| **Prompts** | `src/orchestrator/prompts.py` | All coordinator prompt templates and model capability profiles |
-| **Types** | `src/orchestrator/types.py` | `Workflow`, `WorkflowStep`, `WorkerResult`, `RoutingDecision` |
+| **Coordinator** | `src/providers/spectre/orchestrator/coordinator.py` | Analyzes queries and generates routing decisions or workflow DAGs |
+| **Executor** | `src/providers/spectre/orchestrator/executor.py` | Runs workflows — topological sort, parallel execution, context assembly |
+| **Strategies** | `src/providers/spectre/orchestrator/strategies.py` | Built-in workflow patterns (debate, build-and-debug, specialist routing) |
+| **Prompts** | `src/providers/spectre/orchestrator/prompts.py` | All coordinator prompt templates and model capability profiles |
+| **Types** | `src/providers/spectre/orchestrator/types.py` | `Workflow`, `WorkflowStep`, `WorkerResult`, `RoutingDecision` |
 
 ### Configuration
 
