@@ -1,0 +1,136 @@
+SID: NlIRk_5DNwiV-R8TAByr
+Auth: OK
+Cookies: ['AWSALB', 'AWSALBCORS', '__cflb', '__cf_bm']
+Connecting to WS URL: wss://www.perplexity.ai/socket.io/?EIO=4&transport=websocket&sid=NlIRk_5DNwiV-R8TAByr
+WS Open, sending probe...
+WS Message: 3probe
+Probe successful, sending upgrade...
+WS Message: 40{"sid":"nj0oPRr5qjjnHFutABys"}
+WS Message: 6
+Sending query...
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong
+WS Message: 2
+Sent Pong

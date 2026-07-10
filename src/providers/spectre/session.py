@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 # Configurable defaults
 DEFAULT_COORDINATOR_MODEL = "auto"  # ChatGPT
-DEFAULT_WORKERS = ["auto", "gemini"]
+DEFAULT_WORKERS = ["auto", "gemini", "perplexity"]
 
 
 class SpectreProvider(BaseProvider):

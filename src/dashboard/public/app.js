@@ -146,19 +146,21 @@ function triggerRoutingAnimation(model, active) {
     
     const lines = {
         chatgpt: document.getElementById('line-proxy-chatgpt'),
-        gemini: document.getElementById('line-proxy-gemini')
+        gemini: document.getElementById('line-proxy-gemini'),
+        perplexity: document.getElementById('line-proxy-perplexity')
     };
     
     const nodes = {
         chatgpt: document.getElementById('node-chatgpt'),
-        gemini: document.getElementById('node-gemini')
+        gemini: document.getElementById('node-gemini'),
+        perplexity: document.getElementById('node-perplexity')
     };
 
     // Reset all
     clientLine.classList.remove('active');
     proxyNode.classList.remove('active');
-    Object.values(lines).forEach(l => l.classList.remove('active'));
-    Object.values(nodes).forEach(n => n.classList.remove('active'));
+    Object.values(lines).forEach(l => l && l.classList.remove('active'));
+    Object.values(nodes).forEach(n => n && n.classList.remove('active'));
 
     if (active && model) {
         clientLine.classList.add('active');
@@ -174,6 +176,8 @@ function triggerRoutingAnimation(model, active) {
             let provider = 'chatgpt';
             if (lowerModel.startsWith('gemini')) {
                 provider = 'gemini';
+            } else if (lowerModel.startsWith('perplexity')) {
+                provider = 'perplexity';
             }
             if (lines[provider]) lines[provider].classList.add('active');
             if (nodes[provider]) nodes[provider].classList.add('active');

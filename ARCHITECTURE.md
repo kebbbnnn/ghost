@@ -43,6 +43,12 @@ Client (curl / chat.py / any OpenAI SDK)
          │    │ src/providers/gemini/                  │  ◄── Gemini Sandbox
          │    └────────────────────────────────────────┘
          │
+         ├──► ┌────────────────────────────────────────┐
+         │    │ src/providers/perplexity/              │  ◄── Perplexity Sandbox
+         │    │   ├── session.py (PerplexityProvider)  │
+         │    │   └── converter.py                     │
+         │    └────────────────────────────────────────┘
+         │
          └──► ┌────────────────────────────────────────────────────┐
               │ src/providers/spectre/                             │  ◄── Spectre Orchestrator
               │   ├── session.py (SpectreProvider)                │
@@ -94,6 +100,7 @@ Because each AI platform has drastically different bot-protection mechanisms, da
 These local architecture files serve as implementation journals, explaining the reverse-engineering discoveries, the API structures, and any specific bug fixes for that platform.
 
 - **ChatGPT:** Read the [ChatGPT Provider Architecture](./src/providers/chatgpt/ARCHITECTURE.md) for details on Cloudflare Turnstile evasion, Proof of Work solving, and the SSE conversion logic.
+- **Perplexity:** Read the [Perplexity Provider Architecture](./src/providers/perplexity/ARCHITECTURE.md) for details on the anonymous rest/sse/perplexity_ask endpoints, custom SSE message parsing, and tracking incremental text chunk offset indices.
 
 ---
 
