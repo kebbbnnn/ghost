@@ -2,18 +2,21 @@ from .chatgpt.session import ChatGPTProvider
 from .gemini.session import GeminiProvider
 from .spectre.session import SpectreProvider
 from .perplexity.session import PerplexityProvider
+from .surfsense.session import SurfsenseProvider
 
 # The ProviderRegistry holds instances of all available providers.
 _chatgpt = ChatGPTProvider()
 _gemini = GeminiProvider()
 _spectre = SpectreProvider()
 _perplexity = PerplexityProvider()
+_surfsense = SurfsenseProvider()
 
 PROVIDERS = [
     _chatgpt,
     _gemini,
     _spectre,
     _perplexity,
+    _surfsense,
 ]
 
 # Map provider classes to their instances for routing
@@ -52,6 +55,9 @@ def get_provider_for_model(model_name: str):
 
     if name.startswith("perplexity"):
         return _PROVIDER_MAP.get(PerplexityProvider)
+
+    if name.startswith("surfsense"):
+        return _PROVIDER_MAP.get(SurfsenseProvider)
 
     # Default to ChatGPT for gpt-*, auto, and unknown models
     return _PROVIDER_MAP.get(ChatGPTProvider)

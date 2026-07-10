@@ -361,7 +361,7 @@ body {
     display: flex;
     flex-direction: column;
     justify-content: space-around;
-    height: 140px;
+    height: 180px;
     flex-grow: 1;
     position: relative;
     padding: 0 1rem;
