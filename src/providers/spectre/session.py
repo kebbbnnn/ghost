@@ -35,7 +35,13 @@ log = logging.getLogger(__name__)
 
 # Configurable defaults
 DEFAULT_COORDINATOR_MODEL = "auto"  # ChatGPT
-DEFAULT_WORKERS = ["auto", "gemini", "perplexity"]
+DEFAULT_WORKERS = [
+    "auto",
+    "gemini",
+    "perplexity",
+    "surfsense-gpt-5.4-mini-no-login",
+    "surfsense-gpt-o4-mini-no-login",
+]
 
 
 class SpectreProvider(BaseProvider):

@@ -63,6 +63,29 @@ MODEL_PROFILES = {
             "Not suited for large-scale creative generation or open-ended chats",
         ],
     },
+    "surfsense-gpt-5.4-mini-no-login": {
+        "provider": "surfsense",
+        "display_name": "SurfSense GPT 5.4 Mini",
+        "strengths": [
+            "Extremely strong conversational reasoning and general coding",
+            "High general knowledge and multi-turn planning",
+            "Strong logical deduction capabilities",
+        ],
+        "weaknesses": [
+            "Cannot perform live web searching",
+        ],
+    },
+    "surfsense-gpt-o4-mini-no-login": {
+        "provider": "surfsense",
+        "display_name": "SurfSense GPT O4 Mini",
+        "strengths": [
+            "Ultrafast lightweight reasoning and quick response generation",
+            "Great at simple coding and logical tasks",
+        ],
+        "weaknesses": [
+            "Lacks deep complex analytical reasoning of larger models",
+        ],
+    },
 }
 
 
