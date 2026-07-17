@@ -8,9 +8,7 @@ import socket
 import subprocess
 import threading
 import time
-import uvicorn
 import webview
-from src.server import app
 
 PORT = 8100
 
@@ -18,6 +16,7 @@ class UvicornServerThread(threading.Thread):
     def __init__(self, app, host="127.0.0.1", port=8100):
         super().__init__()
         self.daemon = True
+        import uvicorn
         self.config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         self.server = uvicorn.Server(self.config)
 
@@ -50,6 +49,61 @@ def main():
     print("GhostTunnel Desktop Application Suite Bootstrap")
     print("==================================================")
 
+    import argparse
+    parser = argparse.ArgumentParser(description="GhostTunnel Desktop Application Suite Bootstrap")
+    parser.add_argument(
+        "--remote", "-r",
+        action="store_true",
+        help="Connect to the remote server (https://ghosttunnel-lk2x.onrender.com)"
+    )
+    parser.add_argument(
+        "--url", "-u",
+        type=str,
+        default=None,
+        help="Connect to a custom remote or local server URL"
+    )
+    args = parser.parse_args()
+
+    remote_server_url = "https://ghosttunnel-lk2x.onrender.com"
+    target_url = None
+
+    if args.remote:
+        target_url = remote_server_url
+    elif args.url:
+        target_url = args.url
+    elif sys.stdin.isatty():
+        print("\nChoose connection mode:")
+        print("1. Local Server (127.0.0.1)")
+        print("2. Remote Server (ghosttunnel-lk2x.onrender.com)")
+        try:
+            choice = input("Enter choice [1/2] (default 1): ").strip()
+            if choice == "2":
+                target_url = remote_server_url
+        except (KeyboardInterrupt, EOFError):
+            print("\nDefaulting to Local Server.")
+
+    if target_url:
+        # Standardize target_url path to point to /dashboard/
+        from urllib.parse import urlparse
+        parsed = urlparse(target_url)
+        if not parsed.path or parsed.path == "/":
+            target_url = f"{target_url.rstrip('/')}/dashboard/"
+        elif parsed.path.rstrip("/") == "/dashboard" and not target_url.endswith("/"):
+            target_url = f"{target_url}/"
+
+        print(f"[GUI Setup] Connecting to remote server at: {target_url}")
+
+        main_window = webview.create_window(
+            title="GhostTunnel All-in-One Suite (Remote)",
+            url=target_url,
+            width=1200,
+            height=800,
+            resizable=True,
+            text_select=True
+        )
+        webview.start()
+        return
+
     # Check port conflicts
     if is_port_in_use(PORT):
         print(f"[Warning] Port {PORT} is already in use!")
@@ -59,6 +113,7 @@ def main():
             return
 
     # Start FastAPI server thread
+    from src.server import app
     server_thread = UvicornServerThread(app, host="127.0.0.1", port=PORT)
     server_thread.start()
     print(f"FastAPI Server started programmatically on http://127.0.0.1:{PORT}")
