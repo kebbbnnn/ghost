@@ -26,21 +26,64 @@ import time
 import httpx
 from PIL import ImageGrab, Image
 
-def images_are_similar(img1: Image.Image, img2: Image.Image, threshold: float = 2.0) -> bool:
+def images_are_similar(img1: Image.Image, img2: Image.Image, threshold: float = 25.0) -> tuple[bool, float, float]:
     """
-    Compare two PIL Images. Returns True if they are very similar.
-    Downscales to a 64x64 thumbnail and computes Mean Absolute Error (MAE).
+    Compare two PIL Images. Returns (is_similar, global_mae, max_block_mae).
+    Excludes the top 5% (macOS menu bar) and bottom 40% (VS Code terminal pane and dock)
+    to eliminate feedback loops and clock updates. Then resizes preserving aspect ratio
+    (512x160) and applies a 9x9 Median Filter to erase text/typing characters, leaving
+    only large UI layout structures (like popup dialogs or window switching).
     """
     try:
-        size = (64, 64)
-        g1 = img1.convert("L").resize(size, Image.Resampling.BILINEAR)
-        g2 = img2.convert("L").resize(size, Image.Resampling.BILINEAR)
-        p1 = list(g1.tobytes())
-        p2 = list(g2.tobytes())
-        mae = sum(abs(a - b) for a, b in zip(p1, p2)) / len(p1)
-        return mae < threshold
+        from PIL import ImageFilter
+        w, h = img1.size
+        # Crop to the active workspace area (excludes menu bar and terminal)
+        left = 0
+        right = w
+        top = int(h * 0.05)
+        bottom = int(h * 0.60)
+        
+        c1 = img1.crop((left, top, right, bottom))
+        c2 = img2.crop((left, top, right, bottom))
+
+        # Resize maintaining aspect ratio ~3.2:1 (stops text squishing into vertical lines)
+        size = (512, 160)
+        g1 = c1.convert("L").resize(size, Image.Resampling.BILINEAR)
+        g2 = c2.convert("L").resize(size, Image.Resampling.BILINEAR)
+        
+        # Apply Median Filter to completely erase text stroke details
+        f1 = g1.filter(ImageFilter.MedianFilter(size=9))
+        f2 = g2.filter(ImageFilter.MedianFilter(size=9))
+        
+        p1 = list(f1.tobytes())
+        p2 = list(f2.tobytes())
+
+        # Global MAE
+        global_mae = sum(abs(a - b) for a, b in zip(p1, p2)) / len(p1)
+
+        # 8x8 Grid of Blocks (each block is 64x20 pixels)
+        grid_cols, grid_rows = 8, 8
+        block_w = size[0] // grid_cols
+        block_h = size[1] // grid_rows
+
+        block_maes = []
+        for r in range(grid_rows):
+            for c in range(grid_cols):
+                diffs = []
+                for y in range(r * block_h, (r + 1) * block_h):
+                    for x in range(c * block_w, (c + 1) * block_w):
+                        idx = y * size[0] + x
+                        diffs.append(abs(p1[idx] - p2[idx]))
+                block_maes.append(sum(diffs) / len(diffs))
+
+        max_block_mae = max(block_maes)
+        # If global change is large, or any local block changed significantly, it's not similar
+        global_threshold = threshold / 3.0
+        is_similar = (global_mae < global_threshold) and (max_block_mae < threshold)
+        return is_similar, global_mae, max_block_mae
     except Exception:
-        return False
+        return False, 0.0, 0.0
+
 
 async def capture_screenshot() -> tuple[str, Image.Image]:
     """
@@ -199,8 +242,8 @@ async def main():
         help="Enable skipping API calls when the screen is unchanged"
     )
     parser.add_argument(
-        "--threshold", "-t", type=float, default=2.0,
-        help="Similarity threshold for skipping captures (default: 2.0, lower is more sensitive)"
+        "--threshold", "-t", type=float, default=25.0,
+        help="Local block difference threshold on cropped screen (default: 25.0, ignores terminal scrolling but detects sheets/popups)"
     )
     parser.add_argument(
         "--prompt", "-p", type=str,
@@ -235,8 +278,15 @@ async def main():
                 img_uri, screenshot_img = await capture_screenshot()
                 
                 # Check for screen similarity if skip mode is enabled
-                if args.skip and last_screenshot is not None and images_are_similar(last_screenshot, screenshot_img, args.threshold):
-                    print("📷 Screen unchanged. Skipping API call.")
+                is_similar = False
+                if args.skip and last_screenshot is not None:
+                    is_similar, g_mae, b_mae = images_are_similar(last_screenshot, screenshot_img, args.threshold)
+                    print(f"📊 Similarity: global_mae={g_mae:.2f}, max_block_mae={b_mae:.2f} (Threshold: {args.threshold})")
+                    if is_similar:
+                        print("📷 Screen unchanged. Skipping API call.")
+                
+                if is_similar:
+                    pass
                 else:
                     description = await get_description_stream(
                         server_url=args.server,
