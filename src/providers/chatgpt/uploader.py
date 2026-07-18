@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 from PIL import Image
 from curl_cffi.requests import AsyncSession
+from src.core.exceptions import RateLimitError, TokenExpiredError
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ async def preprocess_images(
                 **base_headers,
                 "oai-device-id": oai_did,
                 "oai-language": "en-US",
-                "Content-Type": "application/json",
+                "content-type": "application/json",
                 **(sentinel_headers or {}),
             }
             file_id, upload_url = await _register_file(
@@ -276,7 +277,13 @@ async def _register_file(
 
     try:
         resp = await session.post(FILES_URL, headers=headers, json=body)
+        if resp.status_code == 429:
+            raise RateLimitError("ChatGPT file upload rate limit (429)")
+        if resp.status_code in (401, 403):
+            raise TokenExpiredError(f"ChatGPT file upload unauthorized ({resp.status_code})")
         resp.raise_for_status()
+    except (RateLimitError, TokenExpiredError):
+        raise
     except Exception as e:
         raise ValueError(f"Failed to register file '{filename}': {e}") from e
 

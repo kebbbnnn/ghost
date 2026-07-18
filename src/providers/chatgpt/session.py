@@ -10,9 +10,11 @@ Handles:
 import asyncio
 import typing
 import json
+import re
 import time
 import uuid
 import logging
+import random
 from typing import AsyncIterator
 
 from curl_cffi.requests import AsyncSession
@@ -31,7 +33,7 @@ from .converter import (
 from .sentinel.token_generator import (
     generate_requirements_token,
     generate_enforcement_token,
-    build_sentinel_token,
+    assemble_sentinel_headers,
 )
 
 from .uploader import preprocess_images
@@ -44,8 +46,8 @@ CONVERSATION_URL = f"{BASE_URL}/backend-anon/conversation"
 CONVERSATION_URL_FILES = f"{BASE_URL}/backend-anon/f/conversation"
 MODELS_URL = f"{BASE_URL}/backend-anon/models"
 
-# Chat requirements token expires after ~540 seconds (9 min); refresh at 8 min
-TOKEN_TTL_SECONDS = 480
+# Chat requirements token must be fresh per request flow to prevent fingerprinting; TTL set to 5s
+TOKEN_TTL_SECONDS = 5
 
 
 class ChatGPTProvider(BaseProvider):
@@ -136,15 +138,21 @@ class ChatGPTProvider(BaseProvider):
                         if not event or event.get("done"):
                             continue
 
-                        msg = event.get("message", {})
-                        parts = msg.get("content", {}).get("parts", [])
-                        for part in parts:
-                            if isinstance(part, str):
-                                full_content = part
+                        chunk = chatgpt_event_to_openai_chunk(event, target_model, "dummy")
+                        if chunk:
+                            choices = chunk.get("choices", [])
+                            if choices:
+                                choice = choices[0]
+                                delta = choice.get("delta", {})
+                                content = delta.get("content", "")
+                                
+                                if "message" in event:
+                                    full_content = content
+                                else:
+                                    full_content += content
 
-                        status = msg.get("status", "")
-                        if status == "max_tokens":
-                            finish_reason = "length"
+                                if choice.get("finish_reason"):
+                                    finish_reason = choice["finish_reason"]
                     break
                 except TokenExpiredError:
                     if attempt == 0:
@@ -184,6 +192,10 @@ class ChatGPTProvider(BaseProvider):
         self._sentinel_headers: dict | None = None
         self._next_sentinel_headers: dict | None = None
         self._next_token_task: asyncio.Task | None = None
+        # Dynamically scraped build metadata (updated on each device-id fetch)
+        self._build_number: str = "8338682"
+        self._client_version: str = "prod-e8f67765f24e1c6773b4b61b4310d5ff9297439a"
+        self._geo_info: dict = {}
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -191,7 +203,7 @@ class ChatGPTProvider(BaseProvider):
 
     async def _get_session(self) -> AsyncSession:
         if self._session is None:
-            self._session = AsyncSession(impersonate="chrome131")
+            self._session = AsyncSession(impersonate="chrome136")
         return self._session
 
     async def _reset_session(self, hard: bool = True):
@@ -222,6 +234,7 @@ class ChatGPTProvider(BaseProvider):
 
         if hard:
             self._oai_did = ""
+            self._geo_info = {}
             log.warning("Session reset: all cookies and device state cleared")
         else:
             log.warning("Soft session reset: cookies and sentinel cleared, device state preserved")
@@ -236,25 +249,15 @@ class ChatGPTProvider(BaseProvider):
     # ------------------------------------------------------------------
 
     async def _ensure_device_id(self):
-        """Use a HEAD request to get oai-did cookie — avoids downloading the full homepage HTML."""
+        """Fetch chatgpt.com to get oai-did cookie AND scrape live build metadata.
+
+        Uses GET instead of HEAD so we can parse the HTML for the current
+        build number and client version — stale values are a strong bot signal.
+        """
         if self._oai_did:
             return
         session = await self._get_session()
-        try:
-            resp = await session.head(
-                f"{BASE_URL}/",
-                headers=self._base_headers(),
-                allow_redirects=True,
-            )
-            did = session.cookies.get("oai-did")
-            if did:
-                self._oai_did = did
-                log.info(f"Got oai-did via HEAD: {did}")
-                return
-        except Exception as e:
-            log.warning(f"HEAD request for device ID failed ({e}), falling back to GET")
 
-        # Fallback to GET if HEAD doesn't set the cookie (some CDN configs differ)
         resp = await session.get(
             f"{BASE_URL}/",
             headers=self._base_headers(),
@@ -262,11 +265,14 @@ class ChatGPTProvider(BaseProvider):
         did = session.cookies.get("oai-did")
         if did:
             self._oai_did = did
-            log.info(f"Got oai-did via GET: {did}")
+            log.info(f"Got oai-did: {did}")
         else:
-            # Last resort: generate a random UUID
             self._oai_did = str(uuid.uuid4())
             log.warning("oai-did not in cookies, using generated UUID")
+
+        # Scrape build metadata and bootstrap data from the HTML
+        self._scrape_build_metadata(resp.text)
+        self._scrape_bootstrap_data(resp.text)
 
     # ------------------------------------------------------------------
     # Chat requirements
@@ -289,12 +295,14 @@ class ChatGPTProvider(BaseProvider):
 
         # generate_requirements_token() returns (p_token, sid)
         # sid must be reused by generate_enforcement_token (same config array).
-        p_token, sid = generate_requirements_token()
+        p_token, sid = generate_requirements_token(self._client_version)
 
         headers = {
             **self._base_headers(),
             "oai-device-id": self._oai_did,
             "oai-language": "en-US",
+            "oai-client-build-number": self._build_number,
+            "oai-client-version": self._client_version,
             "Content-Type": "application/json",
         }
 
@@ -303,14 +311,32 @@ class ChatGPTProvider(BaseProvider):
             headers=headers,
             json={"p": p_token},
         )
+        if resp.status_code in (401, 403):
+            # The anonymous device ID has been invalidated — do a full reset and retry once.
+            # Wait before retrying to avoid compounding Cloudflare rate-limit triggers.
+            log.warning(f"/chat-requirements returned {resp.status_code}. Waiting before reset/retry...")
+            await asyncio.sleep(random.uniform(8, 15))
+            await self._reset_session(hard=True)
+            await self._ensure_device_id()
+            session = await self._get_session()
+            p_token, sid = generate_requirements_token(self._client_version)
+            headers["oai-device-id"] = self._oai_did
+            headers["oai-client-build-number"] = self._build_number
+            headers["oai-client-version"] = self._client_version
+            resp = await session.post(
+                REQUIREMENTS_URL,
+                headers=headers,
+                json={"p": p_token},
+            )
         resp.raise_for_status()
         chat_req = resp.json()
-        log.info(f"chat-requirements response: {json.dumps(chat_req)}")
 
         # Update oai-did from response cookies if server issued a new one
         did = session.cookies.get("oai-did")
         if did:
             self._oai_did = did
+
+
 
         from .sentinel.token_generator import execute_turnstile_vm
 
@@ -323,12 +349,12 @@ class ChatGPTProvider(BaseProvider):
                 seed = pow_data["seed"]
                 difficulty = pow_data["difficulty"]
                 log.info(f"Solving PoW: seed={seed!r} difficulty={difficulty!r}")
-                return await asyncio.to_thread(generate_enforcement_token, seed, difficulty, sid)
+                return await asyncio.to_thread(generate_enforcement_token, self._client_version, seed, difficulty, sid)
             return p_token
 
         async def _run_turnstile():
             if turnstile.get("required") and turnstile.get("dx"):
-                return await asyncio.to_thread(execute_turnstile_vm, turnstile["dx"], p_token)
+                return await asyncio.to_thread(execute_turnstile_vm, turnstile["dx"], p_token, self._geo_info)
             return ""
 
         # Dispatch both CPU-bound tasks concurrently in thread pool
@@ -338,39 +364,25 @@ class ChatGPTProvider(BaseProvider):
         )
 
         sentinel_headers = {
-            "Openai-Sentinel-Chat-Requirements-Token": chat_req.get("token", ""),
-            "Openai-Sentinel-Proof-Token": enforcement_token,
-            "Openai-Sentinel-Turnstile-Token": turnstile_token or "",
+            "openai-sentinel-chat-requirements-token": chat_req.get("token", ""),
+            "openai-sentinel-proof-token": enforcement_token,
+            "openai-sentinel-turnstile-token": turnstile_token or "",
         }
         log.info("Sentinel token generated successfully")
         return sentinel_headers
 
     async def _refresh_chat_requirements(self):
         """
-        Refresh sentinel headers and prime the double-buffer.
-        After fetching the current token, immediately start computing the next
-        one in the background so it's ready before it's needed.
+        Refresh sentinel headers.
         """
         self._sentinel_headers = await self._fetch_sentinel_headers()
         self._token_fetched_at = time.time()
-        # Start computing the next token in the background
-        self._schedule_next_token_prefetch()
 
     def _schedule_next_token_prefetch(self):
-        """Fire-and-forget task to pre-compute the next sentinel token."""
-        if self._next_token_task and not self._next_token_task.done():
-            return  # Already computing
-        self._next_token_task = asyncio.create_task(self._prefetch_next_token())
+        pass
 
     async def _prefetch_next_token(self):
-        """Compute and store the next sentinel token without blocking requests."""
-        try:
-            next_headers = await self._fetch_sentinel_headers()
-            self._next_sentinel_headers = next_headers
-            log.info("Double-buffer: next sentinel token pre-computed and ready")
-        except Exception as e:
-            log.warning(f"Failed to pre-compute next sentinel token: {e}")
-            self._next_sentinel_headers = None
+        pass
 
     # ------------------------------------------------------------------
     # Chat
@@ -378,26 +390,11 @@ class ChatGPTProvider(BaseProvider):
 
     async def ensure_ready(self):
         """
-        Ensure we have valid sentinel headers, using the double-buffer strategy.
-
-        If a pre-computed 'next' token is available, swap it in immediately
-        (zero wait) and start computing a new 'next' in the background.
-        If no pre-computed token is available (cold start or post-reset),
-        block and compute one now.
+        Ensure we have valid sentinel headers.
         """
         async with self._lock:
             if not self._sentinel_headers or self._is_token_expired():
-                # Check if we have a pre-computed next token to swap in
-                if self._next_sentinel_headers:
-                    log.info("Double-buffer swap: using pre-computed next sentinel token")
-                    self._sentinel_headers = self._next_sentinel_headers
-                    self._next_sentinel_headers = None
-                    self._token_fetched_at = time.time()
-                    # Immediately start computing the next one
-                    self._schedule_next_token_prefetch()
-                else:
-                    # Cold start or buffer miss — block and compute now
-                    await self._refresh_chat_requirements()
+                await self._refresh_chat_requirements()
 
     async def start_background_tasks(self):
         # Pre-initialize the HTTP session and fetch the first sentinel token
@@ -442,7 +439,9 @@ class ChatGPTProvider(BaseProvider):
                         self._schedule_next_token_prefetch()
             except Exception as e:
                 log.error(f"ChatGPT background token refresh failed: {e}")
-            await asyncio.sleep(10)
+            # Sleep 60s between checks to avoid triggering Cloudflare rate limits
+            # from too many background sentinel-token refresh requests.
+            await asyncio.sleep(60)
 
     async def _stream_raw_chat(
         self,
@@ -465,16 +464,23 @@ class ChatGPTProvider(BaseProvider):
         """
         await self.ensure_ready()
         
-        max_retries = 1
+        max_retries = 2
         for attempt in range(max_retries + 1):
             await self.ensure_ready()
             session = await self._get_session()
 
             # Pre-process images inside retry loop: if session resets,
             # file IDs from the old session become stale and must be re-uploaded
-            processed_messages, has_images = await preprocess_images(
-                messages, session, self._base_headers(), self._oai_did, self._sentinel_headers
-            )
+            try:
+                processed_messages, has_images = await preprocess_images(
+                    messages, session, self._base_headers(), self._oai_did, self._sentinel_headers
+                )
+            except (RateLimitError, TokenExpiredError) as e:
+                log.warning(f"Session issue during image preprocessing: {e}. Resetting session and retrying...")
+                await self._reset_session(hard=True)
+                if attempt < max_retries:
+                    continue
+                raise
             
             # Convert messages to ChatGPT format
             chatgpt_messages = _convert_messages(processed_messages)
@@ -486,57 +492,48 @@ class ChatGPTProvider(BaseProvider):
             body = {
                 "action": "next",
                 "messages": chatgpt_messages,
-                "model": model,
                 "parent_message_id": parent_message_id or "client-created-root",
+                "model": model,
                 "timezone_offset_min": -480,
                 "timezone": "Asia/Manila",
+                "history_and_training_disabled": True,
+                "conversation_mode": {"kind": "primary_assistant"},
+                "force_parallel_switch": "auto",
+                "enable_message_followups": True,
+                "system_hints": [],
+                "supports_buffering": True,
+                "supported_encodings": ["v1"],
+                "client_contextual_info": {
+                    "is_dark_mode": True,
+                    "time_since_loaded": random.randint(3, 6),
+                    "page_height": 1219,
+                    "page_width": 3440,
+                    "pixel_ratio": 1,
+                    "screen_height": 1440,
+                    "screen_width": 3440,
+                },
+                "paragen_cot_summary_display_override": "allow",
             }
             if conversation_id:
                 body["conversation_id"] = conversation_id
-                
             if has_images:
-                body["conversation_mode"] = {"kind": "primary_assistant"}
-                body["client_contextual_info"] = {
-                    "is_dark_mode": True,
-                    "time_since_loaded": 320,
-                    "page_height": 916,
-                    "page_width": 816,
-                    "pixel_ratio": 1,
-                    "screen_height": 1050,
-                    "screen_width": 1680,
-                    "app_name": "chatgpt.com"
-                }
-                body["force_parallel_switch"] = "auto"
                 body["client_prepare_state"] = "sent"
-                body["enable_message_followups"] = True
-                body["system_hints"] = []
-                body["supports_buffering"] = True
                 body["no_auth_ad_preferences"] = {
                     "personalization_enabled": True,
                     "history_enabled": True,
                     "bazaar_consent_set": False
                 }
-                body["paragen_cot_summary_display_override"] = "allow"
             
-            # The backend proxy (Cloudflare/NextJS) requires these target path headers
-            # to properly route the request internally without crashing, especially for /f/.
-            # NOTE: Browser uses /backend-api/ (not -anon) in the target path headers,
-            # even though the actual URL is /backend-anon/.
-            target_path = "/backend-api/f/conversation" if has_images else "/backend-api/conversation"
-            turn_trace_id = str(uuid.uuid4())
             
+            echo_time = random.randint(6000, 9000)
             headers = {
                 **self._base_headers(),
                 "oai-device-id": self._oai_did,
                 "oai-language": "en-US",
-                "oai-session-id": str(uuid.uuid4()),
-                "oai-client-build-number": "6708908",
-                "oai-client-version": "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887",
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-                "x-openai-target-path": target_path,
-                "x-openai-target-route": target_path,
-                "x-oai-turn-trace-id": turn_trace_id,
+                "oai-client-version": self._client_version,
+                "oai-echo-logs": f"0,{echo_time},1,{echo_time + random.randint(1000, 1200)}",
+                "content-type": "application/json",
+                "accept": "text/event-stream",
                 **self._sentinel_headers,
             }
             
@@ -559,28 +556,17 @@ class ChatGPTProvider(BaseProvider):
                     "fork_from_shared_post": False,
                     "parent_message_id": parent_message_id or "client-created-root",
                     "model": model,
-                    "client_prepare_state": "success",
                     "timezone_offset_min": -480,
                     "timezone": "Asia/Manila",
+                    "history_and_training_disabled": True,
                     "conversation_mode": {"kind": "primary_assistant"},
                     "system_hints": [],
-                    "attachment_mime_types": ["image/jpeg"],
-                    "partial_query": {
-                        "id": str(uuid.uuid4()),
-                        "author": {"role": "user"},
-                        "content": {
-                            "content_type": "text",
-                            "parts": [prompt_text]
-                        }
-                    },
                     "supports_buffering": True,
-                    "client_contextual_info": {"app_name": "chatgpt.com"}
+                    "supported_encodings": ["v1"],
                 }
                 
                 prepare_headers = headers.copy()
-                prepare_headers["x-openai-target-path"] = "/backend-anon/f/conversation/prepare"
-                prepare_headers["x-openai-target-route"] = "/backend-anon/f/conversation/prepare"
-                prepare_headers["Accept"] = "*/*"
+                prepare_headers["accept"] = "*/*"
                 # Remove sentinel from prepare (browser doesn't send them here)
                 for k in list(prepare_headers.keys()):
                     if k.lower().startswith("openai-sentinel"):
@@ -617,11 +603,31 @@ class ChatGPTProvider(BaseProvider):
                     if resp.status_code == 429:
                         raise RateLimitError("ChatGPT rate limit hit (429)")
                     if resp.status_code in (401, 403):
+                        body_bytes = b""
+                        try:
+                            body_bytes = await resp.acontent()
+                        except Exception as e:
+                            log.warning(f"Failed to read error body: {e}")
+                        log.warning(
+                            f"POST to conversation returned {resp.status_code}. "
+                            f"CF-Ray: {resp.headers.get('cf-ray', 'n/a')}. "
+                            f"Body ({len(body_bytes)}B): {body_bytes.decode('utf-8', errors='ignore')[:500]}"
+                        )
                         hard_reset = not bool(conversation_id)
                         await self._reset_session(hard=hard_reset)
                         if attempt < max_retries:
-                            log.warning("Device flagged (%d). Resetting session and retrying...", resp.status_code)
+                            # Back off before retry to avoid compounding Cloudflare
+                            # rate-limit triggers from rapid successive requests.
+                            backoff = random.uniform(10, 20)
+                            log.warning(
+                                "Device flagged (%d). Backing off %.1fs before reset+retry...",
+                                resp.status_code, backoff
+                            )
+                            await asyncio.sleep(backoff)
                             continue
+                        # If retry also fails, force a hard reset to unbrick the session
+                        # for the NEXT user request (don't leave session in tainted state).
+                        await self._reset_session(hard=True)
                         raise TokenExpiredError("Device flagged — session reset failed after retry")
                     if resp.status_code == 404 and conversation_id:
                         # Stale conversation — start fresh
@@ -670,23 +676,79 @@ class ChatGPTProvider(BaseProvider):
 
     def _base_headers(self) -> dict:
         return {
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "user-agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
+                "Chrome/136.0.0.0 Safari/537.36"
             ),
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Origin": "https://chatgpt.com",
-            "Referer": "https://chatgpt.com/",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            # Client hint headers — must match impersonate="chrome131" + macOS UA
-            "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"macOS"',
+            "accept": "*/*",
+            "accept-language": "en-US,en;q=0.9",
+            "origin": "https://chatgpt.com",
+            "referer": "https://chatgpt.com/",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "priority": "u=1, i",
+            "pragma": "no-cache",
+            "cache-control": "no-cache",
+            # Client hint headers — must match impersonate="chrome136" + Windows UA
+            "sec-ch-ua": '"Chromium";v="136", "Not=A?Brand";v="24", "Google Chrome";v="136"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
         }
+
+    def _scrape_build_metadata(self, html: str):
+        """Extract live build number and client version from chatgpt.com HTML.
+
+        Patterns scraped:
+          - data-build="prod-<hash>"  →  oai-client-version
+          - "web_build_number":<N>    →  oai-client-build-number
+          - data-seq="<N>"            →  fallback for build number
+        """
+        # Client version from <html data-build="prod-...">
+        m = re.search(r'data-build="(prod-[a-f0-9]+)"', html)
+        if m:
+            self._client_version = m.group(1)
+            log.info(f"Scraped client version: {self._client_version}")
+
+        # Build number from inline JSON: "web_build_number":8338682.0
+        m = re.search(r'"web_build_number"\s*:\s*(\d+)', html)
+        if m:
+            self._build_number = m.group(1)
+            log.info(f"Scraped build number: {self._build_number}")
+        else:
+            # Fallback: data-seq attribute
+            m = re.search(r'data-seq="(\d+)"', html)
+            if m:
+                self._build_number = m.group(1)
+                log.info(f"Scraped build number (data-seq): {self._build_number}")
+
+    def _scrape_bootstrap_data(self, html: str):
+        """Extract geo IP and client metadata from client-bootstrap script tag in HTML.
+        
+        This mimics how the real Turnstile/Sentinel scripts read geolocation
+        information from the window.
+        """
+        self._geo_info = {}
+        match = re.search(r'<script[^>]*id="client-bootstrap"[^>]*>(.*?)</script>', html, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(1).strip())
+                keys_to_extract = [
+                    "cfConnectingIp",
+                    "cfIpLatitude",
+                    "cfIpLongitude",
+                    "cfIpCity",
+                    "userCountry",
+                    "userRegion",
+                    "userRegionCode",
+                ]
+                for k in keys_to_extract:
+                    if k in data:
+                        self._geo_info[k] = data[k]
+                log.info(f"Scraped geo_info bootstrap: {self._geo_info}")
+            except Exception as e:
+                log.warning(f"Failed to parse client-bootstrap: {e}")
 
 
 # ------------------------------------------------------------------

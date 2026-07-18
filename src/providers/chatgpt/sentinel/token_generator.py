@@ -25,9 +25,9 @@ from .pow_solver import solve_pow, build_requirements_token
 from .vm import execute_turnstile_vm
 
 
-def _build_config(sid: str) -> list:
+def _build_config(client_version: str, sid: str) -> list:
     """
-    Build the 24-element config array that getConfig() returns in the SDK.
+    Build the 18-element config array that getConfig() returns in the SDK.
 
     Positions:
       0  screen.width + screen.height
@@ -35,26 +35,19 @@ def _build_config(sid: str) -> list:
       2  performance.memory.jsHeapSizeLimit
       3  Math.random()         (overwritten by PoW solver to attempt index)
       4  navigator.userAgent
-      5  random script src from document.scripts
+      5  random script src from document.scripts (None / empty in 18-element version)
       6  data-build attribute (or null)
       7  navigator.language
       8  navigator.languages.join(",")
       9  Math.random()         (overwritten by PoW solver to elapsed ms)
-     10  navigator proto random entry (key−value)
-     11  random Object.keys(document) entry
-     12  random Object.keys(window) entry
-     13  performance.now()
-     14  sid (UUID)
-     15  URLSearchParams keys joined
-     16  navigator.hardwareConcurrency
-     17  performance.timeOrigin
-     18  Number("ai" in window)
-     19  Number("createPRNG" in window)
-     20  Number("cache" in window)
-     21  Number("data" in window)
-     22  Number("solana" in window)
-     23  Number("dump" in window)
-     24  Number("InstallTrigger" in window)   ← SDK has 25 elements total
+      10 webkitGetUserMedia
+      11 random document key
+      12 random window key
+      13 performance.now()
+      14 sid (UUID)
+      15 URLSearchParams keys joined (empty)
+      16 hardwareConcurrency
+      17 start time epoch ms
     """
     # Simulate realistic browser timing:
     # - The browser loaded the page ~1-3s before calling getConfig()
@@ -78,30 +71,23 @@ def _build_config(sid: str) -> list:
         4 * 1024 * 1024 * 1024,                                        # 2 jsHeapSizeLimit ~4GB
         random.random(),                                                # 3 (overwritten by PoW)
         BrowserEnv.user_agent,                                          # 4
-        BrowserEnv.sdk_script_url,                                      # 5 random script src
-        BrowserEnv.data_build or None,                                  # 6 data-build
+        None,                                                           # 5
+        client_version,                                                 # 6 data-build
         BrowserEnv.language,                                            # 7
         BrowserEnv.languages,                                           # 8
         random.random(),                                                # 9 (overwritten by PoW)
-        BrowserEnv.random_nav_proto_entry(),                            # 10
+        "webkitGetUserMedia−function webkitGetUserMedia() { [native code] }", # 10
         random.choice(doc_keys),                                        # 11
         random.choice(win_keys),                                        # 12
         now_ms,                                                         # 13 performance.now()
         sid,                                                            # 14 this.sid
-        "",                                                             # 15 URLSearchParams keys
+        "",                                                             # 15
         BrowserEnv.hardware_concurrency,                                # 16
         time_origin,                                                    # 17 performance.timeOrigin
-        BrowserEnv.ai_in_window,                                        # 18
-        BrowserEnv.create_prng_in_window,                               # 19
-        BrowserEnv.cache_in_window,                                     # 20
-        BrowserEnv.data_in_window,                                      # 21
-        BrowserEnv.solana_in_window,                                    # 22
-        BrowserEnv.dump_in_window,                                      # 23
-        BrowserEnv.install_trigger_in_window,                           # 24
     ], now_ms
 
 
-def generate_requirements_token(sid: str | None = None) -> tuple[str, str]:
+def generate_requirements_token(client_version: str, sid: str | None = None) -> tuple[str, str]:
     """
     Generate the lightweight gAAAAAC requirements/proof token.
     Returns:
@@ -109,28 +95,29 @@ def generate_requirements_token(sid: str | None = None) -> tuple[str, str]:
     """
     if sid is None:
         sid = str(uuid.uuid4())
-    config, now_ms = _build_config(sid)
+    config, now_ms = _build_config(client_version, sid)
     return build_requirements_token(config, now_ms), sid
 
 
-def generate_enforcement_token(seed: str, difficulty: str, sid: str) -> str:
+def generate_enforcement_token(client_version: str, seed: str, difficulty: str, sid: str) -> str:
     """
     Solve the PoW for the given seed/difficulty and return a gAAAAAB token.
     Must use the SAME sid that generated the requirements token.
     """
-    config, now_ms = _build_config(sid)
+    config, now_ms = _build_config(client_version, sid)
     return solve_pow(seed, difficulty, config, page_load_ms=now_ms)
 
 
-def build_sentinel_token(
+def assemble_sentinel_headers(
     chat_req: dict,
     enforcement_token: str,
     p_token: str,
     oai_did: str,
     flow: str = "__default__",
+    geo_info: dict = None
 ) -> str:
     """
-    Assemble the final sentinel token JSON string.
+    Assemble the final Turnstile + PoW payload, and Base64-encode it.
 
     Args:
         chat_req:           Response from /backend-anon/sentinel/chat-requirements
@@ -138,6 +125,7 @@ def build_sentinel_token(
         p_token:            The gAAAAAC requirements token (used as VM decryption key)
         oai_did:            The oai-device-id (from oai-did cookie)
         flow:               The flow identifier (default "__default__")
+        geo_info:           Cloudflare geo IP variables to inject into the mock window.
 
     Returns:
         JSON-stringified token blob
@@ -147,7 +135,7 @@ def build_sentinel_token(
     turnstile_token = None
     turnstile = chat_req.get("turnstile", {})
     if turnstile.get("required") and turnstile.get("dx"):
-        turnstile_token = execute_turnstile_vm(turnstile["dx"], p_token)
+        turnstile_token = execute_turnstile_vm(turnstile["dx"], p_token, geo_info)
 
     payload = {
         "p": enforcement_token,

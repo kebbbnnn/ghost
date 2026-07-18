@@ -13,25 +13,24 @@ class BrowserEnv:
 
     # navigator.*
     user_agent: str = (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/136.0.0.0 Safari/537.36"
     )
     language: str = "en-US"
     languages: str = "en-US,en"
-    hardware_concurrency: int = 10
+    hardware_concurrency: int = 16
     device_memory: int = 8
     vendor: str = "Google Inc."
-    platform: str = "MacIntel"
+    platform: str = "Win32"
 
     # screen.*
-    screen_width: int = 1440
-    screen_height: int = 900
+    screen_width: int = 1920
+    screen_height: int = 1080
 
     # WebGL GPU fingerprint
-    gpu_vendor: str = "Google Inc. (Intel)"
+    gpu_vendor: str = "Google Inc. (NVIDIA)"
     gpu_renderer: str = (
-        "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)"
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Laptop GPU/PCIe/SSE2, OpenGL 4.6)"
     )
 
     # Timezone

@@ -204,15 +204,24 @@ class _VM:
     The opcode alias map is built from the COPY chain at the start.
     """
 
-    def __init__(self):
+    def __init__(self, geo_info: dict = None):
         self.reg: dict = {}
         self.result: str | None = None
         self._opcode_aliases: dict = {}  # reg_id → canonical opcode int
 
+        import copy
+        self.window_props = copy.deepcopy(_Env.WINDOW_PROPS)
+        if geo_info:
+            self.window_props.update(geo_info)
+
         # Seed registers with opcode handlers so dynamic dispatch (e.g., IF_DEFINED) works
         def make_handler(op_code):
-            # fn_args is a list of register IDs passed directly by IF_DEF/IF_EQ/etc.
-            return lambda args: self._dispatch(op_code, args)
+            def handler(args):
+                return self._dispatch(op_code, args)
+            handler._op_code = op_code
+            return handler
+
+
 
         for op in [
             OP_LOAD_PROGRAM, OP_XOR_REG, OP_SET,
@@ -227,8 +236,8 @@ class _VM:
             self.reg[float(op)] = make_handler(op)
 
         # Set OP_WINDOW to the simulated global object dictionary
-        self.reg[OP_WINDOW] = _Env.WINDOW_PROPS
-        self.reg[float(OP_WINDOW)] = _Env.WINDOW_PROPS
+        self.reg[OP_WINDOW] = self.window_props
+        self.reg[float(OP_WINDOW)] = self.window_props
 
         # RESOLVE (3) and REJECT (4) are called with literal values, not register IDs
         def _resolve(val=None, *_):
@@ -358,6 +367,8 @@ class _VM:
             return
         obj = self._get(args[1])
         prop = self._get(args[2])
+        if prop in ("cfConnectingIp", "cfIpLatitude", "cfIpLongitude", "cfIpCity", "userCountry", "userRegion", "userRegionCode"):
+            print(f"VM get index accessed property: {prop} = {obj.get(prop) if isinstance(obj, dict) else 'non-dict'}")
         if isinstance(obj, dict):
             self._set(args[0], obj.get(prop))
         elif hasattr(obj, "__getitem__") and not isinstance(obj, str):
@@ -379,7 +390,7 @@ class _VM:
     def _handle_window(self, args):
         """WINDOW dest  → set dest to the 'window' object (our env dict)"""
         if args:
-            self._set(args[0], _Env.WINDOW_PROPS)
+            self._set(args[0], self.window_props)
 
     def _handle_call(self, args):
         """CALL fn_reg, *arg_regs"""
@@ -407,6 +418,9 @@ class _VM:
         self._handle_try_call(args)
 
     def _call_fn(self, fn, call_args: list):
+        if hasattr(fn, "_op_code"):
+            return self._call_op_as_fn(fn._op_code, call_args)
+
         fn_name = "unknown"
         if isinstance(fn, dict) and "_method" in fn:
             fn_name = fn["_method"]
@@ -439,6 +453,8 @@ class _VM:
             # Get property from object then call it
             if isinstance(obj, dict):
                 actual_method = obj.get(method_name)
+                if hasattr(actual_method, "_op_code"):
+                    return self._call_op_as_fn(actual_method._op_code, call_args)
                 if callable(actual_method):
                     return actual_method(*call_args)
                 # Handle synchronous Promise resolution for mocked JS Promises
@@ -457,6 +473,93 @@ class _VM:
             return fn(*call_args)
 
         return None
+
+    def _call_op_as_fn(self, op_code: int, args: list):
+        if op_code == OP_GET_INDEX:
+            obj, prop = (args + [None, None])[:2]
+            if prop in ("cfConnectingIp", "cfIpLatitude", "cfIpLongitude", "cfIpCity", "userCountry", "userRegion", "userRegionCode"):
+                print(f"VM GET_INDEX accessed property: {prop} = {obj.get(prop) if isinstance(obj, dict) else 'non-dict'}")
+            if isinstance(obj, dict):
+                return obj.get(prop)
+            elif hasattr(obj, "__getitem__") and not isinstance(obj, str):
+                try:
+                    return obj[prop]
+                except (KeyError, IndexError, TypeError):
+                    return None
+            return None
+            
+        elif op_code == OP_ADD:
+            a, b = (args + [0, 0])[:2]
+            try:
+                return a + b
+            except Exception:
+                return str(a or "") + str(b or "")
+                
+        elif op_code == OP_SUB:
+            a, b = (args + [0, 0])[:2]
+            try:
+                return float(a or 0) - float(b or 0)
+            except Exception:
+                return 0
+                
+        elif op_code == OP_MULTIPLY:
+            a, b = (args + [0, 0])[:2]
+            try:
+                return float(a or 0) * float(b or 0)
+            except Exception:
+                return 0
+                
+        elif op_code == OP_DIVIDE:
+            a, b = (args + [0, 1])[:2]
+            try:
+                divisor = float(b or 0)
+                return 0 if divisor == 0 else float(a or 0) / divisor
+            except Exception:
+                return 0
+                
+        elif op_code == OP_XOR_REG:
+            a, b = (args + ["", ""])[:2]
+            return _xor_decrypt(str(a), str(b))
+            
+        elif op_code == OP_SET or op_code == OP_COPY:
+            return args[0] if args else None
+            
+        elif op_code == OP_JSON_PARSE:
+            raw = str(args[0] if args else "null")
+            try:
+                return json.loads(raw)
+            except Exception:
+                return None
+                
+        elif op_code == OP_JSON_STRINGIFY:
+            val = args[0] if args else None
+            try:
+                return json.dumps(val, separators=(",", ":"))
+            except Exception:
+                return str(val)
+                
+        elif op_code == OP_ATOB:
+            val = args[0] if args else ""
+            try:
+                return base64.b64decode(str(val or "")).decode("latin-1")
+            except Exception:
+                return ""
+                
+        elif op_code == OP_BTOA:
+            val = args[0] if args else ""
+            try:
+                return base64.b64encode(str(val or "").encode("latin-1")).decode("latin-1")
+            except Exception:
+                return ""
+                
+        elif op_code == OP_WINDOW:
+            return self.window_props
+            
+        elif op_code == OP_AWAIT:
+            return args[0] if args else None
+            
+        return None
+
 
     def _handle_json_parse(self, args):
         if len(args) >= 2:
@@ -649,13 +752,14 @@ def _xor_decrypt(data: str, key: str) -> str:
     return "".join(chr(ord(d) ^ ord(key[i % len(key)])) for i, d in enumerate(data))
 
 
-def execute_turnstile_vm(dx: str, p_token: str) -> str | None:
+def execute_turnstile_vm(dx: str, p_token: str, geo_info: dict = None) -> str | None:
     """
     Decrypt and execute the Turnstile VM bytecode.
 
     Args:
         dx:      Base64-encoded encrypted bytecode (from chat-requirements)
         p_token: The gAAAAAC requirements token (XOR decryption key)
+        geo_info: Cloudflare geo IP variables to inject into the mock window.
 
     Returns:
         The resolved base64 token string, or None on failure.
@@ -665,7 +769,7 @@ def execute_turnstile_vm(dx: str, p_token: str) -> str | None:
         decrypted = _xor_decrypt(raw, p_token)
         instructions = json.loads(decrypted)
 
-        vm = _VM()
+        vm = _VM(geo_info)
         return vm.execute(instructions)
     except Exception as e:
         import traceback

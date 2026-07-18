@@ -1,0 +1,354 @@
+INFO:     Started server process [22639]
+INFO:     Waiting for application startup.
+INFO:src.providers.chatgpt.session:Got oai-did: c1ccf3d6-2d36-46e2-88ac-76a6102edfa9
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.44770263381831144' difficulty='070e1c'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:ChatGPT: initial sentinel token fetched and next token pre-compute started
+INFO:httpx:HTTP Request: GET https://gemini.google.com/app "HTTP/2 200 OK"
+INFO:src.providers.gemini.session:Gemini tokens refreshed: bot_server=boq_assistant-bard-web-server_20260716.08_p0, at_token=AFWLbD1VB1YjRbVBU-7RszMkUu7eRA...
+INFO:src.providers.gemini.session:Gemini: tokens pre-fetched at startup
+INFO:src.providers.perplexity.session:Refreshing Perplexity guest session...
+INFO:src.providers.perplexity.session:Perplexity guest session warmed up. Cookies: ['__cf_bm', '__cflb']
+INFO:src.providers.surfsense.session:SurfSense provider initialized (unlimited bypass mode active)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8100 (Press CTRL+C to quit)
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.08080211051466057' difficulty='073bce'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_71c4699b.gif (id=file-Lt224rUzyqhjoSKWJSi39c)
+INFO:httpx:HTTP Request: PUT https://files09.oaiusercontent.com/file-Lt224rUzyqhjoSKWJSi39c?se=2026-07-18T05%3A09%3A13Z&sp=cw&sv=2026-02-06&sr=b&skoid=17752c86-7ba8-4a32-b7d9-e599a1e47446&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A42%3A29Z&ske=2026-07-18T19%3A42%3A29Z&sks=b&skv=2026-02-06&sig=CcJlt1Dg4XMn43bNdKF53zO6rIP1x4NAArdWOKfgnOk%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 42 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-Lt224rUzyqhjoSKWJSi39c
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+INFO:     127.0.0.1:55299 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.8781274525809691' difficulty='061a80'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_40f6dc61.jpg (id=file-RAWaq3LzFUyzMLvwH2nSiK)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-RAWaq3LzFUyzMLvwH2nSiK?se=2026-07-18T05%3A09%3A19Z&sp=cw&sv=2026-02-06&sr=b&skoid=17752c86-7ba8-4a32-b7d9-e599a1e47446&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A42%3A29Z&ske=2026-07-18T19%3A42%3A29Z&sks=b&skv=2026-02-06&sig=iWfFLiRD0hmJtO3AeVtGrONPF3gqAXCcyuqHSI1LLPw%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 344951 bytes to blob storage
+INFO:     127.0.0.1:55289 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-RAWaq3LzFUyzMLvwH2nSiK
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+INFO:     127.0.0.1:55304 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.22682712822703555' difficulty='061a80'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_cc693146.jpg (id=file-Rfs67MBSXgHUXQCXKNpwGu)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-Rfs67MBSXgHUXQCXKNpwGu?se=2026-07-18T05%3A09%3A54Z&sp=cw&sv=2026-02-06&sr=b&skoid=17752c86-7ba8-4a32-b7d9-e599a1e47446&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A42%3A29Z&ske=2026-07-18T19%3A42%3A29Z&sks=b&skv=2026-02-06&sig=PNMu8ahO%2BGlixLz%2B2d0RJF4Dx6fLtgNEre4bw2f7f0A%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 338214 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-Rfs67MBSXgHUXQCXKNpwGu
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef2d68fd1996a-LAX. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (0a95b101-13a8-48f8-98f5-57b2818ef342)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Device flagged (403). Backing off 14.1s before reset+retry...
+INFO:src.providers.chatgpt.session:Got oai-did: 42b8e1d0-2e65-4897-8261-1b3de5e0a1d7
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.8229498796139016' difficulty='068195'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_4c5e470c.jpg (id=file-WZKEavURGuBc6zYqVSCJHu)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-WZKEavURGuBc6zYqVSCJHu?se=2026-07-18T05%3A10%3A13Z&sp=cw&sv=2026-02-06&sr=b&skoid=0b489217-792c-4e68-900b-d4f749baab18&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T17%3A19%3A42Z&ske=2026-07-18T17%3A19%3A42Z&sks=b&skv=2026-02-06&sig=KSvsSaSPw/qwwkPJZgPUHe2c7wHicq9VZx1I%2BeMQSbk%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 338214 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-WZKEavURGuBc6zYqVSCJHu
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef34d1cb277c5-HKG. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (cdbecb7b-f1a0-4517-be3c-8fc38e2f92d5)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Device flagged (403). Backing off 16.0s before reset+retry...
+INFO:src.providers.chatgpt.session:Got oai-did: 0010a826-e2e5-46d2-9011-2d1059b7b5c8
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.42392685875647684' difficulty='065733'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_0719eea3.jpg (id=file-CpKdyd76dhXKeUKyMQFmpQ)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-CpKdyd76dhXKeUKyMQFmpQ?se=2026-07-18T05%3A10%3A35Z&sp=cw&sv=2026-02-06&sr=b&skoid=a2404ac2-96ba-4f5e-a046-626ad1eacf00&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T23%3A27%3A31Z&ske=2026-07-18T23%3A27%3A31Z&sks=b&skv=2026-02-06&sig=E6%2Bu8xrgizLdRUQJBLp7%2BhjHNoC46fnIvQ1lLjyx3sg%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 338214 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-CpKdyd76dhXKeUKyMQFmpQ
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef3da68625f60-SIN. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (4d6ff2af-37f3-4633-a011-6d7478fe182f)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Token expired, refreshing and retrying...
+INFO:src.providers.chatgpt.session:Got oai-did: 1e44d051-1d03-44a4-99b4-04f9567a9ac7
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.36294696257664605' difficulty='0761c8'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_05264e6a.jpg (id=file-Nh9g9xbqoeFd44NkNJ9qKa)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-Nh9g9xbqoeFd44NkNJ9qKa?se=2026-07-18T05%3A10%3A42Z&sp=cw&sv=2026-02-06&sr=b&skoid=17752c86-7ba8-4a32-b7d9-e599a1e47446&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A42%3A29Z&ske=2026-07-18T19%3A42%3A29Z&sks=b&skv=2026-02-06&sig=kBnU3PbGSjS/0SnB206Q3QbsmlpyJkjS8cltZpBA1so%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 338214 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-Nh9g9xbqoeFd44NkNJ9qKa
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef3fd9add090c-LAX. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (2216e795-f7bc-4597-acda-c4c2794a284d)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Device flagged (403). Backing off 19.4s before reset+retry...
+INFO:src.providers.chatgpt.session:Got oai-did: 83743d61-aca9-4ba5-8854-3b8edf531cf2
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.3504988925999084' difficulty='065bcb'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.8060078747688565' difficulty='065380'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_91debdfd.jpg (id=file-A8ZjmYzEvaiqEwz5kP3Gzh)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-A8ZjmYzEvaiqEwz5kP3Gzh?se=2026-07-18T05%3A11%3A04Z&sp=cw&sv=2026-02-06&sr=b&skoid=17752c86-7ba8-4a32-b7d9-e599a1e47446&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A42%3A29Z&ske=2026-07-18T19%3A42%3A29Z&sks=b&skv=2026-02-06&sig=a6fYty2x7ZyY9l2%2Bg73ocBLQ0QWGaUn35OC75BoIYy8%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 338214 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-A8ZjmYzEvaiqEwz5kP3Gzh
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef487bf0651ae-LAX. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (553bfdd5-625d-431b-90fa-8a9c8e0cd016)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Device flagged (403). Backing off 15.8s before reset+retry...
+INFO:src.providers.chatgpt.session:Got oai-did: 8347ee09-3a95-4bae-a360-d0313876d626
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:     127.0.0.1:55323 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.7691445554532219' difficulty='0728f2'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_0c29bf4a.jpg (id=file-XmLcWukaMQk997SunzrsoX)
+INFO:httpx:HTTP Request: PUT https://files09.oaiusercontent.com/file-XmLcWukaMQk997SunzrsoX?se=2026-07-18T05%3A11%3A56Z&sp=cw&sv=2026-02-06&sr=b&skoid=77a59b03-a10a-4551-ba57-b8b2c8b8d6a5&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A56%3A12Z&ske=2026-07-18T19%3A56%3A12Z&sks=b&skv=2026-02-06&sig=YP7eLkPlgd7WuDikGyJNh6DWNoBMTNcFgcpUqxiOIM4%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 347391 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-XmLcWukaMQk997SunzrsoX
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef5d1cf29e2f2-HKG. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (741c5717-be08-4629-a9c6-963b3520bf52)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Device flagged (403). Backing off 13.0s before reset+retry...
+INFO:src.providers.chatgpt.session:Got oai-did: e55d1f4a-5fca-4074-b24c-7aa77ee65674
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.13338796252524998' difficulty='061a80'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_be3af8c1.jpg (id=file-Y37Vqj8uFrW8GZNuCsCL4w)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-Y37Vqj8uFrW8GZNuCsCL4w?se=2026-07-18T05%3A12%3A15Z&sp=cw&sv=2026-02-06&sr=b&skoid=17752c86-7ba8-4a32-b7d9-e599a1e47446&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A44%3A09Z&ske=2026-07-18T19%3A44%3A09Z&sks=b&skv=2026-02-06&sig=Kl/o2CHdAxbAJHTtIX7nJdNpCT31Et6jDX40Gy89KcI%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 347391 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-Y37Vqj8uFrW8GZNuCsCL4w
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef648784969be-LAX. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (4f5b455f-b7de-4902-b5d2-f85b3695fad2)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Device flagged (403). Backing off 10.7s before reset+retry...
+INFO:src.providers.chatgpt.session:Got oai-did: 516b9c83-588f-4ea4-9ec2-431d57231f7c
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.004603230513915868' difficulty='061a80'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_66f05c30.jpg (id=file-PhEbD1VCUihiguNqTiz9HY)
+INFO:httpx:HTTP Request: PUT https://files09.oaiusercontent.com/file-PhEbD1VCUihiguNqTiz9HY?se=2026-07-18T05%3A12%3A32Z&sp=cw&sv=2026-02-06&sr=b&skoid=77a59b03-a10a-4551-ba57-b8b2c8b8d6a5&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T22%3A16%3A34Z&ske=2026-07-18T22%3A16%3A34Z&sks=b&skv=2026-02-06&sig=qwz4cZVw29BwH19UyESnL/mTNscIqeiG/XSNfMFKjHg%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 347391 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-PhEbD1VCUihiguNqTiz9HY
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.10408086715974074' difficulty='066f1a'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:     127.0.0.1:55334 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.43124796198263216' difficulty='063a1b'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_4682adc4.jpg (id=file-EHqj8zJrw5dyF6x3i7PgSy)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-EHqj8zJrw5dyF6x3i7PgSy?se=2026-07-18T05%3A13%3A12Z&sp=cw&sv=2026-02-06&sr=b&skoid=77a59b03-a10a-4551-ba57-b8b2c8b8d6a5&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A53%3A57Z&ske=2026-07-18T19%3A53%3A57Z&sks=b&skv=2026-02-06&sig=yPUjc3fyzGtLn288twI2GuvkI39lMyPgFHviZ8LGlsc%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 369286 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-EHqj8zJrw5dyF6x3i7PgSy
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef7a97b60b178-HKG. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (d51ecd34-4435-495e-a30f-6fa181fcbe95)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Device flagged (403). Backing off 16.2s before reset+retry...
+INFO:src.providers.chatgpt.session:Got oai-did: e4f331e8-8c35-47af-9d11-41f9ff7c3267
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.36119230638005906' difficulty='079fd7'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_89d5b3fe.jpg (id=file-GYLHwoD6KnPtNdU2qNLX7k)
+INFO:httpx:HTTP Request: PUT https://files09.oaiusercontent.com/file-GYLHwoD6KnPtNdU2qNLX7k?se=2026-07-18T05%3A13%3A33Z&sp=cw&sv=2026-02-06&sr=b&skoid=17752c86-7ba8-4a32-b7d9-e599a1e47446&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A42%3A29Z&ske=2026-07-18T19%3A42%3A29Z&sks=b&skv=2026-02-06&sig=oPsj7dRhDADzUxZZ7rInot5AdnDAFjmeOxSjHLbx78s%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 369286 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-GYLHwoD6KnPtNdU2qNLX7k
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef82e6801e9e0-LAX. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (6f4e12ae-3002-42a1-9cf8-baebd286f0d8)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Device flagged (403). Backing off 15.0s before reset+retry...
+INFO:src.providers.chatgpt.session:Got oai-did: b8ded727-5961-431e-96a7-b9f557fe37e6
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.29024580188151095' difficulty='066e84'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_e1b65e7c.jpg (id=file-LS4igVj89XShg1KKnZcPP6)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-LS4igVj89XShg1KKnZcPP6?se=2026-07-18T05%3A13%3A53Z&sp=cw&sv=2026-02-06&sr=b&skoid=17752c86-7ba8-4a32-b7d9-e599a1e47446&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A46%3A09Z&ske=2026-07-18T19%3A46%3A09Z&sks=b&skv=2026-02-06&sig=TF1BHHblvwEF/GBZSu277QJKNF8i0qquSh4UegizMfc%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 369286 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-LS4igVj89XShg1KKnZcPP6
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+WARNING:src.providers.chatgpt.session:POST to conversation returned 403. CF-Ray: a1cef8a4b8b8585e-LAX. Body (121B): {"detail":"Unusual activity has been detected from your device. Try again later. (f53d9595-54fa-40aa-91bf-09de22b5381e)"}
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Session reset: all cookies and device state cleared
+WARNING:src.providers.chatgpt.session:Token expired, refreshing and retrying...
+INFO:src.providers.chatgpt.session:Got oai-did: befc8458-a5dd-4e7e-8ae3-97246125be94
+INFO:src.providers.chatgpt.session:Scraped client version: prod-fb4a8a2a751dfec391053cfd7b01c52699ccf78c
+INFO:src.providers.chatgpt.session:Scraped build number (data-seq): 8370486
+INFO:src.providers.chatgpt.session:Scraped geo_info bootstrap: {'cfConnectingIp': '2001:4456:14d:8e00:4887:6da2:fb4e:c3a6', 'cfIpLatitude': '6.11278', 'cfIpLongitude': '125.17167', 'cfIpCity': 'General Santos', 'userCountry': 'PH', 'userRegion': 'Soccsksargen', 'userRegionCode': '12'}
+INFO:httpx:HTTP Request: GET https://gemini.google.com/app "HTTP/2 200 OK"
+INFO:src.providers.gemini.session:Gemini tokens refreshed: bot_server=boq_assistant-bard-web-server_20260716.08_p0, at_token=AFWLbD02dQXevvpg-yQIQUxLArmWHx...
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.08611318197537343' difficulty='068c30'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_2f350d4a.jpg (id=file-Req83vgkuG84ZhK2ZykYrs)
+INFO:httpx:HTTP Request: PUT https://files09.oaiusercontent.com/file-Req83vgkuG84ZhK2ZykYrs?se=2026-07-18T05%3A14%3A00Z&sp=cw&sv=2026-02-06&sr=b&skoid=77a59b03-a10a-4551-ba57-b8b2c8b8d6a5&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T22%3A16%3A35Z&ske=2026-07-18T22%3A16%3A35Z&sks=b&skv=2026-02-06&sig=i%2B0HpyfIgr/i%2BFvikgAzyjR41nhkkhuPVGpaoQYCkzI%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 369286 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-Req83vgkuG84ZhK2ZykYrs
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.4399121667702621' difficulty='06b5d2'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.692686307492297' difficulty='06c84d'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.7518730472098818' difficulty='063272'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:     127.0.0.1:55368 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.15396788385039328' difficulty='07a120'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_24e942c2.jpg (id=file-FNTRiByoJqsF3oPrfNfpST)
+INFO:httpx:HTTP Request: PUT https://files.oaiusercontent.com/file-FNTRiByoJqsF3oPrfNfpST?se=2026-07-18T05%3A17%3A21Z&sp=cw&sv=2026-02-06&sr=b&skoid=77a59b03-a10a-4551-ba57-b8b2c8b8d6a5&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-17T19%3A53%3A57Z&ske=2026-07-18T19%3A53%3A57Z&sks=b&skv=2026-02-06&sig=TI8XhttAjSvUmjHM4%2Bdcq2RPtEEmhd/jnMZxP7cZCUY%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 356895 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-FNTRiByoJqsF3oPrfNfpST
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.7133427609404583' difficulty='06944e'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:httpx:HTTP Request: GET https://gemini.google.com/app "HTTP/2 200 OK"
+INFO:src.providers.gemini.session:Gemini tokens refreshed: bot_server=boq_assistant-bard-web-server_20260716.08_p0, at_token=AFWLbD0bYA4aeX7M2RYxdWsX0jbCBg...
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.27974649534092555' difficulty='0699f5'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.8103390301053226' difficulty='070679'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.22415140110274911' difficulty='06c5a0'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.9733989762153137' difficulty='07753d'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.4399855844454581' difficulty='0761b0'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.perplexity.session:Refreshing Perplexity guest session...
+INFO:src.providers.perplexity.session:Perplexity guest session warmed up. Cookies: ['__cf_bm', '__cflb']
+INFO:httpx:HTTP Request: GET https://gemini.google.com/app "HTTP/2 200 OK"
+INFO:src.providers.gemini.session:Gemini tokens refreshed: bot_server=boq_assistant-bard-web-server_20260716.08_p0, at_token=AFWLbD2kehM-4xawnkjv5JplTYykxj...
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.053477731887004554' difficulty='0777cd'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.5831240748905538' difficulty='07a120'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.009818041030988156' difficulty='07659c'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.12705838813545278' difficulty='07a120'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.5977288617324991' difficulty='069ea1'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:     127.0.0.1:55443 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.15541348107679698' difficulty='061a80'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.uploader:Processing image_url part (len=50 chars)
+INFO:src.providers.chatgpt.uploader:Registered file: image_1af1608d.jpg (id=file-E26Bc5dHxN9emJYZbM8Pc4)
+INFO:httpx:HTTP Request: PUT https://files09.oaiusercontent.com/file-E26Bc5dHxN9emJYZbM8Pc4?se=2026-07-18T05%3A28%3A37Z&sp=cw&sv=2026-02-06&sr=b&skoid=77a59b03-a10a-4551-ba57-b8b2c8b8d6a5&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-18T01%3A01%3A21Z&ske=2026-07-19T01%3A01%3A21Z&sks=b&skv=2026-02-06&sig=l2Nusk230FuczfpGpx6ONwCKzyCCzkf2J5MwNICDSy8%3D "HTTP/1.1 201 Created"
+INFO:src.providers.chatgpt.uploader:Uploaded 356712 bytes to blob storage
+INFO:src.providers.chatgpt.uploader:File processing confirmed for file-E26Bc5dHxN9emJYZbM8Pc4
+INFO:src.providers.chatgpt.session:Sending /prepare pre-flight request...
+INFO:src.providers.chatgpt.session:Successfully obtained conduit token from /prepare
+INFO:src.providers.chatgpt.session:Requesting conversation from URL: https://chatgpt.com/backend-anon/f/conversation
+INFO:httpx:HTTP Request: GET https://gemini.google.com/app "HTTP/2 200 OK"
+INFO:src.providers.gemini.session:Gemini tokens refreshed: bot_server=boq_assistant-bard-web-server_20260716.08_p0, at_token=AFWLbD2V1dzKgRvZqc4EClThzgjD6b...
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.06715753920891143' difficulty='071e5a'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.6088370843538313' difficulty='067c1e'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.36009699845073473' difficulty='06b419'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.7834465210330828' difficulty='0727e7'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.3050371649288789' difficulty='06d437'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:httpx:HTTP Request: GET https://gemini.google.com/app "HTTP/2 200 OK"
+INFO:src.providers.gemini.session:Gemini tokens refreshed: bot_server=boq_assistant-bard-web-server_20260716.08_p0, at_token=AFWLbD1D0Bsb0wW1vrGqVtebmY-WBM...
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.6475746596900668' difficulty='061a80'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.6266763854187043' difficulty='07a120'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.8415433834780083' difficulty='0755db'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.8180368424759171' difficulty='07a120'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.7831746458886317' difficulty='06a615'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.perplexity.session:Refreshing Perplexity guest session...
+INFO:src.providers.perplexity.session:Perplexity guest session warmed up. Cookies: ['__cf_bm', '__cflb']
+INFO:httpx:HTTP Request: GET https://gemini.google.com/app "HTTP/2 200 OK"
+INFO:src.providers.gemini.session:Gemini tokens refreshed: bot_server=boq_assistant-bard-web-server_20260716.08_p0, at_token=AFWLbD0nKxIZzztF5NaBHs0klUtFB-...
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.8288566621539181' difficulty='07a120'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.3235249405481285' difficulty='07324c'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.35877261555133' difficulty='06914a'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.42243974589105404' difficulty='073cde'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.37641502273452343' difficulty='0650bb'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:httpx:HTTP Request: GET https://gemini.google.com/app "HTTP/2 200 OK"
+INFO:src.providers.gemini.session:Gemini tokens refreshed: bot_server=boq_assistant-bard-web-server_20260716.08_p0, at_token=AFWLbD2QVXq7sE3mkpUC21wc0IGCtn...
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.972003301284702' difficulty='066d18'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.16111859486791202' difficulty='061a80'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.7943521729930304' difficulty='079d34'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.03797499341874744' difficulty='06b1ab'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.8879101827134828' difficulty='075678'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:httpx:HTTP Request: GET https://gemini.google.com/app "HTTP/2 200 OK"
+INFO:src.providers.gemini.session:Gemini tokens refreshed: bot_server=boq_assistant-bard-web-server_20260716.08_p0, at_token=AFWLbD2DdO3_1RFRj7Gzkh2K4KgHWU...
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.7228757625099874' difficulty='061a80'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.9900641514081681' difficulty='069295'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully
+INFO:src.providers.chatgpt.session:Solving PoW: seed='0.3535924971297033' difficulty='061a80'
+INFO:src.providers.chatgpt.session:Sentinel token generated successfully

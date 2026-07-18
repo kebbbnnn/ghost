@@ -442,7 +442,27 @@ async def sse_events(request: Request):
 # Entrypoint
 # ---------------------------------------------------------------------------
 
+def _free_port(port: int) -> None:
+    """Kill any process currently listening on *port* so we can bind cleanly."""
+    import subprocess, signal
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True
+        )
+        pids = result.stdout.strip().split()
+        for pid in pids:
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+                log.info("Freed port %d by killing PID %s", port, pid)
+            except ProcessLookupError:
+                pass
+    except FileNotFoundError:
+        pass  # lsof not available on this platform
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8100))
+    _free_port(port)
     uvicorn.run("src.server:app", host="0.0.0.0", port=port, reload=False)
