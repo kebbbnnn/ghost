@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from typing import AsyncGenerator
 
@@ -24,6 +25,26 @@ def _build_tools_xml(tools: list) -> str:
     xml_parts.append("</tools>")
     return "\n".join(xml_parts)
 
+def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
+    """Parse an XML <invoke name="...">...</invoke> block into (tool_name, parameters)."""
+    tool_name = "unknown"
+    m_name = re.search(r'name=["\']([^"\']+)["\']', xml_block)
+    if m_name:
+        tool_name = m_name.group(1)
+        
+    params = {}
+    param_matches = re.finditer(r'<parameter\s+name=["\']([^"\']+)["\']\s*>(.*?)</parameter>', xml_block, re.DOTALL)
+    for match in param_matches:
+        p_name = match.group(1)
+        p_val_raw = match.group(2).strip()
+        try:
+            p_val = json.loads(p_val_raw)
+        except Exception:
+            p_val = p_val_raw
+        params[p_name] = p_val
+        
+    return tool_name, params
+
 def anthropic_to_openai_request(req: dict) -> dict:
     """Convert Anthropic Messages API request to OpenAI chat completions format."""
     messages = []
@@ -38,12 +59,15 @@ def anthropic_to_openai_request(req: dict) -> dict:
             system_text += sys_field
         elif isinstance(sys_field, list):
             system_text += "\n".join(
-                b.get("text", "") for b in sys_field if b.get("type") == "text"
+                b.get("text", "") for b in sys_field if isinstance(b, dict) and b.get("type") == "text"
             )
             
     # Inject tools into system prompt
     tools = req.get("tools", [])
-    if tools:
+    tool_choice = req.get("tool_choice", {})
+    t_choice_type = tool_choice.get("type") if isinstance(tool_choice, dict) else None
+
+    if tools and t_choice_type != "none":
         tools_xml = _build_tools_xml(tools)
         tool_prompt = (
             "\n\nYou have access to the following tools:\n"
@@ -56,6 +80,13 @@ def anthropic_to_openai_request(req: dict) -> dict:
             "You cannot call multiple tools at once. "
             "If you do not need to use a tool, simply answer the user directly."
         )
+        if t_choice_type == "any":
+            tool_prompt += "\nIMPORTANT: You MUST call at least one of the available tools."
+        elif t_choice_type == "tool":
+            target_name = tool_choice.get("name", "")
+            if target_name:
+                tool_prompt += f'\nIMPORTANT: You MUST call the tool "{target_name}".'
+                
         system_text += tool_prompt
         
     if system_text:
@@ -67,14 +98,30 @@ def anthropic_to_openai_request(req: dict) -> dict:
         content_field = msg.get("content", "")
         
         text_content = ""
+        image_parts = []
+        
         if isinstance(content_field, str):
             text_content = content_field
         elif isinstance(content_field, list):
-            # Handle user text and tool results
             for block in content_field:
+                if not isinstance(block, dict):
+                    continue
                 btype = block.get("type")
                 if btype == "text":
                     text_content += block.get("text", "") + "\n"
+                elif btype == "image":
+                    source = block.get("source", {})
+                    stype = source.get("type")
+                    if stype == "url":
+                        img_url = source.get("url", "")
+                        if img_url:
+                            image_parts.append({"type": "image_url", "image_url": {"url": img_url}})
+                    elif stype == "base64":
+                        media_type = source.get("media_type", "image/png")
+                        data = source.get("data", "")
+                        if data:
+                            img_url = f"data:{media_type};base64,{data}"
+                            image_parts.append({"type": "image_url", "image_url": {"url": img_url}})
                 elif btype == "tool_use":
                     # Assistant used a tool (in history)
                     tool_name = block.get("name")
@@ -82,18 +129,55 @@ def anthropic_to_openai_request(req: dict) -> dict:
                     
                     # Convert to XML so history matches what model is instructed to output
                     args_xml = ""
-                    for k, v in tool_args.items():
-                        args_xml += f'  <parameter name="{k}">{json.dumps(v) if not isinstance(v, str) else v}</parameter>\n'
+                    if isinstance(tool_args, dict):
+                        for k, v in tool_args.items():
+                            val_str = json.dumps(v) if not isinstance(v, str) else v
+                            args_xml += f'  <parameter name="{k}">{val_str}</parameter>\n'
                         
                     text_content += f'<invoke name="{tool_name}">\n{args_xml}</invoke>\n'
                 elif btype == "tool_result":
                     # User provided tool result
-                    tool_id = block.get("tool_use_id")
+                    tool_id = block.get("tool_use_id", "")
+                    is_err = block.get("is_error", False)
+                    err_attr = ' is_error="true"' if is_err else ''
                     res_content = block.get("content", "")
-                    text_content += f'<tool_result id="{tool_id}">\n{res_content}\n</tool_result>\n'
                     
-        messages.append({"role": role, "content": text_content.strip()})
-        
+                    res_text = ""
+                    if isinstance(res_content, str):
+                        res_text = res_content
+                    elif isinstance(res_content, list):
+                        for rblock in res_content:
+                            if not isinstance(rblock, dict):
+                                continue
+                            rb_type = rblock.get("type")
+                            if rb_type == "text":
+                                res_text += rblock.get("text", "") + "\n"
+                            elif rb_type == "image":
+                                source = rblock.get("source", {})
+                                stype = source.get("type")
+                                if stype == "url":
+                                    img_url = source.get("url", "")
+                                    if img_url:
+                                        image_parts.append({"type": "image_url", "image_url": {"url": img_url}})
+                                elif stype == "base64":
+                                    media_type = source.get("media_type", "image/png")
+                                    data = source.get("data", "")
+                                    if data:
+                                        img_url = f"data:{media_type};base64,{data}"
+                                        image_parts.append({"type": "image_url", "image_url": {"url": img_url}})
+                                        
+                    text_content += f'<tool_result id="{tool_id}"{err_attr}>\n{res_text.strip()}\n</tool_result>\n'
+                    
+        # Construct message content
+        if image_parts:
+            msg_content = []
+            if text_content.strip():
+                msg_content.append({"type": "text", "text": text_content.strip()})
+            msg_content.extend(image_parts)
+            messages.append({"role": role, "content": msg_content})
+        else:
+            messages.append({"role": role, "content": text_content.strip()})
+            
     # 3. Build OpenAI Request
     openai_req = {
         "model": req.get("model", "auto"),
@@ -105,6 +189,10 @@ def anthropic_to_openai_request(req: dict) -> dict:
         openai_req["max_tokens"] = req["max_tokens"]
     if "temperature" in req:
         openai_req["temperature"] = req["temperature"]
+    if "top_p" in req:
+        openai_req["top_p"] = req["top_p"]
+    if "stop_sequences" in req:
+        openai_req["stop"] = req["stop_sequences"]
         
     return openai_req
 
@@ -112,14 +200,13 @@ async def openai_to_anthropic_stream(openai_stream: AsyncGenerator[str, None], m
     """Convert OpenAI SSE stream to Anthropic SSE stream, intercepting XML tool calls."""
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     
-    # 1. Message Start
+    # Message Start
     yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'model': model, 'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
     
-    # 2. Content Block Start
-    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-    
+    block_index = 0
+    active_block_type = None  # None, "text", or "tool_use"
     buffer = ""
-    in_invoke = False
+    tool_called = False
     
     async for chunk_line in openai_stream:
         if not chunk_line.startswith("data: "):
@@ -148,77 +235,67 @@ async def openai_to_anthropic_stream(openai_stream: AsyncGenerator[str, None], m
         if content:
             buffer += content
             
-            # Streaming XML parser state machine
-            if not in_invoke:
-                invoke_idx = buffer.find("<invoke")
-                if invoke_idx != -1:
-                    # Flush text before <invoke as standard text block
-                    text_before = buffer[:invoke_idx]
-                    if text_before:
-                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text_before}})}\n\n"
-                    
-                    buffer = buffer[invoke_idx:]
-                    in_invoke = True
-                    
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
-                    
-                else:
-                    # Safe to flush everything except the very end which might be partial "<inv"
-                    safe_len = max(0, len(buffer) - 7)
-                    if safe_len > 0:
-                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': buffer[:safe_len]}})}\n\n"
-                        buffer = buffer[safe_len:]
-                        
-            if in_invoke:
-                # Look for </invoke>
-                end_idx = buffer.find("</invoke>")
-                if end_idx != -1:
-                    xml_block = buffer[:end_idx + 9]
-                    buffer = buffer[end_idx + 9:]
-                    in_invoke = False
-                    
-                    # Parse the XML to extract tool name and params
-                    tool_name = "unknown"
-                    name_start = xml_block.find('name="')
-                    if name_start != -1:
-                        name_end = xml_block.find('"', name_start + 6)
-                        tool_name = xml_block[name_start+6:name_end]
-                        
-                    params = {}
-                    param_parts = xml_block.split("<parameter")
-                    for p in param_parts[1:]:
-                        n_start = p.find('name="')
-                        if n_start != -1:
-                            n_end = p.find('"', n_start + 6)
-                            p_name = p[n_start+6:n_end]
-                            v_start = p.find('>') + 1
-                            v_end = p.find('</parameter>')
-                            p_val_raw = p[v_start:v_end].strip()
-                            try:
-                                p_val = json.loads(p_val_raw)
-                            except Exception:
-                                p_val = p_val_raw
-                            params[p_name] = p_val
+            while buffer:
+                if active_block_type != "tool_use":
+                    invoke_idx = buffer.find("<invoke")
+                    if invoke_idx != -1:
+                        text_before = buffer[:invoke_idx]
+                        if text_before:
+                            if active_block_type != "text":
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                active_block_type = "text"
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': text_before}})}\n\n"
                             
-                    tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
-                    
-                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 1, 'content_block': {'type': 'tool_use', 'id': tool_use_id, 'name': tool_name, 'input': {}}})}\n\n"
-                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 1, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(params)}})}\n\n"
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 1})}\n\n"
+                        if active_block_type == "text":
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                            active_block_type = None
+                            block_index += 1
+                            
+                        buffer = buffer[invoke_idx:]
+                        active_block_type = "tool_use"
+                        tool_called = True
+                    else:
+                        safe_len = max(0, len(buffer) - 7)
+                        if safe_len > 0:
+                            text_chunk = buffer[:safe_len]
+                            buffer = buffer[safe_len:]
+                            if active_block_type != "text":
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                active_block_type = "text"
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': text_chunk}})}\n\n"
+                        break
+                        
+                if active_block_type == "tool_use":
+                    end_idx = buffer.find("</invoke>")
+                    if end_idx != -1:
+                        xml_block = buffer[:end_idx + 9]
+                        buffer = buffer[end_idx + 9:]
+                        
+                        tool_name, params = _parse_invoke_xml(xml_block)
+                        tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                        
+                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'tool_use', 'id': tool_use_id, 'name': tool_name, 'input': {}}})}\n\n"
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(params)}})}\n\n"
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                        
+                        active_block_type = None
+                        block_index += 1
+                    else:
+                        break
 
     # Flush remaining buffer
     if buffer:
-        if in_invoke:
-            # Malformed, just dump it as text
-            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 2, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 2, 'delta': {'type': 'text_delta', 'text': buffer}})}\n\n"
-            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 2})}\n\n"
-        else:
-            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': buffer}})}\n\n"
-            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
-            
-    # Message Stop
-    yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}})}\n\n"
+        if active_block_type != "text":
+            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+            active_block_type = "text"
+        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': buffer}})}\n\n"
+        
+    if active_block_type == "text":
+        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+        active_block_type = None
+
+    stop_reason = "tool_use" if tool_called else "end_turn"
+    yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}})}\n\n"
     yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
 
 async def openai_to_anthropic_json(openai_resp: dict) -> dict:
@@ -239,50 +316,43 @@ async def openai_to_anthropic_json(openai_resp: dict) -> dict:
     if not choices:
         return {"type": "error", "error": {"type": "api_error", "message": "No choices returned"}}
         
-    content = choices[0].get("message", {}).get("content", "")
+    content = choices[0].get("message", {}).get("content", "") or ""
     
     blocks = []
+    has_tool_call = False
     
-    invoke_idx = content.find("<invoke")
-    if invoke_idx != -1:
-        text_before = content[:invoke_idx].strip()
-        if text_before:
-            blocks.append({"type": "text", "text": text_before})
-            
-        end_idx = content.find("</invoke>")
-        if end_idx != -1:
-            xml_block = content[invoke_idx:end_idx + 9]
-            
-            tool_name = "unknown"
-            name_start = xml_block.find('name="')
-            if name_start != -1:
-                name_end = xml_block.find('"', name_start + 6)
-                tool_name = xml_block[name_start+6:name_end]
+    curr = content
+    while curr:
+        invoke_idx = curr.find("<invoke")
+        if invoke_idx != -1:
+            text_before = curr[:invoke_idx].strip()
+            if text_before:
+                blocks.append({"type": "text", "text": text_before})
                 
-            params = {}
-            param_parts = xml_block.split("<parameter")
-            for p in param_parts[1:]:
-                n_start = p.find('name="')
-                if n_start != -1:
-                    n_end = p.find('"', n_start + 6)
-                    p_name = p[n_start+6:n_end]
-                    v_start = p.find('>') + 1
-                    v_end = p.find('</parameter>')
-                    p_val_raw = p[v_start:v_end].strip()
-                    try:
-                        p_val = json.loads(p_val_raw)
-                    except Exception:
-                        p_val = p_val_raw
-                    params[p_name] = p_val
-                    
-            blocks.append({
-                "type": "tool_use",
-                "id": f"toolu_{uuid.uuid4().hex[:24]}",
-                "name": tool_name,
-                "input": params
-            })
-    else:
-        blocks.append({"type": "text", "text": content})
+            end_idx = curr.find("</invoke>", invoke_idx)
+            if end_idx != -1:
+                xml_block = curr[invoke_idx:end_idx + 9]
+                curr = curr[end_idx + 9:]
+                
+                tool_name, params = _parse_invoke_xml(xml_block)
+                blocks.append({
+                    "type": "tool_use",
+                    "id": f"toolu_{uuid.uuid4().hex[:24]}",
+                    "name": tool_name,
+                    "input": params
+                })
+                has_tool_call = True
+            else:
+                # Unclosed <invoke, treat rest as text
+                blocks.append({"type": "text", "text": curr})
+                break
+        else:
+            if curr.strip():
+                blocks.append({"type": "text", "text": curr.strip()})
+            break
+            
+    if not blocks:
+        blocks.append({"type": "text", "text": ""})
         
     return {
         "id": msg_id,
@@ -290,7 +360,7 @@ async def openai_to_anthropic_json(openai_resp: dict) -> dict:
         "role": "assistant",
         "model": model,
         "content": blocks,
-        "stop_reason": "tool_use" if invoke_idx != -1 else "end_turn",
+        "stop_reason": "tool_use" if has_tool_call else "end_turn",
         "stop_sequence": None,
         "usage": {"input_tokens": 0, "output_tokens": 0}
     }
