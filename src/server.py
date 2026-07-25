@@ -82,7 +82,17 @@ app.add_middleware(
 
 # Mount dashboard static files
 import os
-dashboard_path = os.path.join(os.path.dirname(__file__), "dashboard/public")
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+gui_dashboard = os.path.join(project_root, "examples", "gui", "dashboard", "public")
+examples_dashboard = os.path.join(project_root, "examples", "dashboard", "public")
+src_dashboard = os.path.join(os.path.dirname(__file__), "dashboard", "public")
+
+if os.path.exists(gui_dashboard):
+    dashboard_path = gui_dashboard
+elif os.path.exists(examples_dashboard):
+    dashboard_path = examples_dashboard
+else:
+    dashboard_path = src_dashboard
 app.mount("/dashboard", StaticFiles(directory=dashboard_path, html=True), name="dashboard")
 
 # ---------------------------------------------------------------------------
