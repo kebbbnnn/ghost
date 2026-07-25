@@ -34,6 +34,7 @@ from .converter import (
     build_streaming_chunks,
     format_openai_chunk,
 )
+from .tot import TreeOfThoughtsEngine
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +80,12 @@ class GeminiProvider(BaseProvider):
                 "created": 1746057600,
                 "owned_by": "google",
             },
+            {
+                "id": "gemini-tree-of-thoughts",
+                "object": "model",
+                "created": 1746057600,
+                "owned_by": "google",
+            },
         ]
 
     async def stream_chat(
@@ -89,6 +96,12 @@ class GeminiProvider(BaseProvider):
         parent_message_id: str | None = None,
     ) -> typing.AsyncGenerator[str, None]:
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
+        if model == "gemini-tree-of-thoughts":
+            engine = TreeOfThoughtsEngine(send_func=self._send_message)
+            async for sse_chunk in engine.run(messages, chunk_id, model=model):
+                yield sse_chunk
+            return
 
         try:
             for attempt in range(2):
