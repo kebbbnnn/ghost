@@ -37,8 +37,9 @@ COPY --from=builder /install /usr/local
 
 WORKDIR /app
 
-# Copy application source
+# Copy application source and static dashboard assets
 COPY src/ ./src/
+COPY examples/gui/dashboard/public ./examples/gui/dashboard/public
 
 # Create data directories (for volume mounts)
 RUN mkdir -p /app/data
