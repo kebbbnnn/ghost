@@ -1,13 +1,33 @@
-node_modules/
-data/
+# Virtual Environments
+.venv/
+venv/
+venv_playwright/
+env/
+.env/
 
-# Python
+# Node.js
+node_modules/
+
+# Python Cache & Build
 __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
-venv/
-venv_playwright/
+*.egg-info/
+dist/
+build/
 
-# Credentials
+# Logs & Debug Artifacts
+*.log
+*.jsonl
+debug_*.txt
+
+# Runtime Data & Credentials
+data/
 **/accounts.json
+.env
+*.env
+
+# Operating System
+.DS_Store
+Thumbs.db
