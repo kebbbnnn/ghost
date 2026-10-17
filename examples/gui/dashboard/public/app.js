@@ -706,6 +706,7 @@ async function sendMessage(isFollowup = false) {
     current.model = selectModel;
 
     if (!isFollowup) {
+        window._autoExecTurnCount = 0;
         if (!text && attachedImages.length === 0 && !attachedVideo) return;
 
         // --- VIDEO PATH ---
@@ -991,6 +992,23 @@ async function sendMessage(isFollowup = false) {
             current.messages.push(assistantMsg);
             saveThreads(threads);
             renderChatMessages();
+
+            // Autonomous mock tool execution
+            if (activeToolCalls.length > 0 && isAutoExecuteEnabled()) {
+                if (window._autoExecTurnCount === undefined) window._autoExecTurnCount = 0;
+                window._autoExecTurnCount++;
+                if (window._autoExecTurnCount <= 5) {
+                    logToConsole(`[Auto-Execute] Running ${activeToolCalls.length} tool call(s) autonomously (turn ${window._autoExecTurnCount}/5)...`, 'system');
+                    setTimeout(() => {
+                        window.executeAllMockTools();
+                    }, 400);
+                } else {
+                    logToConsole('[Auto-Execute] Safety cap reached: 5 consecutive autonomous tool turns. Pausing for user review.', 'warning');
+                    window._autoExecTurnCount = 0;
+                }
+            } else if (activeToolCalls.length === 0) {
+                window._autoExecTurnCount = 0;
+            }
         } else {
             bubble.remove();
         }
@@ -1151,6 +1169,10 @@ window.executeMockTool = function(callId, toolName, argsRaw) {
     sendMessage(true);
 };
 
+function isAutoExecuteEnabled() {
+    return localStorage.getItem('ghosttunnel_auto_exec_tools') === 'true';
+}
+
 function setupParametersDrawer() {
     const toggleBtn = document.getElementById('params-toggle-btn');
     const panel = document.getElementById('chat-params-panel');
@@ -1160,6 +1182,8 @@ function setupParametersDrawer() {
     const maxTokensInput = document.getElementById('param-max-tokens');
     const stopInput = document.getElementById('param-stop');
     const toolCheckboxes = document.querySelectorAll('.tool-chip input');
+    const autoExecParamCb = document.getElementById('param-auto-execute-tools');
+    const autoExecSettingsCb = document.getElementById('settings-auto-execute-tools');
 
     function updateBadge() {
         const activeTools = getActiveTools();
@@ -1168,8 +1192,9 @@ function setupParametersDrawer() {
         const isNonDefaultTemp = temp !== 0.7;
         const hasMaxTokens = Boolean(maxTokensInput?.value);
         const hasStop = Boolean(stopInput?.value?.trim());
+        const autoExec = isAutoExecuteEnabled();
 
-        const activeCount = (hasTools ? activeTools.length : 0) + (isNonDefaultTemp ? 1 : 0) + (hasMaxTokens ? 1 : 0) + (hasStop ? 1 : 0);
+        const activeCount = (hasTools ? activeTools.length : 0) + (isNonDefaultTemp ? 1 : 0) + (hasMaxTokens ? 1 : 0) + (hasStop ? 1 : 0) + (autoExec ? 1 : 0);
         if (activeCount > 0) {
             badge.textContent = `${activeCount} custom`;
             badge.style.background = 'rgba(0, 242, 254, 0.2)';
@@ -1180,6 +1205,23 @@ function setupParametersDrawer() {
             badge.style.color = 'var(--text-muted)';
         }
     }
+
+    // Initialize auto-execute checkbox states from localStorage
+    const initialAutoExec = isAutoExecuteEnabled();
+    if (autoExecParamCb) autoExecParamCb.checked = initialAutoExec;
+    if (autoExecSettingsCb) autoExecSettingsCb.checked = initialAutoExec;
+
+    function handleAutoExecChange(e) {
+        const checked = Boolean(e.target.checked);
+        localStorage.setItem('ghosttunnel_auto_exec_tools', checked ? 'true' : 'false');
+        if (autoExecParamCb) autoExecParamCb.checked = checked;
+        if (autoExecSettingsCb) autoExecSettingsCb.checked = checked;
+        updateBadge();
+        logToConsole(`[Settings] Autonomous tool execution ${checked ? 'enabled' : 'disabled'}.`, 'system');
+    }
+
+    if (autoExecParamCb) autoExecParamCb.addEventListener('change', handleAutoExecChange);
+    if (autoExecSettingsCb) autoExecSettingsCb.addEventListener('change', handleAutoExecChange);
 
     if (toggleBtn && panel) {
         toggleBtn.addEventListener('click', () => {
@@ -1203,6 +1245,7 @@ function setupParametersDrawer() {
     if (maxTokensInput) maxTokensInput.addEventListener('input', updateBadge);
     if (stopInput) stopInput.addEventListener('input', updateBadge);
     toolCheckboxes.forEach(cb => cb.addEventListener('change', updateBadge));
+    updateBadge();
 }
 
 // ---------------------------------------------------------------------------

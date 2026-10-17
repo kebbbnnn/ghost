@@ -207,6 +207,15 @@
                                         <span>🔍 Web Search</span>
                                     </label>
                                 </div>
+                                <div class="auto-exec-row">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="param-auto-execute-tools">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                    <label for="param-auto-execute-tools" class="auto-exec-label">
+                                        ⚡ Auto-execute mock tools & continue turns autonomously
+                                    </label>
+                                </div>
                             </div>
                         </div>
 
@@ -256,6 +265,22 @@
                         <div class="settings-form-row">
                             <span class="form-label">OpenAI SDK API Key</span>
                             <span class="form-value font-monospace">not-needed (or any value)</span>
+                        </div>
+                    </div>
+
+                    <div class="settings-card glass-panel">
+                        <h2>Agentic Tool Execution</h2>
+                        <div class="settings-form-row">
+                            <div>
+                                <span class="form-label">Auto-Execute Mock Tools</span>
+                                <p style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.25rem;">
+                                    Automatically compute mock tool results and reply to the agent in the chat playground without manual confirmation.
+                                </p>
+                            </div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="settings-auto-execute-tools">
+                                <span class="toggle-slider"></span>
+                            </label>
                         </div>
                     </div>
 
