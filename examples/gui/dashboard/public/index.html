@@ -148,6 +148,66 @@
                                     <option value="spectre-ultra">Spectre-Ultra (orchestrator)</option>
                                 </select>
                             </div>
+                            <div class="header-actions">
+                                <button class="params-toggle-btn" id="params-toggle-btn" title="Configure Temperature, Stop sequences & Function Tools">
+                                    <span>⚙️ Parameters & Tools</span>
+                                    <span class="params-badge" id="params-badge">Default</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Parameters & Tools Configuration Drawer -->
+                        <div class="chat-params-panel" id="chat-params-panel" style="display: none;">
+                            <div class="params-header">
+                                <h4>OpenAI Parameter & Tool Settings</h4>
+                                <span class="params-subtitle">Test GhostTunnel's emulation layer with real-time hyperparameter steering & tool calls</span>
+                            </div>
+                            <div class="params-grid">
+                                <div class="param-item">
+                                    <div class="param-item-header">
+                                        <label for="param-temperature">Temperature</label>
+                                        <span class="param-value-tag" id="temp-indicator">0.7 (Balanced)</span>
+                                    </div>
+                                    <input type="range" id="param-temperature" min="0" max="1" step="0.05" value="0.7">
+                                </div>
+                                <div class="param-item">
+                                    <label for="param-max-tokens">Max Tokens</label>
+                                    <input type="number" id="param-max-tokens" placeholder="e.g. 500" min="1" max="8192">
+                                </div>
+                                <div class="param-item">
+                                    <label for="param-stop">Stop Sequences</label>
+                                    <input type="text" id="param-stop" placeholder="e.g. STOP, END (comma-sep)">
+                                </div>
+                                <div class="param-item">
+                                    <label for="param-tool-choice">Tool Choice</label>
+                                    <select id="param-tool-choice">
+                                        <option value="auto">Auto (model decides)</option>
+                                        <option value="required">Required (force tool)</option>
+                                        <option value="none">None (disable tools)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="tools-tray">
+                                <span class="tools-tray-label">Enable Emulated Test Tools:</span>
+                                <div class="tools-options">
+                                    <label class="tool-chip">
+                                        <input type="checkbox" id="tool-opt-calc" value="calculator">
+                                        <span>🧮 Calculator</span>
+                                    </label>
+                                    <label class="tool-chip">
+                                        <input type="checkbox" id="tool-opt-weather" value="get_weather">
+                                        <span>⛅ Weather</span>
+                                    </label>
+                                    <label class="tool-chip">
+                                        <input type="checkbox" id="tool-opt-time" value="get_current_time">
+                                        <span>⏱️ Current Time</span>
+                                    </label>
+                                    <label class="tool-chip">
+                                        <input type="checkbox" id="tool-opt-search" value="web_search">
+                                        <span>🔍 Web Search</span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Chat Messages Screen -->

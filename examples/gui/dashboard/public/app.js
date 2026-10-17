@@ -19,6 +19,100 @@ function formatDuration(seconds) {
     return `${m}m ${s}s`;
 }
 
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+const AVAILABLE_TOOLS = {
+    calculator: {
+        type: "function",
+        function: {
+            name: "calculator",
+            description: "Perform mathematical evaluations (e.g. arithmetic, trigonometry, math expressions).",
+            parameters: {
+                type: "object",
+                properties: {
+                    expression: {
+                        type: "string",
+                        description: "The mathematical expression to evaluate, e.g. '125 * 37' or 'Math.sqrt(144)'"
+                    }
+                },
+                required: ["expression"]
+            }
+        }
+    },
+    get_weather: {
+        type: "function",
+        function: {
+            name: "get_weather",
+            description: "Retrieve current weather report and temperature for a given city or coordinates.",
+            parameters: {
+                type: "object",
+                properties: {
+                    location: {
+                        type: "string",
+                        description: "City or region name, e.g. 'Tokyo' or 'Paris'"
+                    },
+                    unit: {
+                        type: "string",
+                        enum: ["celsius", "fahrenheit"],
+                        description: "Temperature unit"
+                    }
+                },
+                required: ["location"]
+            }
+        }
+    },
+    get_current_time: {
+        type: "function",
+        function: {
+            name: "get_current_time",
+            description: "Get current date, time, and timezone information.",
+            parameters: {
+                type: "object",
+                properties: {
+                    timezone: {
+                        type: "string",
+                        description: "Timezone name or 'local'"
+                    }
+                }
+            }
+        }
+    },
+    web_search: {
+        type: "function",
+        function: {
+            name: "web_search",
+            description: "Simulate searching the web for real-time information and reference facts.",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: {
+                        type: "string",
+                        description: "Search keywords or question"
+                    }
+                },
+                required: ["query"]
+            }
+        }
+    }
+};
+
+function getActiveTools() {
+    const tools = [];
+    if (document.getElementById('tool-opt-calc')?.checked) tools.push(AVAILABLE_TOOLS.calculator);
+    if (document.getElementById('tool-opt-weather')?.checked) tools.push(AVAILABLE_TOOLS.get_weather);
+    if (document.getElementById('tool-opt-time')?.checked) tools.push(AVAILABLE_TOOLS.get_current_time);
+    if (document.getElementById('tool-opt-search')?.checked) tools.push(AVAILABLE_TOOLS.web_search);
+    return tools;
+}
+
 function parseMarkdown(text) {
     if (!text) return "";
     let escaped = text
@@ -296,7 +390,22 @@ function renderChatMessages() {
     }
 
     let html = '';
-    current.messages.forEach(msg => {
+    current.messages.forEach((msg, idx) => {
+        if (msg.role === 'tool') {
+            html += `
+                <div class="message-bubble tool-result">
+                    <div class="message-avatar">🔧</div>
+                    <div class="message-content">
+                        <div class="tool-result-header">
+                            <span>Tool Output for <code>${escapeHtml(msg.tool_call_id || msg.name || 'tool')}</code></span>
+                        </div>
+                        <pre class="tool-result-body"><code>${escapeHtml(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2))}</code></pre>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+
         const isUser = msg.role === 'user';
         const name = isUser ? 'You' : 'AI';
         
@@ -313,7 +422,61 @@ function renderChatMessages() {
                 }
             });
         } else {
-            textContent = msg.content;
+            textContent = msg.content || '';
+        }
+
+        let toolCallsHtml = '';
+        if (msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+            const subsequentToolOutputs = current.messages.slice(idx + 1).filter(m => m.role === 'tool');
+            const executedCallIds = new Set(subsequentToolOutputs.map(m => m.tool_call_id));
+            const pendingCalls = msg.tool_calls.filter(tc => !executedCallIds.has(tc.id));
+            const isLatestAssistantWithPending = (idx === current.messages.length - 1 - subsequentToolOutputs.length) && pendingCalls.length > 0;
+
+            toolCallsHtml = `<div class="tool-calls-container">`;
+            if (isLatestAssistantWithPending && pendingCalls.length > 1) {
+                toolCallsHtml += `
+                    <div style="margin-bottom: 0.6rem;">
+                        <button class="btn-execute-tool btn-execute-all" 
+                                onclick="window.executeAllMockTools()">
+                            ⚡ Execute All (${pendingCalls.length}) Pending Tools & Reply
+                        </button>
+                    </div>
+                `;
+            }
+            msg.tool_calls.forEach(tc => {
+                const callId = tc.id || `call_${Date.now()}`;
+                const isExecuted = executedCallIds.has(callId);
+                const funcName = tc.function?.name || 'unknown_tool';
+                const argsStr = tc.function?.arguments || '{}';
+                let formattedArgs = argsStr;
+                try {
+                    formattedArgs = JSON.stringify(JSON.parse(argsStr), null, 2);
+                } catch (e) {}
+
+                toolCallsHtml += `
+                    <div class="tool-call-card ${isExecuted ? 'executed' : ''}">
+                        <div class="tool-call-header">
+                            <span class="tool-tag">🛠️ Tool Call</span>
+                            <span class="tool-call-name">${escapeHtml(funcName)}</span>
+                            <span class="tool-call-id">${escapeHtml(callId)}</span>
+                            ${isExecuted ? '<span class="tool-tag" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.3); margin-left: auto;">✓ Executed</span>' : ''}
+                        </div>
+                        <div class="tool-call-args">
+                            <pre><code>${escapeHtml(formattedArgs)}</code></pre>
+                        </div>
+                        ${(!isExecuted && isLatestAssistantWithPending) ? `
+                            <button class="btn-execute-tool" 
+                                    data-call-id="${escapeHtml(callId)}" 
+                                    data-tool-name="${escapeHtml(funcName)}" 
+                                    data-args="${encodeURIComponent(argsStr)}"
+                                    onclick="window.handleExecuteButtonClick(this)">
+                                ⚡ ${pendingCalls.length > 1 ? 'Execute This Tool' : 'Execute & Reply to Agent'}
+                            </button>
+                        ` : ''}
+                    </div>
+                `;
+            });
+            toolCallsHtml += `</div>`;
         }
 
         html += `
@@ -321,7 +484,8 @@ function renderChatMessages() {
                 <div class="message-avatar">${name[0]}</div>
                 <div class="message-content">
                     ${imageHtml ? `<div class="message-images">${imageHtml}</div>` : ''}
-                    <div>${parseMarkdown(textContent)}</div>
+                    ${textContent ? `<div>${parseMarkdown(textContent)}</div>` : ''}
+                    ${toolCallsHtml}
                 </div>
             </div>
         `;
@@ -514,15 +678,13 @@ function handleFileSelect(files) {
 }
 
 // Send local API completion request
-async function sendMessage() {
+async function sendMessage(isFollowup = false) {
     const textarea = document.getElementById('chat-input');
-    const text = textarea.value.trim();
-    if (!text && attachedImages.length === 0 && !attachedVideo) return;
+    const text = textarea ? textarea.value.trim() : '';
 
     let threads = getThreads();
     let current = threads.find(t => t.id === activeThreadId);
     if (!current) {
-        // Automatically create a thread if none exists
         const selectModel = document.getElementById('playground-model').value;
         const newThread = {
             id: 'thread_' + Date.now(),
@@ -543,143 +705,137 @@ async function sendMessage() {
     const selectModel = document.getElementById('playground-model').value;
     current.model = selectModel;
 
-    // --- VIDEO PATH ---
-    if (attachedVideo) {
-        // Store user message with a video marker for display
-        const displayContent = `\uD83C\uDFAC [Video: ${attachedVideo.name}]\n\n${text}`;
-        const userMsg = { role: 'user', content: displayContent };
+    if (!isFollowup) {
+        if (!text && attachedImages.length === 0 && !attachedVideo) return;
+
+        // --- VIDEO PATH ---
+        if (attachedVideo) {
+            const displayContent = `\uD83C\uDFAC [Video: ${attachedVideo.name}]\n\n${text}`;
+            const userMsg = { role: 'user', content: displayContent };
+            current.messages.push(userMsg);
+
+            if (current.messages.length === 1 && text) {
+                current.title = text.length > 25 ? text.slice(0, 22) + '...' : text;
+            }
+
+            const videoFile = attachedVideo.file;
+            textarea.value = '';
+            attachedVideo = null;
+            attachedImages = [];
+            renderAttachmentPreviews();
+            saveThreads(threads);
+            renderThreadsSidebar();
+            renderChatMessages();
+
+            const area = document.getElementById('chat-messages-area');
+            const bubble = document.createElement('div');
+            bubble.className = 'message-bubble assistant';
+            bubble.innerHTML = `
+                <div class="message-avatar">A</div>
+                <div class="message-content">
+                    <div class="video-processing-indicator">
+                        <div class="processing-spinner"></div>
+                        <span>Processing video frames...</span>
+                    </div>
+                </div>
+            `;
+            area.appendChild(bubble);
+            area.scrollTop = area.scrollHeight;
+
+            const bubbleContent = bubble.querySelector('.message-content');
+            let fullResponse = '';
+
+            try {
+                const formData = new FormData();
+                formData.append('video', videoFile);
+                formData.append('prompt', text);
+                formData.append('model', selectModel);
+                if (current.conversationId) formData.append('conversation_id', current.conversationId);
+                if (current.parentMessageId) formData.append('parent_message_id', current.parentMessageId);
+                const priorMessages = current.messages.slice(0, -1);
+                formData.append('history', JSON.stringify(priorMessages));
+
+                const response = await fetch('/api/video/chat', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errText}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+
+                    for (let line of lines) {
+                        line = line.trim();
+                        if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                if (data.conversation_id) current.conversationId = data.conversation_id;
+                                if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
+                                const contentChunk = data.choices?.[0]?.delta?.content;
+                                if (contentChunk) {
+                                    fullResponse += contentChunk;
+                                    bubbleContent.innerHTML = parseMarkdown(fullResponse);
+                                    area.scrollTop = area.scrollHeight;
+                                }
+                            } catch (err) {
+                                // ignore
+                            }
+                        }
+                    }
+                }
+
+                if (fullResponse) {
+                    current.messages.push({ role: 'assistant', content: fullResponse });
+                    saveThreads(threads);
+                    renderChatMessages();
+                } else {
+                    bubble.remove();
+                }
+            } catch (e) {
+                console.error(e);
+                bubbleContent.innerHTML = `<span style="color: var(--danger-color); font-weight: 500;">Video Processing Failed: ${e.message}</span>`;
+                logToConsole(`Video chat failure: ${e.message}`, 'error');
+            }
+            return;
+        }
+
+        // --- NORMAL TEXT / MULTIMODAL PATH ---
+        let content = text;
+        if (attachedImages.length > 0) {
+            content = [];
+            attachedImages.forEach(uri => {
+                content.push({ type: 'image_url', image_url: { url: uri } });
+            });
+            content.push({ type: 'text', text: text });
+        }
+
+        const userMsg = { role: 'user', content: content };
         current.messages.push(userMsg);
 
         if (current.messages.length === 1 && text) {
             current.title = text.length > 25 ? text.slice(0, 22) + '...' : text;
         }
 
-        // Clear UI state
-        const videoFile = attachedVideo.file;
         textarea.value = '';
-        attachedVideo = null;
         attachedImages = [];
         renderAttachmentPreviews();
         saveThreads(threads);
         renderThreadsSidebar();
         renderChatMessages();
-
-        // Append streaming skeleton bubble with video processing indicator
-        const area = document.getElementById('chat-messages-area');
-        const bubble = document.createElement('div');
-        bubble.className = 'message-bubble assistant';
-        bubble.innerHTML = `
-            <div class="message-avatar">A</div>
-            <div class="message-content">
-                <div class="video-processing-indicator">
-                    <div class="processing-spinner"></div>
-                    <span>Processing video frames...</span>
-                </div>
-            </div>
-        `;
-        area.appendChild(bubble);
-        area.scrollTop = area.scrollHeight;
-
-        const bubbleContent = bubble.querySelector('.message-content');
-        let fullResponse = '';
-
-        try {
-            // Build FormData for video upload
-            const formData = new FormData();
-            formData.append('video', videoFile);
-            formData.append('prompt', text);
-            formData.append('model', selectModel);
-            if (current.conversationId) formData.append('conversation_id', current.conversationId);
-            if (current.parentMessageId) formData.append('parent_message_id', current.parentMessageId);
-            // Send prior messages as history (exclude the video message we just added)
-            const priorMessages = current.messages.slice(0, -1);
-            formData.append('history', JSON.stringify(priorMessages));
-
-            const response = await fetch('/api/video/chat', {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!response.ok) {
-                const errText = await response.text();
-                throw new Error(`HTTP ${response.status}: ${errText}`);
-            }
-
-            // Stream SSE response (identical to normal chat)
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n');
-
-                for (let line of lines) {
-                    line = line.trim();
-                    if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-                        try {
-                            const data = JSON.parse(line.slice(6));
-                            if (data.conversation_id) current.conversationId = data.conversation_id;
-                            if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
-                            const contentChunk = data.choices?.[0]?.delta?.content;
-                            if (contentChunk) {
-                                fullResponse += contentChunk;
-                                bubbleContent.innerHTML = parseMarkdown(fullResponse);
-                                area.scrollTop = area.scrollHeight;
-                            }
-                        } catch (err) {
-                            // ignore malformed lines
-                        }
-                    }
-                }
-            }
-
-            if (fullResponse) {
-                current.messages.push({ role: 'assistant', content: fullResponse });
-                saveThreads(threads);
-                renderChatMessages();
-            } else {
-                bubble.remove();
-            }
-        } catch (e) {
-            console.error(e);
-            bubbleContent.innerHTML = `<span style="color: var(--danger-color); font-weight: 500;">Video Processing Failed: ${e.message}</span>`;
-            logToConsole(`Video chat failure: ${e.message}`, 'error');
-        }
-        return;
     }
 
-    // --- NORMAL IMAGE/TEXT PATH ---
-    // Build standard message payload content
-    let content = text;
-    if (attachedImages.length > 0) {
-        content = [];
-        attachedImages.forEach(uri => {
-            content.push({ type: 'image_url', image_url: { url: uri } });
-        });
-        content.push({ type: 'text', text: text });
-    }
-
-    // Append user message
-    const userMsg = { role: 'user', content: content };
-    current.messages.push(userMsg);
-    
-    // If it's the first message, change the title to a summary of the text
-    if (current.messages.length === 1 && text) {
-        current.title = text.length > 25 ? text.slice(0, 22) + '...' : text;
-    }
-
-    // Clear UI state
-    textarea.value = '';
-    attachedImages = [];
-    renderAttachmentPreviews();
-    saveThreads(threads);
-    renderThreadsSidebar();
-    renderChatMessages();
-
-    // Build request body
+    // --- DISPATCH CHAT COMPLETIONS ---
     const payload = {
         model: selectModel,
         messages: current.messages,
@@ -687,6 +843,29 @@ async function sendMessage() {
     };
     if (current.conversationId) payload.conversation_id = current.conversationId;
     if (current.parentMessageId) payload.parent_message_id = current.parentMessageId;
+
+    // Attach active parameters & tools
+    const tempEl = document.getElementById('param-temperature');
+    if (tempEl && tempEl.value !== "") {
+        payload.temperature = parseFloat(tempEl.value);
+    }
+    const maxTokensEl = document.getElementById('param-max-tokens');
+    if (maxTokensEl && maxTokensEl.value) {
+        payload.max_tokens = parseInt(maxTokensEl.value, 10);
+    }
+    const stopEl = document.getElementById('param-stop');
+    if (stopEl && stopEl.value.trim()) {
+        payload.stop = stopEl.value.split(',').map(s => s.trim()).filter(Boolean);
+    }
+
+    const activeTools = getActiveTools();
+    if (activeTools.length > 0) {
+        payload.tools = activeTools;
+        const toolChoiceEl = document.getElementById('param-tool-choice');
+        if (toolChoiceEl) {
+            payload.tool_choice = toolChoiceEl.value;
+        }
+    }
 
     // Append streaming skeleton bubble
     const area = document.getElementById('chat-messages-area');
@@ -703,6 +882,42 @@ async function sendMessage() {
 
     const bubbleContent = bubble.querySelector('.message-content');
     let fullResponse = '';
+    let activeToolCalls = [];
+
+    function updateLiveBubble() {
+        let liveHtml = '';
+        if (fullResponse) {
+            liveHtml += parseMarkdown(fullResponse);
+        }
+        if (activeToolCalls.length > 0) {
+            liveHtml += `<div class="tool-calls-container">`;
+            activeToolCalls.forEach(tc => {
+                let argsDisplay = tc.function?.arguments || 'Generating arguments...';
+                try {
+                    argsDisplay = JSON.stringify(JSON.parse(tc.function.arguments), null, 2);
+                } catch(e) {}
+                liveHtml += `
+                    <div class="tool-call-card">
+                        <div class="tool-call-header">
+                            <span class="tool-tag">🛠️ Tool Call</span>
+                            <span class="tool-call-name">${escapeHtml(tc.function?.name || '...')}</span>
+                            <span class="tool-call-id">${escapeHtml(tc.id)}</span>
+                        </div>
+                        <div class="tool-call-args">
+                            <pre><code>${escapeHtml(argsDisplay)}</code></pre>
+                        </div>
+                    </div>
+                `;
+            });
+            liveHtml += `</div>`;
+        }
+        if (!liveHtml) {
+            bubbleContent.innerHTML = `<span class="pulse-dot active" style="display:inline-block; vertical-align:middle; width:6px; height:6px;"></span>`;
+        } else {
+            bubbleContent.innerHTML = liveHtml;
+        }
+        area.scrollTop = area.scrollHeight;
+    }
 
     try {
         const response = await fetch('/v1/chat/completions', {
@@ -732,15 +947,30 @@ async function sendMessage() {
                     try {
                         const data = JSON.parse(line.slice(6));
                         
-                        // Capture thread conversation tracking values
                         if (data.conversation_id) current.conversationId = data.conversation_id;
                         if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
                         
-                        const contentChunk = data.choices?.[0]?.delta?.content;
-                        if (contentChunk) {
-                            fullResponse += contentChunk;
-                            bubbleContent.innerHTML = parseMarkdown(fullResponse);
-                            area.scrollTop = area.scrollHeight;
+                        const delta = data.choices?.[0]?.delta;
+                        if (delta) {
+                            if (delta.content) {
+                                fullResponse += delta.content;
+                                updateLiveBubble();
+                            }
+                            if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+                                delta.tool_calls.forEach(tc => {
+                                    const idx = tc.index ?? activeToolCalls.length;
+                                    if (!activeToolCalls[idx]) {
+                                        activeToolCalls[idx] = {
+                                            id: tc.id || `call_${Date.now()}`,
+                                            type: 'function',
+                                            function: { name: tc.function?.name || '', arguments: '' }
+                                        };
+                                    }
+                                    if (tc.function?.name) activeToolCalls[idx].function.name = tc.function.name;
+                                    if (tc.function?.arguments) activeToolCalls[idx].function.arguments += tc.function.arguments;
+                                });
+                                updateLiveBubble();
+                            }
                         }
                     } catch (err) {
                         // ignore malformed lines
@@ -750,8 +980,15 @@ async function sendMessage() {
         }
 
         // Save assistant message to thread
-        if (fullResponse) {
-            current.messages.push({ role: 'assistant', content: fullResponse });
+        if (fullResponse || activeToolCalls.length > 0) {
+            const assistantMsg = {
+                role: 'assistant',
+                content: fullResponse || null
+            };
+            if (activeToolCalls.length > 0) {
+                assistantMsg.tool_calls = activeToolCalls;
+            }
+            current.messages.push(assistantMsg);
             saveThreads(threads);
             renderChatMessages();
         } else {
@@ -762,6 +999,210 @@ async function sendMessage() {
         bubbleContent.innerHTML = `<span style="color: var(--danger-color); font-weight: 500;">Connection Failed: ${e.message}</span>`;
         logToConsole(`Completions loop failure: ${e.message}`, 'error');
     }
+}
+
+// ---------------------------------------------------------------------------
+// 🛠️ Interactive Tool Execution Bridge
+// ---------------------------------------------------------------------------
+window.handleExecuteButtonClick = function(btn) {
+    const callId = btn.getAttribute('data-call-id');
+    const toolName = btn.getAttribute('data-tool-name');
+    const argsEncoded = btn.getAttribute('data-args');
+    let argsStr = '{}';
+    try {
+        argsStr = decodeURIComponent(argsEncoded);
+    } catch (e) {
+        argsStr = argsEncoded;
+    }
+    window.executeMockTool(callId, toolName, argsStr);
+};
+
+function computeMockResult(toolName, argsRaw) {
+    let args = {};
+    if (typeof argsRaw === 'string') {
+        try { args = JSON.parse(argsRaw); } catch (e) { args = { raw: argsRaw }; }
+    } else if (typeof argsRaw === 'object' && argsRaw !== null) {
+        args = argsRaw;
+    }
+
+    if (toolName === 'calculator') {
+        const expr = String(args.expression || '0');
+        try {
+            const sanitized = expr.replace(/[^0-9+\-*/().%\s]/g, '');
+            const calcVal = Function(`'use strict'; return (${sanitized})`)();
+            return JSON.stringify({ expression: expr, result: calcVal });
+        } catch (e) {
+            return JSON.stringify({ error: `Evaluation error: ${e.message}` });
+        }
+    } else if (toolName === 'get_weather') {
+        const loc = args.location || 'Tokyo';
+        const unit = args.unit || 'celsius';
+        return JSON.stringify({
+            location: loc,
+            temperature: unit === 'fahrenheit' ? "72°F" : "22°C",
+            condition: "Partly Cloudy",
+            humidity: "58%",
+            forecast: "Clear skies with light breeze"
+        });
+    } else if (toolName === 'get_current_time') {
+        return JSON.stringify({
+            iso: new Date().toISOString(),
+            local_time: new Date().toLocaleString(),
+            timezone: args.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+        });
+    } else if (toolName === 'web_search') {
+        const query = args.query || '';
+        return JSON.stringify({
+            query: query,
+            results: [
+                { title: `Overview: ${query}`, snippet: `Top verified facts and findings regarding '${query}' via GhostTunnel tool emulation.` },
+                { title: `Documentation reference`, snippet: `Parameters and tool-calling verified operational in multi-turn mode.` }
+            ]
+        });
+    } else {
+        return JSON.stringify({ status: "success", executed: true, tool: toolName, arguments: args });
+    }
+}
+
+window.executeAllMockTools = function() {
+    const threads = getThreads();
+    const current = threads.find(t => t.id === activeThreadId);
+    if (!current || current.messages.length === 0) return;
+
+    let lastAssistantIdx = -1;
+    for (let i = current.messages.length - 1; i >= 0; i--) {
+        if (current.messages[i].role === 'assistant' && Array.isArray(current.messages[i].tool_calls) && current.messages[i].tool_calls.length > 0) {
+            lastAssistantIdx = i;
+            break;
+        }
+    }
+    if (lastAssistantIdx === -1) return;
+
+    const lastAssistant = current.messages[lastAssistantIdx];
+    const answeredIds = new Set(
+        current.messages.slice(lastAssistantIdx + 1).filter(m => m.role === 'tool').map(m => m.tool_call_id)
+    );
+
+    let executedCount = 0;
+    lastAssistant.tool_calls.forEach(tc => {
+        const callId = tc.id || `call_${Date.now()}`;
+        if (!answeredIds.has(callId)) {
+            const toolName = tc.function?.name || 'unknown_tool';
+            const argsStr = tc.function?.arguments || '{}';
+            const result = computeMockResult(toolName, argsStr);
+
+            current.messages.push({
+                role: 'tool',
+                tool_call_id: callId,
+                name: toolName,
+                content: result
+            });
+            executedCount++;
+        }
+    });
+
+    if (executedCount > 0) {
+        saveThreads(threads);
+        renderChatMessages();
+        sendMessage(true);
+    }
+};
+
+window.executeMockTool = function(callId, toolName, argsRaw) {
+    const threads = getThreads();
+    const current = threads.find(t => t.id === activeThreadId);
+    if (!current) return;
+
+    const result = computeMockResult(toolName, argsRaw);
+
+    // Append tool response message
+    current.messages.push({
+        role: 'tool',
+        tool_call_id: callId,
+        name: toolName,
+        content: result
+    });
+
+    saveThreads(threads);
+    renderChatMessages();
+
+    // Check if there are any remaining tool calls from the last assistant message
+    let lastAssistantIdx = -1;
+    for (let i = current.messages.length - 1; i >= 0; i--) {
+        if (current.messages[i].role === 'assistant' && Array.isArray(current.messages[i].tool_calls) && current.messages[i].tool_calls.length > 0) {
+            lastAssistantIdx = i;
+            break;
+        }
+    }
+
+    if (lastAssistantIdx !== -1) {
+        const lastAssistant = current.messages[lastAssistantIdx];
+        const answeredIds = new Set(
+            current.messages.slice(lastAssistantIdx + 1).filter(m => m.role === 'tool').map(m => m.tool_call_id)
+        );
+        const hasPending = lastAssistant.tool_calls.some(tc => !answeredIds.has(tc.id));
+        if (hasPending) {
+            // Still waiting for user to execute remaining tool calls
+            return;
+        }
+    }
+
+    // Trigger next turn so assistant responds to tool result!
+    sendMessage(true);
+};
+
+function setupParametersDrawer() {
+    const toggleBtn = document.getElementById('params-toggle-btn');
+    const panel = document.getElementById('chat-params-panel');
+    const badge = document.getElementById('params-badge');
+    const tempSlider = document.getElementById('param-temperature');
+    const tempIndicator = document.getElementById('temp-indicator');
+    const maxTokensInput = document.getElementById('param-max-tokens');
+    const stopInput = document.getElementById('param-stop');
+    const toolCheckboxes = document.querySelectorAll('.tool-chip input');
+
+    function updateBadge() {
+        const activeTools = getActiveTools();
+        const hasTools = activeTools.length > 0;
+        const temp = tempSlider ? parseFloat(tempSlider.value) : 0.7;
+        const isNonDefaultTemp = temp !== 0.7;
+        const hasMaxTokens = Boolean(maxTokensInput?.value);
+        const hasStop = Boolean(stopInput?.value?.trim());
+
+        const activeCount = (hasTools ? activeTools.length : 0) + (isNonDefaultTemp ? 1 : 0) + (hasMaxTokens ? 1 : 0) + (hasStop ? 1 : 0);
+        if (activeCount > 0) {
+            badge.textContent = `${activeCount} custom`;
+            badge.style.background = 'rgba(0, 242, 254, 0.2)';
+            badge.style.color = 'var(--accent-cyan)';
+        } else {
+            badge.textContent = 'Default';
+            badge.style.background = 'rgba(255, 255, 255, 0.08)';
+            badge.style.color = 'var(--text-muted)';
+        }
+    }
+
+    if (toggleBtn && panel) {
+        toggleBtn.addEventListener('click', () => {
+            const isHidden = panel.style.display === 'none';
+            panel.style.display = isHidden ? 'flex' : 'none';
+            toggleBtn.classList.toggle('active', isHidden);
+        });
+    }
+
+    if (tempSlider && tempIndicator) {
+        tempSlider.addEventListener('input', () => {
+            const val = parseFloat(tempSlider.value);
+            let label = "Balanced";
+            if (val <= 0.3) label = "Deterministic / Precise";
+            else if (val >= 0.8) label = "Creative / Explorative";
+            tempIndicator.textContent = `${val.toFixed(2)} (${label})`;
+            updateBadge();
+        });
+    }
+
+    if (maxTokensInput) maxTokensInput.addEventListener('input', updateBadge);
+    if (stopInput) stopInput.addEventListener('input', updateBadge);
+    toolCheckboxes.forEach(cb => cb.addEventListener('change', updateBadge));
 }
 
 // ---------------------------------------------------------------------------
@@ -791,6 +1232,7 @@ function setupTabs() {
 
 async function init() {
     setupTabs();
+    setupParametersDrawer();
     fetchStatus();
     startTelemetryStream();
     

@@ -40,10 +40,12 @@ async def broadcast_event(event_type: str, data: dict):
             listeners.remove(q)
 
 
+import typing
 from contextlib import asynccontextmanager
 from src.providers import get_all_models, get_provider_for_model, PROVIDERS
 from src.core.exceptions import RateLimitError
 from src.core.video_processor import extract_keyframes
+from src.core.emulation import EmulationPipeline
 from src.converters.anthropic import (
     anthropic_to_openai_request,
     openai_to_anthropic_stream,
@@ -122,17 +124,31 @@ async def get_model(model_id: str):
 # ---------------------------------------------------------------------------
 
 class ChatMessage(BaseModel):
+    model_config = {"extra": "allow"}
+
     role: str
-    content: str | list
+    content: str | list | None = None
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
+    model_config = {"extra": "allow"}
+
     model: str = "auto"
     messages: list[ChatMessage]
     stream: bool = False
     temperature: float | None = None
+    top_p: float | None = None
     max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    stop: str | list[str] | None = None
+    tools: list[dict] | None = None
+    tool_choice: typing.Any = None
     response_format: dict | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
     conversation_id: str | None = None
     parent_message_id: str | None = None
 
@@ -144,11 +160,16 @@ async def chat_completions(req: ChatCompletionRequest):
     if not provider:
         raise HTTPException(status_code=400, detail=f"No provider supports model '{req.model}'")
 
-    messages = [m.model_dump() for m in req.messages]
+    messages, emulation_ctx = EmulationPipeline.prepare_request(req)
 
     request_id = str(time.time())
 
     if req.stream:
+        raw_stream = provider.stream_chat(
+            messages, req.model, req.conversation_id, req.parent_message_id
+        )
+        emulated_stream = EmulationPipeline.wrap_stream(raw_stream, emulation_ctx)
+
         async def telemetry_stream_generator():
             await broadcast_event("request_start", {
                 "id": request_id,
@@ -158,7 +179,7 @@ async def chat_completions(req: ChatCompletionRequest):
             })
             token_count = 0
             try:
-                async for chunk in provider.stream_chat(messages, req.model, req.conversation_id, req.parent_message_id):
+                async for chunk in emulated_stream:
                     token_count += 1
                     yield chunk
             except Exception as e:
@@ -190,7 +211,10 @@ async def chat_completions(req: ChatCompletionRequest):
             "messages_count": len(messages),
         })
         try:
-            resp_dict = await provider.non_streaming_chat(messages, req.model, req.conversation_id, req.parent_message_id)
+            raw_resp = await provider.non_streaming_chat(
+                messages, req.model, req.conversation_id, req.parent_message_id
+            )
+            resp_dict = EmulationPipeline.wrap_non_streaming(raw_resp, emulation_ctx)
             await broadcast_event("request_end", {
                 "id": request_id,
             })

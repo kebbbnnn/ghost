@@ -329,10 +329,10 @@ class GeminiProvider(BaseProvider):
         await self.ensure_ready()
         http = await self._get_http()
 
-        # Use tracked conversation state, falling back to caller-provided IDs
-        conv_id = conversation_id or self._conversation_id
-        resp_id = parent_message_id or self._response_id
-        choice_id = self._choice_id
+        # Only continue conversation if explicitly provided by caller
+        conv_id = conversation_id or ""
+        resp_id = parent_message_id or "" if conversation_id else ""
+        choice_id = self._choice_id if conversation_id else ""
 
         # Build the nested JSON payload
         message_struct = json.dumps([
@@ -411,36 +411,53 @@ class GeminiProvider(BaseProvider):
         """
         Convert OpenAI-format messages into a single text prompt for Gemini.
 
-        If we have an active conversation (conversation_id is set), we only
-        send the latest user message — Gemini tracks context server-side.
+        If we have an active conversation (conversation_id is explicitly set by caller),
+        we send the latest user message alongside any system instructions.
 
         If this is a fresh conversation, we concatenate all messages into
         a single prompt so the model gets full context.
         """
-        # Check if we're continuing an existing conversation
-        has_active_conv = bool(conversation_id or self._conversation_id)
+        system_parts = []
+        chat_parts = []
 
-        if has_active_conv and messages:
-            # Only send the last user message
-            for msg in reversed(messages):
-                if msg.get("role") == "user":
-                    return self._extract_text(msg)
-            # Fallback: last message regardless of role
-            return self._extract_text(messages[-1])
-
-        # Fresh conversation: concatenate all messages
-        parts = []
         for msg in messages:
             role = msg.get("role", "user")
             text = self._extract_text(msg)
             if role == "system":
-                parts.append(f"[System]: {text}")
+                system_parts.append(text)
             elif role == "assistant":
-                parts.append(f"[Assistant]: {text}")
+                chat_parts.append(f"[Assistant]: {text}")
+            elif role == "tool":
+                chat_parts.append(f"[Tool Output]: {text}")
             else:
-                parts.append(text)
+                chat_parts.append(text)
 
-        return "\n\n".join(parts)
+        system_prefix = "\n\n".join(system_parts).strip()
+
+        # Check if we're continuing an existing conversation explicitly requested by caller
+        has_active_conv = bool(conversation_id)
+
+        if has_active_conv and chat_parts:
+            # When continuing on Gemini, collect all user/tool messages since the last assistant message
+            turn_parts = []
+            for part in reversed(chat_parts):
+                if part.startswith("[Assistant]:"):
+                    break
+                turn_parts.append(part)
+            turn_parts.reverse()
+            latest_turn_text = "\n\n".join(turn_parts) if turn_parts else chat_parts[-1]
+
+            if system_prefix:
+                return f"[System Instructions]:\n{system_prefix}\n\n{latest_turn_text}"
+            return latest_turn_text
+
+        # Fresh conversation: concatenate all messages
+        prompt_parts = []
+        if system_prefix:
+            prompt_parts.append(f"[System Instructions]:\n{system_prefix}")
+        prompt_parts.extend(chat_parts)
+
+        return "\n\n".join(prompt_parts)
 
     @staticmethod
     def _extract_text(msg: dict) -> str:
