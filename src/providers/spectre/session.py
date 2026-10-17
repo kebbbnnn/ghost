@@ -39,8 +39,6 @@ DEFAULT_WORKERS = [
     "auto",
     "gemini",
     "perplexity",
-    "surfsense-gpt-5.4-mini-no-login",
-    "surfsense-gpt-o4-mini-no-login",
 ]
 
 

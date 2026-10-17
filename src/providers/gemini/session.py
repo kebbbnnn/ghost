@@ -184,11 +184,19 @@ class GeminiProvider(BaseProvider):
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                timeout=60.0,
-                follow_redirects=True,
-                http2=True,
-            )
+            try:
+                self._http = httpx.AsyncClient(
+                    timeout=60.0,
+                    follow_redirects=True,
+                    http2=True,
+                )
+            except ImportError:
+                log.warning("Gemini: HTTP/2 support not available ('h2' package not installed); falling back to HTTP/1.1")
+                self._http = httpx.AsyncClient(
+                    timeout=60.0,
+                    follow_redirects=True,
+                    http2=False,
+                )
         return self._http
 
     def _is_token_expired(self) -> bool:
