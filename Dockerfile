@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# GhostTunnel — Dockerized FastAPI Proxy Server
+# Ghost — Dockerized FastAPI Proxy Server
 # ──────────────────────────────────────────────────────────────────────────────
 # Multi-stage build: compile native deps in a builder, copy into slim runtime.
 # ──────────────────────────────────────────────────────────────────────────────

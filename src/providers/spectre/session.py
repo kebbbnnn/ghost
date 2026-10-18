@@ -1,9 +1,9 @@
 """
 session.py — SpectreProvider: Fugu-style multi-agent orchestration
-exposed as a standard GhostTunnel provider.
+exposed as a standard Ghost provider.
 
 This is the integration layer that wires the orchestrator core into
-GhostTunnel's provider registry. It presents two virtual models:
+Ghost's provider registry. It presents two virtual models:
 
   - "spectre"       → Fast mode: route to the single best worker
   - "spectre-ultra" → Ultra mode: generate and execute a multi-step workflow
@@ -47,7 +47,7 @@ class SpectreProvider(BaseProvider):
     Multi-agent orchestration provider.
 
     Wraps the Spectre orchestrator as a standard BaseProvider so it
-    plugs into GhostTunnel's routing without any server changes.
+    plugs into Ghost's routing without any server changes.
     """
 
     def __init__(self):
@@ -110,14 +110,14 @@ class SpectreProvider(BaseProvider):
                 "id": "spectre",
                 "object": "model",
                 "created": 1751673600,
-                "owned_by": "ghosttunnel",
+                "owned_by": "ghost",
                 "description": "Spectre — fast single-model routing orchestrator",
             },
             {
                 "id": "spectre-ultra",
                 "object": "model",
                 "created": 1751673600,
-                "owned_by": "ghosttunnel",
+                "owned_by": "ghost",
                 "description": "Spectre-Ultra — multi-step workflow orchestrator",
             },
         ]

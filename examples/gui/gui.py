@@ -1,5 +1,6 @@
 import sys
 import os
+from urllib.parse import urlparse
 
 # Add project root to sys.path so that we can import src.server when running from examples/gui/
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -46,11 +47,11 @@ def free_port(port):
 
 def main():
     print("==================================================")
-    print("GhostTunnel Desktop Application Suite Bootstrap")
+    print("      Ghost Desktop Application Suite Bootstrap   ")
     print("==================================================")
 
     import argparse
-    parser = argparse.ArgumentParser(description="GhostTunnel Desktop Application Suite Bootstrap")
+    parser = argparse.ArgumentParser(description="Ghost Desktop Application Suite Bootstrap")
     parser.add_argument(
         "--remote", "-r",
         action="store_true",
@@ -64,7 +65,7 @@ def main():
     )
     args = parser.parse_args()
 
-    remote_server_url = "https://ghosttunnel-lk2x.onrender.com"
+    remote_server_url = os.environ.get("GHOST_REMOTE_URL", "https://ghosttunnel-lk2x.onrender.com")
     target_url = None
 
     if args.remote:
@@ -74,7 +75,7 @@ def main():
     elif sys.stdin.isatty():
         print("\nChoose connection mode:")
         print("1. Local Server (127.0.0.1)")
-        print("2. Remote Server (ghosttunnel-lk2x.onrender.com)")
+        print(f"2. Remote Server ({urlparse(remote_server_url).netloc})")
         try:
             choice = input("Enter choice [1/2] (default 1): ").strip()
             if choice == "2":
@@ -84,7 +85,6 @@ def main():
 
     if target_url:
         # Standardize target_url path to point to /dashboard/
-        from urllib.parse import urlparse
         parsed = urlparse(target_url)
         if not parsed.path or parsed.path == "/":
             target_url = f"{target_url.rstrip('/')}/dashboard/"
@@ -94,7 +94,7 @@ def main():
         print(f"[GUI Setup] Connecting to remote server at: {target_url}")
 
         main_window = webview.create_window(
-            title="GhostTunnel All-in-One Suite (Remote)",
+            title="Ghost All-in-One Suite (Remote)",
             url=target_url,
             width=1200,
             height=800,
@@ -130,7 +130,7 @@ def main():
 
     # Initialize PyWebView main window
     main_window = webview.create_window(
-        title="GhostTunnel All-in-One Suite",
+        title="Ghost All-in-One Suite",
         url=f"http://127.0.0.1:{PORT}/dashboard/",
         width=1200,
         height=800,

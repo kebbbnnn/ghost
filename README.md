@@ -1,4 +1,4 @@
-# GhostTunnel
+# Ghost
 
 A **multi-provider, OpenAI-compatible HTTP proxy** that routes requests to
 various AI platforms — no API key required.
@@ -117,7 +117,7 @@ export OPENAI_BASE_URL=http://127.0.0.1:8100/v1
 ## Desktop GUI (All-in-One Mode)
 
 Instead of running the proxy server and chat client separately, you can launch
-GhostTunnel as a **desktop application** with a built-in web dashboard:
+Ghost as a **desktop application** with a built-in web dashboard:
 
 ```bash
 # Activate the virtual environment first

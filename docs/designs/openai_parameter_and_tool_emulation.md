@@ -2,9 +2,9 @@
 
 ## 1. Overview & Understanding Summary
 
-- **What:** A decoupled, universal parameter emulation and tool-calling engine for GhostTunnel.
+- **What:** A decoupled, universal parameter emulation and tool-calling engine for Ghost.
 - **Why:** Reverse-engineered anonymous AI web endpoints (ChatGPT, Gemini, Perplexity) do not support OpenAI JSON schema tool calling or hyperparameter tuning (`temperature`, `top_p`, `stop`, `max_tokens`). Modern agentic tools (Cursor, Claude Code, Aider, LangChain, OpenAI SDKs) require these features to function without throwing `422 Unprocessable Entity` or failing multi-turn agent loops.
-- **Who:** Developers and automated coding agents utilizing GhostTunnel as an OpenAI-compatible drop-in proxy.
+- **Who:** Developers and automated coding agents utilizing Ghost as an OpenAI-compatible drop-in proxy.
 - **Key Constraints:** 
   - Must not break fragile reverse-engineered web payloads.
   - Zero added latency for regular (non-tool) text streaming.

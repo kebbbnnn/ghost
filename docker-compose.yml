@@ -1,7 +1,7 @@
 services:
-  ghosttunnel:
+  ghost:
     build: .
-    container_name: ghosttunnel
+    container_name: ghost
     ports:
       - "8100:8100"
     volumes:

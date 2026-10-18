@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--proxy-url",
         default="http://127.0.0.1:8100/v1/chat/completions",
-        help="GhostTunnel proxy URL (default: http://127.0.0.1:8100/v1/chat/completions).",
+        help="Ghost proxy URL (default: http://127.0.0.1:8100/v1/chat/completions).",
     )
     parser.add_argument(
         "--model",

@@ -113,7 +113,7 @@ def test_request_trace_lifecycle_and_file_writing(tmp_path, monkeypatch):
     assert latest_file.exists()
 
     content = log_file.read_text(encoding="utf-8")
-    assert "GHOSTTUNNEL RAW TRACE" in content
+    assert "GHOST RAW TRACE" in content
     assert "ID: test-req-123" in content
     assert "1. INCOMING CLIENT REQUEST" in content
     assert "2. UPSTREAM REQUEST PAYLOAD" in content

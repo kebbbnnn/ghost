@@ -1,5 +1,5 @@
 """
-test_gui_lifecycle.py — Automated lifecycle audit for GhostTunnel Desktop Suite.
+test_gui_lifecycle.py — Automated lifecycle audit for Ghost Desktop Suite.
 
 Tests:
   1. Uvicorn server thread starts and binds port 8100 successfully.
@@ -44,7 +44,7 @@ def record(name, passed, detail=""):
 
 def main():
     print("=" * 60)
-    print("GhostTunnel Desktop Suite — Lifecycle Audit")
+    print("Ghost Desktop Suite — Lifecycle Audit")
     print("=" * 60)
     print()
 
@@ -127,8 +127,8 @@ def main():
         req = urllib.request.Request(f"http://127.0.0.1:{PORT}/dashboard")
         with urllib.request.urlopen(req, timeout=5) as resp:
             html = resp.read().decode()
-            has_ghosttunnel = "GhostTunnel" in html
-            record("GET /dashboard serves index.html", has_ghosttunnel, f"length={len(html)}")
+            has_ghost = "Ghost" in html
+            record("GET /dashboard serves index.html", has_ghost, f"length={len(html)}")
     except Exception as e:
         record("GET /dashboard serves index.html", False, str(e))
 

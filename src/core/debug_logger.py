@@ -252,7 +252,7 @@ class RequestTrace:
 
         # ==================== Header ====================
         sections.append("=" * 80)
-        sections.append(f"GHOSTTUNNEL RAW TRACE | {now_str} | ID: {self.request_id}")
+        sections.append(f"GHOST RAW TRACE | {now_str} | ID: {self.request_id}")
         sections.append("=" * 80)
         sections.append(f"Client Endpoint : {self.endpoint}")
         sections.append(f"Requested Model : {self.model or 'auto'}")

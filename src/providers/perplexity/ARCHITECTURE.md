@@ -1,6 +1,6 @@
 # Perplexity Provider Architecture
 
-This provider exposes the Perplexity concise/auto search model to GhostTunnel clients using an anonymous guest session.
+This provider exposes the Perplexity concise/auto search model to Ghost clients using an anonymous guest session.
 
 ## Discoveries & Protocol Analysis
 

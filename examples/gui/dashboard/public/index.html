@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GhostTunnel Desktop Suite</title>
+    <title>Ghost Desktop Suite</title>
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -16,7 +16,7 @@
         <aside class="sidebar glass-panel">
             <div class="logo">
                 <div class="logo-icon"></div>
-                <h2>GhostTunnel</h2>
+                <h2>Ghost</h2>
             </div>
             
             <nav class="nav-links">
@@ -78,7 +78,7 @@
                         </div>
                         <div class="schematic-node pulse-glow" id="node-proxy">
                             <div class="node-icon">🛡️</div>
-                            <span class="node-label">GhostTunnel Proxy</span>
+                            <span class="node-label">Ghost Proxy</span>
                         </div>
                         <div class="schematic-line-wrapper-fork">
                             <div class="fork-line" id="line-proxy-chatgpt">
@@ -180,7 +180,7 @@
                                     <h4>Parameter & Tool Settings</h4>
                                     <span class="protocol-pill-badge" id="param-active-protocol-badge">🟢 OpenAI Mode (/v1/chat/completions)</span>
                                 </div>
-                                <span class="params-subtitle">Test GhostTunnel's emulation layer with real-time hyperparameter steering & tool calls</span>
+                                <span class="params-subtitle">Test Ghost's emulation layer with real-time hyperparameter steering & tool calls</span>
                             </div>
                             <div class="params-grid">
                                 <div class="param-item">
@@ -243,7 +243,7 @@
                         <div class="empty-chat-welcome" id="empty-chat-welcome">
                             <div class="welcome-icon">💬</div>
                             <h2>Local LLM Playground</h2>
-                            <p>Select a model and type a message below. This client routes completions through the local GhostTunnel proxy with context retention across multiple turns.</p>
+                            <p>Select a model and type a message below. This client routes completions through the local Ghost proxy with context retention across multiple turns.</p>
                         </div>
 
                         <div class="chat-messages-area" id="chat-messages-area">
@@ -307,7 +307,7 @@
                     <div class="settings-card glass-panel">
                         <h2>Developer Reference</h2>
                         <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">
-                            Point your IDE or CLI agents to the local loopback URL to utilize GhostTunnel reverse proxies transparently:
+                            Point your IDE or CLI agents to the local loopback URL to utilize Ghost reverse proxies transparently:
                         </p>
                         <pre class="code-block">export ANTHROPIC_BASE_URL=http://127.0.0.1:8100/v1
 export OPENAI_BASE_URL=http://127.0.0.1:8100/v1</pre>

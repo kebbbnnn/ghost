@@ -72,7 +72,7 @@ class ObservationAgent:
     Args:
         app_name: Name of the target application (e.g., "Cursor", "Chrome").
         instructions: List of condition -> action rules in natural language.
-        proxy_url: URL of the GhostTunnel proxy.
+        proxy_url: URL of the Ghost proxy.
         model: Model name to use for LLM calls.
         frame_provider: Optional custom FrameProvider (defaults to WindowFrameProvider).
     """

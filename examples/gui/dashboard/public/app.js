@@ -283,13 +283,13 @@ function triggerRoutingAnimation(model, active) {
 // 💬 Chat Playground Logic (Local Caching)
 // ---------------------------------------------------------------------------
 function getThreads() {
-    const data = localStorage.getItem('ghosttunnel_threads');
+    const data = localStorage.getItem('ghost_threads') || localStorage.getItem('ghosttunnel_threads');
     return data ? JSON.parse(data) : [];
 }
 
 async function saveThreads(threads) {
     try {
-        localStorage.setItem('ghosttunnel_threads', JSON.stringify(threads));
+        localStorage.setItem('ghost_threads', JSON.stringify(threads));
     } catch (e) {
         console.error("Failed to save threads to LocalStorage:", e);
         if (e.name === 'QuotaExceededError') {
@@ -1185,7 +1185,7 @@ function computeMockResult(toolName, argsRaw) {
         return JSON.stringify({
             query: query,
             results: [
-                { title: `Overview: ${query}`, snippet: `Top verified facts and findings regarding '${query}' via GhostTunnel tool emulation.` },
+                { title: `Overview: ${query}`, snippet: `Top verified facts and findings regarding '${query}' via Ghost tool emulation.` },
                 { title: `Documentation reference`, snippet: `Parameters and tool-calling verified operational in multi-turn mode.` }
             ]
         });
@@ -1282,14 +1282,15 @@ window.executeMockTool = function(callId, toolName, argsRaw) {
 };
 
 function isAutoExecuteEnabled() {
-    return localStorage.getItem('ghosttunnel_auto_exec_tools') === 'true';
+    const val = localStorage.getItem('ghost_auto_exec_tools') ?? localStorage.getItem('ghosttunnel_auto_exec_tools');
+    return val === 'true';
 }
 
 // ---------------------------------------------------------------------------
 // 🌐 API Protocol Switcher (OpenAI vs Anthropic)
 // ---------------------------------------------------------------------------
 function getActiveProtocol() {
-    return localStorage.getItem('ghosttunnel_active_protocol') || 'openai';
+    return localStorage.getItem('ghost_active_protocol') || localStorage.getItem('ghosttunnel_active_protocol') || 'openai';
 }
 
 function formatMessagesForAnthropic(rawMessages) {
@@ -1373,7 +1374,7 @@ function setupProtocolSwitcher() {
     const badge = document.getElementById('param-active-protocol-badge');
 
     function updateProtocolUI(proto) {
-        localStorage.setItem('ghosttunnel_active_protocol', proto);
+        localStorage.setItem('ghost_active_protocol', proto);
 
         if (openaiBtn && anthropicBtn) {
             openaiBtn.classList.toggle('active', proto === 'openai');
@@ -1448,7 +1449,7 @@ function setupParametersDrawer() {
 
     function handleAutoExecChange(e) {
         const checked = Boolean(e.target.checked);
-        localStorage.setItem('ghosttunnel_auto_exec_tools', checked ? 'true' : 'false');
+        localStorage.setItem('ghost_auto_exec_tools', checked ? 'true' : 'false');
         if (autoExecParamCb) autoExecParamCb.checked = checked;
         if (autoExecSettingsCb) autoExecSettingsCb.checked = checked;
         updateBadge();
@@ -1525,7 +1526,7 @@ async function init() {
         if (resp.ok) {
             threads = await resp.json();
             try {
-                localStorage.setItem('ghosttunnel_threads', JSON.stringify(threads));
+                localStorage.setItem('ghost_threads', JSON.stringify(threads));
             } catch (se) {
                 console.error("Failed to sync backend threads to LocalStorage:", se);
             }

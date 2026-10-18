@@ -1,17 +1,17 @@
 # Render.com Blueprint — Free Tier Deployment
-blueprintName: ghosttunnel
+blueprintName: ghost
 services:
   - type: web
-    name: ghosttunnel
+    name: ghost
     env: docker
     dockerfilePath: Dockerfile
     plan: free
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
-      - key: GHOSTTUNNEL_ACCOUNTS_JSON
+      - key: GHOST_ACCOUNTS_JSON
         sync: false # Set securely via the Render Dashboard UI
-      - key: GHOSTTUNNEL_THREADS_JSON
+      - key: GHOST_THREADS_JSON
         value: "[]"
       - key: HTTP_PROXY
         sync: false # Set custom proxy if Cloudflare Turnstile blocks datacenter IPs

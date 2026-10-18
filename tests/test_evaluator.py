@@ -4,7 +4,7 @@ Generates a synthetic error modal screenshot, runs real macOS OCR on it,
 and sends it to the LLM evaluator to verify condition matching.
 
 Requires:
-  - GhostTunnel proxy running on http://127.0.0.1:8100
+  - Ghost proxy running on http://127.0.0.1:8100
   - macOS with Vision framework (for OCR)
 """
 
@@ -104,9 +104,9 @@ def is_proxy_running(host="127.0.0.1", port=8100):
     except Exception:
         return False
 
-@unittest.skipUnless(is_proxy_running(), "Requires running GhostTunnel proxy on port 8100")
+@unittest.skipUnless(is_proxy_running(), "Requires running Ghost proxy on port 8100")
 class TestConditionEvaluatorE2E(unittest.TestCase):
-    """E2E tests for the condition evaluator (requires running GhostTunnel proxy)."""
+    """E2E tests for the condition evaluator (requires running Ghost proxy)."""
 
     def setUp(self):
         self.instructions = [
@@ -164,7 +164,7 @@ if __name__ == "__main__":
     # Check if --e2e flag is passed, otherwise skip
     if "--e2e" not in sys.argv:
         print("Skipping E2E tests. Run with --e2e flag to execute.")
-        print("  Requires GhostTunnel proxy running on http://127.0.0.1:8100")
+        print("  Requires Ghost proxy running on http://127.0.0.1:8100")
         print("\n  python3 tests/test_evaluator.py --e2e")
         sys.exit(0)
 

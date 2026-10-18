@@ -1,12 +1,12 @@
-# GhostTunnel Multi-Platform Proxy — Architecture
+# Ghost Multi-Platform Proxy — Architecture
 
-> **Purpose:** This document outlines the high-level architecture of GhostTunnel, a modular, multi-platform proxy that exposes a unified OpenAI-compatible API while sandboxing individual AI provider implementations (ChatGPT, Gemini, etc.).
+> **Purpose:** This document outlines the high-level architecture of Ghost, a modular, multi-platform proxy that exposes a unified OpenAI-compatible API while sandboxing individual AI provider implementations (ChatGPT, Gemini, etc.).
 
 ---
 
 ## 1. Project Overview
 
-GhostTunnel is an **OpenAI-compatible HTTP proxy** that routes incoming requests to various undocumented/anonymous AI APIs. 
+Ghost is an **OpenAI-compatible HTTP proxy** that routes incoming requests to various undocumented/anonymous AI APIs. 
 
 **Core Paradigm:** 
 - The proxy exclusively uses the **OpenAI JSON schema** as its "lingua franca" (`POST /v1/chat/completions`).

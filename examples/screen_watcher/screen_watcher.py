@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-screen_watcher.py — GhostTunnel Client Example
+screen_watcher.py — Ghost Client Example
 
 This example script captures a screenshot of your screen at a regular interval (default: 30 seconds)
-and sends it to ChatGPT Vision via a running GhostTunnel proxy server to get a description.
+and sends it to ChatGPT Vision via a running Ghost proxy server to get a description.
 
 On macOS, it uses the macOS Accessibility API (via PyObjC AXUIElement) to detect structural UI
 changes (app switching, window focus changes, modal dialogs) to avoid unnecessary API calls when
@@ -13,7 +13,7 @@ Requirements:
   - PIL (Pillow) — already in requirements.txt
   - httpx — already in requirements.txt
   - pyobjc-framework-ApplicationServices (macOS) — already in requirements.txt
-  - A running GhostTunnel proxy server (default: http://127.0.0.1:8100)
+  - A running Ghost proxy server (default: http://127.0.0.1:8100)
 
 Usage:
   python examples/screen_watcher/screen_watcher.py --interval 30 --skip --output watcher_log.jsonl
@@ -221,7 +221,7 @@ def print_accessibility_permission_warning():
     print("\n" + "=" * 65)
     print("❌ ERROR: macOS Accessibility Permission Denied")
     print("=" * 65)
-    print("GhostTunnel screen_watcher requires macOS Accessibility permissions")
+    print("Ghost screen_watcher requires macOS Accessibility permissions")
     print("to observe structural application state changes.")
     print("\nTo grant permissions:")
     print("  1. Open System Settings -> Privacy & Security -> Accessibility")
@@ -431,7 +431,7 @@ async def capture_screenshot() -> tuple[str, Image.Image]:
 
 async def get_description_stream(server_url: str, model: str, image_uri: str, prompt: str, tools: Optional[list] = None) -> Tuple[Optional[str], list]:
     """
-    Send the base64 image URI to GhostTunnel completions endpoint and stream the result.
+    Send the base64 image URI to Ghost completions endpoint and stream the result.
     Returns (full_text_description, tool_calls_list).
     """
     endpoint = f"{server_url.rstrip('/')}/v1/chat/completions"
@@ -524,7 +524,7 @@ async def get_description_stream(server_url: str, model: str, image_uri: str, pr
                 return full_text, parsed_tool_calls
                 
         except httpx.ConnectError:
-            print(f"\n❌ Connection failed! Is GhostTunnel server running at {server_url}?")
+            print(f"\n❌ Connection failed! Is Ghost server running at {server_url}?")
             return None, []
         except Exception as e:
             print(f"\n❌ Request failed: {e}")
@@ -596,7 +596,7 @@ def image_to_base64_uri(image: Image.Image, max_size: int = 1920) -> str:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="GhostTunnel screen watcher example using ChatGPT Vision with macOS Accessibility UI change detection."
+        description="Ghost screen watcher example using ChatGPT Vision with macOS Accessibility UI change detection."
     )
     parser.add_argument(
         "--interval", "-i", type=float, default=30.0,
@@ -604,7 +604,7 @@ async def main():
     )
     parser.add_argument(
         "--server", "-s", type=str, default="http://127.0.0.1:8100",
-        help="GhostTunnel proxy server URL (default: http://127.0.0.1:8100)"
+        help="Ghost proxy server URL (default: http://127.0.0.1:8100)"
     )
     parser.add_argument(
         "--model", "-m", type=str, default="auto",
@@ -653,7 +653,7 @@ async def main():
             sys.exit(1)
     
     print("==================================================")
-    print("   GhostTunnel Vision Watcher (macOS AX Mode)     ")
+    print("      Ghost Vision Watcher (macOS AX Mode)        ")
     print("==================================================")
     print(f"Interval:     {args.interval}s")
     print(f"Server:       {args.server}")

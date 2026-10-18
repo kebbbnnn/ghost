@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
         await p.stop_background_tasks()
 
 app = FastAPI(
-    title="GhostTunnel Multi-Platform Proxy",
+    title="Ghost Multi-Platform Proxy",
     description="OpenAI-compatible API proxy using isolated guest sessions",
     version="2.0.0",
     lifespan=lifespan,

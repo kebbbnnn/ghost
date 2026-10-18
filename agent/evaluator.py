@@ -2,7 +2,7 @@
 
 Builds a multimodal prompt from the current screen state (screenshot,
 OCR text, accessibility snapshot) and the user's instructions, sends it
-to the GhostTunnel proxy, and parses the structured JSON response to
+to the Ghost proxy, and parses the structured JSON response to
 determine if any instruction condition is met.
 """
 

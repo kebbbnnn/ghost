@@ -22,7 +22,7 @@ class TestGuiCLI(unittest.TestCase):
                     
                     # Assert webview window was created with remote URL
                     mock_webview.create_window.assert_called_once_with(
-                        title="GhostTunnel All-in-One Suite (Remote)",
+                        title="Ghost All-in-One Suite (Remote)",
                         url="https://ghosttunnel-lk2x.onrender.com/dashboard/",
                         width=1200,
                         height=800,
@@ -44,7 +44,7 @@ class TestGuiCLI(unittest.TestCase):
                     
                     # Assert webview window was created with standardized custom URL (ends with slash)
                     mock_webview.create_window.assert_called_once_with(
-                        title="GhostTunnel All-in-One Suite (Remote)",
+                        title="Ghost All-in-One Suite (Remote)",
                         url="https://custom-server.com/dashboard/",
                         width=1200,
                         height=800,
@@ -76,7 +76,7 @@ class TestGuiCLI(unittest.TestCase):
                     
                     # Assert webview window was created with local URL
                     mock_webview.create_window.assert_called_once_with(
-                        title="GhostTunnel All-in-One Suite",
+                        title="Ghost All-in-One Suite",
                         url="http://127.0.0.1:8100/dashboard/",
                         width=1200,
                         height=800,
