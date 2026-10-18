@@ -72,6 +72,29 @@ def test_tool_synthesis_phase_directive():
     assert "calculator" in ctx["executed_tool_names"]
 
 
+def test_second_turn_user_prompt_resets_synthesis_phase():
+    """Verify that when a user asks a new question after a completed tool turn, synthesis phase is reset to False."""
+    tools = [{"type": "function", "function": {"name": "calculator"}}]
+    messages = [
+        {"role": "user", "content": "Compute 5*5"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "calculator", "arguments": '{"expr": "5*5"}'}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "25"},
+        {"role": "assistant", "content": "The answer is 25."},
+        {"role": "user", "content": "Now compute 10*10"},
+    ]
+    req = {
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+    }
+    folded, ctx = EmulationPipeline.prepare_request(req)
+    system_msg = next(m for m in folded if m["role"] == "system")
+    assert ctx["is_synthesis_phase"] is False
+    assert ctx["executed_tool_names"] == []
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" in system_msg["content"]
+    assert "SYNTHESIS PHASE: External tool execution is COMPLETE" not in system_msg["content"]
+
+
 def test_synthesis_phase_suppresses_duplicate_tool_echo_non_streaming():
     """Verify echoed tool calls in synthesis phase are stripped, preserving content and setting finish_reason='stop'."""
     raw_resp = {
@@ -602,3 +625,67 @@ def test_null_content_in_assistant_message():
     assert messages[0]["role"] == "assistant"
     assert "<tool_call>" in messages[0]["content"]
     assert "foo" in messages[0]["content"]
+
+
+def test_stream_emulation_preserves_conversation_id_and_parent_message_id():
+    """Verify StreamEmulationProcessor captures and emits conversation_id and parent_message_id."""
+    async def run():
+        async def mock_stream():
+            yield 'data: {"id": "c1", "conversation_id": "conv_123", "parent_message_id": "resp_456", "choices": [{"delta": {"content": "Hello"}}]}\n\n'
+            yield 'data: [DONE]\n\n'
+
+        processor = StreamEmulationProcessor({"model": "test-model"})
+        chunks = []
+        async for c in processor.process_stream(mock_stream()):
+            if c.strip() != "data: [DONE]":
+                chunks.append(json.loads(c[6:]))
+
+        assert len(chunks) > 0
+        assert chunks[0]["conversation_id"] == "conv_123"
+        assert chunks[0]["parent_message_id"] == "resp_456"
+
+    import asyncio
+    asyncio.run(run())
+
+
+def test_stream_emulation_strips_google_card_urls():
+    """Verify StreamEmulationProcessor strips Google card content URLs before tool calls or text."""
+    async def run():
+        async def mock_stream():
+            yield 'data: {"choices": [{"delta": {"content": "http://googleusercontent.com/card_content/0\\n<tool_call>{\\"name\\": \\"get_weather\\", \\"arguments\\": {\\"location\\": \\"Paris\\"}}</tool_call>"}}]}\n\n'
+            yield 'data: [DONE]\n\n'
+
+        processor = StreamEmulationProcessor({"model": "gemini"})
+        tool_calls = []
+        contents = []
+        async for c in processor.process_stream(mock_stream()):
+            if c.strip() != "data: [DONE]":
+                delta = json.loads(c[6:])["choices"][0]["delta"]
+                if "tool_calls" in delta:
+                    tool_calls.extend(delta["tool_calls"])
+                if "content" in delta and delta["content"]:
+                    contents.append(delta["content"])
+
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"]["name"] == "get_weather"
+        full_content = "".join(contents)
+        assert "googleusercontent.com" not in full_content
+
+    import asyncio
+    asyncio.run(run())
+
+
+def test_gemini_session_build_prompt_multi_turn_recency():
+    """Verify GeminiProvider._build_prompt appends recency reinforcement for tool calls on multi-turn conversations."""
+    from src.providers.gemini.session import GeminiProvider
+    provider = GeminiProvider()
+    messages = [
+        {"role": "system", "content": "[SYSTEM: HEADLESS API GATEWAY]\nCRITICAL MODE: TOOL_CALL_REQUIRED.\nAvailable external RPC tools:\n- get_weather()"},
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "Paris is sunny."},
+        {"role": "user", "content": "Weather in Paris?"},
+    ]
+    prompt = provider._build_prompt(messages, conversation_id=None)
+    assert "[ACTIVE DIRECTIVE FOR CURRENT TURN]" in prompt
+    assert "MANDATORY: Emit fresh <tool_call> tags" in prompt
+

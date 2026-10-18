@@ -27,8 +27,7 @@ async def get_all_models() -> list[dict]:
         try:
             models = await p.get_models()
             all_models.extend(models)
-        except Exception as e:
-            # log warning
+        except Exception:
             pass
     return all_models
 

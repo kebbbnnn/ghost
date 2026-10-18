@@ -46,11 +46,24 @@ class EmulationPipeline:
         # 1. Fold multi-turn tool messages
         folded_messages, executed_tool_names = cls._fold_messages(raw_messages)
 
-        has_tool_results = bool(executed_tool_names) or any(
-            isinstance(m.get("content"), str) and "[Tool Results]" in m.get("content", "")
-            for m in folded_messages
-        )
-        is_synthesis_phase = bool(has_tool_results and tool_choice != "required")
+        # A turn is in synthesis phase IF AND ONLY IF the conversation currently ends
+        # with tool results awaiting assistant synthesis (not a new user inquiry).
+        has_pending_tool_results = False
+        active_executed_tools: set[str] = set()
+
+        if folded_messages:
+            last_msg = folded_messages[-1]
+            last_content = last_msg.get("content", "")
+            if isinstance(last_content, str):
+                if last_content.startswith("[Tool Results]:") or "<tool_result" in last_content:
+                    has_pending_tool_results = True
+                    active_executed_tools = executed_tool_names
+            elif isinstance(last_content, list):
+                if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in last_content):
+                    has_pending_tool_results = True
+                    active_executed_tools = executed_tool_names
+
+        is_synthesis_phase = bool(tools and has_pending_tool_results and tool_choice != "required")
 
         # 2. Inject tool instructions and behavioral steering into system prompt
         transpiled_messages = cls._inject_system_instructions(
@@ -77,7 +90,7 @@ class EmulationPipeline:
             "max_tokens": max_tokens,
             "temperature": temperature,
             "is_synthesis_phase": is_synthesis_phase,
-            "executed_tool_names": list(executed_tool_names),
+            "executed_tool_names": list(active_executed_tools) if is_synthesis_phase else [],
         }
 
         return transpiled_messages, emulation_context
@@ -240,7 +253,10 @@ class EmulationPipeline:
                     "Available external RPC tools:\n"
                     f"{signatures_text}\n\n"
                     "Your task: Emit the necessary <tool_call> tags for the user's request.\n"
-                    "Output ONLY <tool_call> tags, nothing else:\n"
+                    "MANDATORY PROTOCOL RULES:\n"
+                    "1. Even if the user query repeats or asks for information already answered earlier in the chat history, you MUST emit fresh <tool_call> tags.\n"
+                    "2. NEVER answer directly using previous conversation context, web search, or markdown text when tools are available.\n"
+                    "3. Output ONLY <tool_call> tags, nothing else:\n"
                     '<tool_call>{"name": "tool_name", "arguments": {"arg": "val"}}</tool_call>'
                 )
                 instructions.append(tool_prompt)

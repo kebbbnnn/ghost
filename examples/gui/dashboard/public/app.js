@@ -836,10 +836,12 @@ async function sendMessage(isFollowup = false) {
         renderChatMessages();
     }
 
-    // --- DISPATCH CHAT COMPLETIONS ---
+    // --- DISPATCH CHAT COMPLETIONS (OPENAI OR ANTHROPIC) ---
+    const isAnthropic = (getActiveProtocol() === 'anthropic');
+    const endpoint = isAnthropic ? '/v1/messages' : '/v1/chat/completions';
+
     const payload = {
         model: selectModel,
-        messages: current.messages,
         stream: true
     };
     if (current.conversationId) payload.conversation_id = current.conversationId;
@@ -868,6 +870,43 @@ async function sendMessage(isFollowup = false) {
         }
     }
 
+    // Build protocol-specific request body
+    let requestBody;
+    if (isAnthropic) {
+        const { systemPrompt, anthropicMsgs } = formatMessagesForAnthropic(current.messages);
+        requestBody = {
+            model: selectModel,
+            messages: anthropicMsgs,
+            stream: true,
+            max_tokens: payload.max_tokens || 2048,
+        };
+        if (current.conversationId) requestBody.conversation_id = current.conversationId;
+        if (current.parentMessageId) requestBody.parent_message_id = current.parentMessageId;
+        if (systemPrompt) requestBody.system = systemPrompt;
+        if (payload.temperature !== undefined) requestBody.temperature = payload.temperature;
+        if (payload.stop && payload.stop.length > 0) requestBody.stop_sequences = payload.stop;
+
+        if (payload.tools && payload.tools.length > 0) {
+            requestBody.tools = payload.tools.map(t => ({
+                name: t.function.name,
+                description: t.function.description,
+                input_schema: t.function.parameters
+            }));
+            if (payload.tool_choice === 'required') {
+                requestBody.tool_choice = { type: 'any' };
+            } else if (payload.tool_choice === 'none') {
+                requestBody.tool_choice = { type: 'none' };
+            } else {
+                requestBody.tool_choice = { type: 'auto' };
+            }
+        }
+        logToConsole(`[Anthropic] POST /v1/messages | Model: ${selectModel} | MaxTokens: ${requestBody.max_tokens} | Temp: ${requestBody.temperature ?? 'default'}`, 'system');
+    } else {
+        payload.messages = current.messages;
+        requestBody = payload;
+        logToConsole(`[OpenAI] POST /v1/chat/completions | Model: ${selectModel} | Stream: true | Temp: ${payload.temperature ?? 'default'}`, 'system');
+    }
+
     // Append streaming skeleton bubble
     const area = document.getElementById('chat-messages-area');
     const bubble = document.createElement('div');
@@ -884,6 +923,7 @@ async function sendMessage(isFollowup = false) {
     const bubbleContent = bubble.querySelector('.message-content');
     let fullResponse = '';
     let activeToolCalls = [];
+    const blockIndexToToolCall = {};
 
     function updateLiveBubble() {
         let liveHtml = '';
@@ -921,10 +961,10 @@ async function sendMessage(isFollowup = false) {
     }
 
     try {
-        const response = await fetch('/v1/chat/completions', {
+        const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(requestBody)
         });
 
         if (!response.ok) {
@@ -945,38 +985,84 @@ async function sendMessage(isFollowup = false) {
             
             for (let line of lines) {
                 line = line.trim();
+                if (!line) continue;
                 if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                     try {
                         const data = JSON.parse(line.slice(6));
+
+                        if (data.conversation_id) current.conversationId = data.conversation_id;
+                        if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
                         
                         if (data.error) {
                             streamError = data.error.message || JSON.stringify(data.error);
                             logToConsole(`Upstream error: ${streamError}`, 'error');
                         }
 
-                        if (data.conversation_id) current.conversationId = data.conversation_id;
-                        if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
-                        
-                        const delta = data.choices?.[0]?.delta;
-                        if (delta) {
-                            if (delta.content) {
-                                fullResponse += delta.content;
-                                updateLiveBubble();
-                            }
-                            if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-                                delta.tool_calls.forEach(tc => {
-                                    const idx = tc.index ?? activeToolCalls.length;
-                                    if (!activeToolCalls[idx]) {
-                                        activeToolCalls[idx] = {
-                                            id: tc.id || `call_${Date.now()}`,
-                                            type: 'function',
-                                            function: { name: tc.function?.name || '', arguments: '' }
-                                        };
+                        // Anthropic SSE Events
+                        if (isAnthropic || data.type) {
+                            if (data.type === 'content_block_start') {
+                                const cb = data.content_block;
+                                if (cb && cb.type === 'tool_use') {
+                                    const tcObj = {
+                                        id: cb.id,
+                                        type: 'function',
+                                        function: { name: cb.name, arguments: '' }
+                                    };
+                                    if (data.index !== undefined) {
+                                        blockIndexToToolCall[data.index] = tcObj;
                                     }
-                                    if (tc.function?.name) activeToolCalls[idx].function.name = tc.function.name;
-                                    if (tc.function?.arguments) activeToolCalls[idx].function.arguments += tc.function.arguments;
-                                });
-                                updateLiveBubble();
+                                    activeToolCalls.push(tcObj);
+                                    updateLiveBubble();
+                                }
+                            } else if (data.type === 'content_block_delta') {
+                                const d = data.delta;
+                                if (d && d.type === 'text_delta') {
+                                    fullResponse += d.text;
+                                    updateLiveBubble();
+                                } else if (d && d.type === 'input_json_delta') {
+                                    const target = (data.index !== undefined && blockIndexToToolCall[data.index])
+                                        ? blockIndexToToolCall[data.index]
+                                        : activeToolCalls[activeToolCalls.length - 1];
+                                    if (target) {
+                                        target.function.arguments += d.partial_json;
+                                        updateLiveBubble();
+                                    }
+                                }
+                            } else if (data.type === 'message_delta') {
+                                const d = data.delta;
+                                if (d?.stop_reason) {
+                                    const stopInfo = d.stop_sequence ? ` ("${d.stop_sequence}")` : '';
+                                    logToConsole(`[Anthropic] Stream stop: ${d.stop_reason}${stopInfo} | Output tokens: ${data.usage?.output_tokens || 'N/A'}`, 'system');
+                                }
+                            }
+                        }
+
+                        // OpenAI SSE Events
+                        if (!isAnthropic && data.choices) {
+                            if (data.conversation_id) current.conversationId = data.conversation_id;
+                            if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
+                            
+                            const delta = data.choices[0]?.delta;
+                            if (delta) {
+                                if (delta.content) {
+                                    fullResponse += delta.content;
+                                    updateLiveBubble();
+                                }
+                                if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+                                    delta.tool_calls.forEach(tc => {
+                                        const idx = tc.index ?? activeToolCalls.length;
+                                        if (!activeToolCalls[idx]) {
+                                            activeToolCalls[idx] = {
+                                                id: tc.id || `call_${Date.now()}`,
+                                                type: 'function',
+                                                function: { name: tc.function?.name || '', arguments: '' }
+                                            };
+                                        }
+                                        if (tc.function?.name) activeToolCalls[idx].function.name = tc.function.name;
+                                        if (tc.function?.arguments) activeToolCalls[idx].function.arguments += tc.function.arguments;
+                                    });
+                                    updateLiveBubble();
+                                }
                             }
                         }
                     } catch (err) {
@@ -1199,6 +1285,129 @@ function isAutoExecuteEnabled() {
     return localStorage.getItem('ghosttunnel_auto_exec_tools') === 'true';
 }
 
+// ---------------------------------------------------------------------------
+// 🌐 API Protocol Switcher (OpenAI vs Anthropic)
+// ---------------------------------------------------------------------------
+function getActiveProtocol() {
+    return localStorage.getItem('ghosttunnel_active_protocol') || 'openai';
+}
+
+function formatMessagesForAnthropic(rawMessages) {
+    let systemPrompt = "";
+    const anthropicMsgs = [];
+    let pendingToolResults = [];
+
+    function flushToolResults() {
+        if (pendingToolResults.length > 0) {
+            anthropicMsgs.push({
+                role: 'user',
+                content: pendingToolResults
+            });
+            pendingToolResults = [];
+        }
+    }
+
+    for (const msg of rawMessages) {
+        if (msg.role === 'system') {
+            if (typeof msg.content === 'string') {
+                systemPrompt += (systemPrompt ? "\n\n" : "") + msg.content;
+            }
+            continue;
+        }
+
+        if (msg.role === 'tool') {
+            pendingToolResults.push({
+                type: 'tool_result',
+                tool_use_id: msg.tool_call_id || 'call_0',
+                content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+            });
+            continue;
+        }
+
+        flushToolResults();
+
+        if (msg.role === 'assistant') {
+            const contentBlocks = [];
+            if (msg.content) {
+                contentBlocks.push({ type: 'text', text: msg.content });
+            }
+            if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+                for (const tc of msg.tool_calls) {
+                    let parsedArgs = {};
+                    try {
+                        parsedArgs = typeof tc.function?.arguments === 'string'
+                            ? JSON.parse(tc.function.arguments)
+                            : (tc.function?.arguments || {});
+                    } catch (e) {
+                        parsedArgs = { raw: tc.function?.arguments };
+                    }
+                    contentBlocks.push({
+                        type: 'tool_use',
+                        id: tc.id || `toolu_${Date.now()}`,
+                        name: tc.function?.name || 'tool',
+                        input: parsedArgs
+                    });
+                }
+            }
+            anthropicMsgs.push({
+                role: 'assistant',
+                content: contentBlocks.length === 1 && contentBlocks[0].type === 'text'
+                    ? contentBlocks[0].text
+                    : (contentBlocks.length > 0 ? contentBlocks : '')
+            });
+        } else if (msg.role === 'user') {
+            anthropicMsgs.push({
+                role: 'user',
+                content: msg.content
+            });
+        }
+    }
+
+    flushToolResults();
+    return { systemPrompt, anthropicMsgs };
+}
+
+function setupProtocolSwitcher() {
+    const openaiBtn = document.getElementById('proto-openai-btn');
+    const anthropicBtn = document.getElementById('proto-anthropic-btn');
+    const badge = document.getElementById('param-active-protocol-badge');
+
+    function updateProtocolUI(proto) {
+        localStorage.setItem('ghosttunnel_active_protocol', proto);
+
+        if (openaiBtn && anthropicBtn) {
+            openaiBtn.classList.toggle('active', proto === 'openai');
+            anthropicBtn.classList.toggle('active', proto === 'anthropic');
+        }
+
+        if (badge) {
+            if (proto === 'anthropic') {
+                badge.className = 'protocol-pill-badge anthropic';
+                badge.textContent = '🟠 Anthropic Mode (/v1/messages)';
+            } else {
+                badge.className = 'protocol-pill-badge';
+                badge.textContent = '🟢 OpenAI Mode (/v1/chat/completions)';
+            }
+        }
+    }
+
+    if (openaiBtn) {
+        openaiBtn.addEventListener('click', () => {
+            updateProtocolUI('openai');
+            logToConsole('[Protocol Switch] Switched to OpenAI Chat Completions (POST /v1/chat/completions)', 'system');
+        });
+    }
+
+    if (anthropicBtn) {
+        anthropicBtn.addEventListener('click', () => {
+            updateProtocolUI('anthropic');
+            logToConsole('[Protocol Switch] Switched to Anthropic Messages API (POST /v1/messages)', 'system');
+        });
+    }
+
+    updateProtocolUI(getActiveProtocol());
+}
+
 function setupParametersDrawer() {
     const toggleBtn = document.getElementById('params-toggle-btn');
     const panel = document.getElementById('chat-params-panel');
@@ -1301,6 +1510,7 @@ function setupTabs() {
 
 async function init() {
     setupTabs();
+    setupProtocolSwitcher();
     setupParametersDrawer();
     fetchStatus();
     startTelemetryStream();

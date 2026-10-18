@@ -336,3 +336,314 @@ def test_openai_to_anthropic_stream_tool_call():
     assert "input_json_delta" in full_output
     assert "tool_use" in full_output
     assert "event: message_stop" in full_output
+
+
+def test_openai_to_anthropic_stream_multi_tool_calls():
+    """Verify multiple tool calls in stream are yielded as distinct sequential content blocks."""
+    chunks = [
+        '<tool_call>{"name": "get_current_time", "arguments": {"location": "Tokyo"}}</tool_call>\n',
+        '<tool_call>{"name": "get_weather", "arguments": {"location": "Paris"}}</tool_call>\n',
+        '<tool_call>{"name": "calculator", "arguments": {"expression": "450 * 1.15"}}</tool_call>'
+    ]
+
+    events = []
+    async def run_stream():
+        async for evt in openai_to_anthropic_stream(_fake_openai_stream(chunks), model="gemini"):
+            events.append(evt)
+
+    asyncio.run(run_stream())
+    full_output = "".join(events)
+    assert "get_current_time" in full_output
+    assert "get_weather" in full_output
+    assert "calculator" in full_output
+    assert full_output.count('"type": "tool_use"') == 3
+    assert "stop_reason\": \"tool_use\"" in full_output
+
+
+def test_anthropic_headless_sandbox_prompt():
+    """Verify headless sandbox and multi-tool permissions are injected to suppress provider web cards."""
+    req = {
+        "model": "gemini",
+        "messages": [{"role": "user", "content": "Tell me Tokyo time, Paris weather, and 450*1.15"}],
+        "tools": [
+            {"name": "get_current_time", "description": "Current time"},
+            {"name": "get_weather", "description": "Weather info"},
+            {"name": "calculator", "description": "Do math"}
+        ]
+    }
+    openai_req = anthropic_to_openai_request(req)
+    sys_content = openai_req["messages"][0]["content"]
+    assert "HEADLESS API GATEWAY" in sys_content
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" in sys_content
+    assert "sandbox environment with NO web access" in sys_content
+    assert "DO NOT attempt to search the web" in sys_content
+    assert "invoke multiple tools in succession" in sys_content
+    assert "You cannot call multiple tools at once" not in sys_content
+
+
+def test_temperature_steering():
+    # Low temperature steering
+    req_low = {
+        "model": "auto",
+        "system": "Base system.",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "temperature": 0.2,
+    }
+    low_res = anthropic_to_openai_request(req_low)
+    low_sys = low_res["messages"][0]["content"]
+    assert "strictly factual, precise, concise" in low_sys
+
+    # High temperature steering
+    req_high = {
+        "model": "auto",
+        "system": "Base system.",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "temperature": 0.9,
+    }
+    high_res = anthropic_to_openai_request(req_high)
+    high_sys = high_res["messages"][0]["content"]
+    assert "creative, explorative" in high_sys
+
+
+def test_synthesis_phase_detection():
+    req = {
+        "model": "auto",
+        "system": "You are a helpful assistant.",
+        "tools": [{"name": "calculator", "description": "Calc tool"}],
+        "messages": [
+            {"role": "user", "content": "What is 2+2?"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "calculator", "input": {"x": 2}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "4"}]},
+        ],
+    }
+    res = anthropic_to_openai_request(req)
+    assert res["_is_synthesis_phase"] is True
+    sys_content = res["messages"][0]["content"]
+    assert "[SYNTHESIS PHASE]" in sys_content
+    assert "External tool execution is COMPLETE" in sys_content
+
+
+def test_anthropic_second_turn_user_prompt_resets_synthesis_phase():
+    """Verify that when a user asks a new question after a completed tool turn in Anthropic mode, synthesis phase is reset."""
+    req = {
+        "model": "auto",
+        "system": "You are a helpful assistant.",
+        "tools": [{"name": "calculator", "description": "Calc tool"}],
+        "messages": [
+            {"role": "user", "content": "What is 2+2?"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "calculator", "input": {"x": 2}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "4"}]},
+            {"role": "assistant", "content": "2+2 is 4."},
+            {"role": "user", "content": "Now compute 10*10."},
+        ],
+    }
+    res = anthropic_to_openai_request(req)
+    assert res["_is_synthesis_phase"] is False
+    sys_content = res["messages"][0]["content"]
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" in sys_content
+    assert "[SYNTHESIS PHASE]" not in sys_content
+
+
+def test_stream_stop_sequences():
+    chunks = [
+        "The quick brown ",
+        "fox jumps over ",
+        "the lazy dog",
+    ]
+    events = []
+
+    async def run():
+        async for evt in openai_to_anthropic_stream(
+            _fake_openai_stream(chunks),
+            model="claude-3-5-sonnet",
+            stop_sequences=["jumps"],
+        ):
+            events.append(evt)
+
+    asyncio.run(run())
+    full_output = "".join(events)
+    assert "lazy dog" not in full_output
+    assert '"stop_reason": "stop_sequence"' in full_output
+    assert '"stop_sequence": "jumps"' in full_output
+
+
+def test_stream_max_tokens():
+    chunks = [
+        "First sentence here. ",
+        "Second sentence that exceeds the token limit.",
+    ]
+    events = []
+
+    async def run():
+        async for evt in openai_to_anthropic_stream(
+            _fake_openai_stream(chunks),
+            model="claude-3-5-sonnet",
+            max_tokens=4,
+        ):
+            events.append(evt)
+
+    asyncio.run(run())
+    full_output = "".join(events)
+    assert '"stop_reason": "max_tokens"' in full_output
+
+
+def test_stream_token_usage_reporting():
+    chunks = ["Hello world, this is a test stream."]
+    events = []
+
+    async def run():
+        async for evt in openai_to_anthropic_stream(
+            _fake_openai_stream(chunks),
+            model="claude-3-5-sonnet",
+            input_tokens=55,
+        ):
+            events.append(evt)
+
+    asyncio.run(run())
+    full_output = "".join(events)
+    assert '"input_tokens": 55' in full_output
+    assert '"output_tokens":' in full_output
+
+
+def test_tool_call_tag_support_streaming():
+    chunks = [
+        "Calling tool now:\n",
+        '<tool_call>{"name": "fetch_db", "arguments": {"table": "users"}}</tool_call>',
+    ]
+    events = []
+
+    async def run():
+        async for evt in openai_to_anthropic_stream(
+            _fake_openai_stream(chunks),
+            model="claude-3-5-sonnet",
+        ):
+            events.append(evt)
+
+    asyncio.run(run())
+    full_output = "".join(events)
+    assert "fetch_db" in full_output
+    assert "table" in full_output
+    assert '"stop_reason": "tool_use"' in full_output
+
+
+def test_invoke_with_raw_json_streaming():
+    chunks = [
+        '<invoke name="calc">{"query": "sqrt(16)"}</invoke>'
+    ]
+    events = []
+
+    async def run():
+        async for evt in openai_to_anthropic_stream(
+            _fake_openai_stream(chunks),
+            model="claude-3-5-sonnet",
+        ):
+            events.append(evt)
+
+    asyncio.run(run())
+    full_output = "".join(events)
+    assert "calc" in full_output
+    assert "sqrt(16)" in full_output
+    assert '"stop_reason": "tool_use"' in full_output
+
+
+def test_non_streaming_stop_and_max_tokens():
+    resp = {
+        "model": "gpt-5-5",
+        "choices": [
+            {"message": {"role": "assistant", "content": "Line 1\nSTOP_HERE\nLine 2"}}
+        ]
+    }
+    res = asyncio.run(openai_to_anthropic_json(resp, stop_sequences=["STOP_HERE"], input_tokens=20))
+    assert res["stop_reason"] == "stop_sequence"
+    assert res["stop_sequence"] == "STOP_HERE"
+    assert "Line 2" not in res["content"][0]["text"]
+    assert res["usage"]["input_tokens"] == 20
+    assert res["usage"]["output_tokens"] > 0
+
+    # Max tokens test
+    res_max = asyncio.run(openai_to_anthropic_json(resp, max_tokens=2, input_tokens=10))
+    assert res_max["stop_reason"] == "max_tokens"
+
+
+def test_server_post_v1_messages_endpoint(monkeypatch):
+    from starlette.testclient import TestClient
+    from src.server import app
+    from src.providers.chatgpt.session import ChatGPTProvider
+
+    async def mock_stream_chat(*args, **kwargs):
+        yield "data: " + json.dumps({"choices": [{"delta": {"content": "Hello from Claude emulation!"}}]}) + "\n\n"
+        yield "data: [DONE]\n\n"
+
+    async def mock_non_streaming_chat(*args, **kwargs):
+        return {
+            "model": "gpt-5-5",
+            "choices": [{"message": {"role": "assistant", "content": "Non-streaming answer"}}]
+        }
+
+    from src.providers import get_provider_for_model
+    from unittest.mock import AsyncMock
+    provider = get_provider_for_model("auto")
+    monkeypatch.setattr(provider, "stream_chat", mock_stream_chat)
+    monkeypatch.setattr(provider, "non_streaming_chat", mock_non_streaming_chat)
+    monkeypatch.setattr("src.server.get_all_models", AsyncMock(return_value=[{"id": "auto"}]))
+
+    client = TestClient(app)
+
+    # 1. Non-streaming request with native model
+    res = client.post("/v1/messages", json={
+        "model": "auto",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 100,
+        "temperature": 0.2,
+    })
+    assert res.status_code == 200
+    data = res.json()
+    assert data["type"] == "message"
+    assert data["role"] == "assistant"
+    assert data["content"][0]["text"] == "Non-streaming answer"
+    assert data["usage"]["input_tokens"] > 0
+
+    # 2. Streaming request with native model
+    res_stream = client.post("/v1/messages", json={
+        "model": "auto",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 100,
+        "stream": True,
+    })
+    assert res_stream.status_code == 200
+    assert "text/event-stream" in res_stream.headers["content-type"]
+    text = res_stream.text
+    assert "event: message_start" in text
+    assert "event: content_block_delta" in text
+    assert "Hello from Claude emulation!" in text
+    assert "event: message_stop" in text
+
+    # 3. Verify /v1/models returns provider models
+    models_res = client.get("/v1/models")
+    assert models_res.status_code == 200
+    model_ids = [m["id"] for m in models_res.json().get("data", [])]
+    assert "auto" in model_ids
+
+    # 4. Verify GUI Dashboard serves protocol switcher controls
+    dash_res = client.get("/dashboard/")
+    assert dash_res.status_code == 200
+    html = dash_res.text
+    assert "protocol-segmented-control" in html
+    assert "proto-openai-btn" in html
+    assert "proto-anthropic-btn" in html
+    assert "/v1/messages" in html
+
+    app_js_res = client.get("/dashboard/app.js")
+    assert app_js_res.status_code == 200
+    js = app_js_res.text
+    assert "setupProtocolSwitcher" in js
+    assert "formatMessagesForAnthropic" in js
+    assert "getActiveProtocol" in js
+
+    style_css_res = client.get("/dashboard/style.css")
+    assert style_css_res.status_code == 200
+    css = style_css_res.text
+    assert "protocol-segmented-control" in css
+    assert "protocol-segment" in css
+
+

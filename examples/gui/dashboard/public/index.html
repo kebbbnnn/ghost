@@ -137,16 +137,33 @@
                     <div class="chat-window-wrapper glass-panel">
                         <!-- Chat Header -->
                         <div class="chat-header">
-                            <div class="model-select-wrapper">
-                                <label for="playground-model">Active Model:</label>
-                                <select id="playground-model">
-                                    <option value="auto">ChatGPT (auto)</option>
-                                    <option value="gemini">Gemini (gemini)</option>
-                                    <option value="gemini-tree-of-thoughts">Gemini Tree of Thoughts (gemini-tree-of-thoughts)</option>
-                                    <option value="perplexity">Perplexity (perplexity)</option>
-                                    <option value="spectre">Spectre (fast routing)</option>
-                                    <option value="spectre-ultra">Spectre-Ultra (orchestrator)</option>
-                                </select>
+                            <div class="header-left-controls">
+                                <div class="model-select-wrapper">
+                                    <label for="playground-model">Active Model:</label>
+                                    <select id="playground-model">
+                                        <option value="auto">ChatGPT (auto)</option>
+                                        <option value="gemini">Gemini (gemini)</option>
+                                        <option value="gemini-tree-of-thoughts">Gemini Tree of Thoughts (gemini-tree-of-thoughts)</option>
+                                        <option value="perplexity">Perplexity (perplexity)</option>
+                                        <option value="spectre">Spectre (fast routing)</option>
+                                        <option value="spectre-ultra">Spectre-Ultra (orchestrator)</option>
+                                    </select>
+                                </div>
+                                <div class="protocol-switcher-wrapper">
+                                    <label>API Protocol:</label>
+                                    <div class="protocol-segmented-control" id="protocol-segmented-control" role="group" aria-label="API Protocol Switcher">
+                                        <button type="button" class="protocol-segment active" data-protocol="openai" id="proto-openai-btn" title="Dispatch to POST /v1/chat/completions (OpenAI format)">
+                                            <span class="proto-dot openai-dot"></span>
+                                            <span class="proto-name">OpenAI</span>
+                                            <span class="proto-endpoint">/v1/chat/completions</span>
+                                        </button>
+                                        <button type="button" class="protocol-segment" data-protocol="anthropic" id="proto-anthropic-btn" title="Dispatch to POST /v1/messages (Anthropic Claude format)">
+                                            <span class="proto-dot anthropic-dot"></span>
+                                            <span class="proto-name">Anthropic</span>
+                                            <span class="proto-endpoint">/v1/messages</span>
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                             <div class="header-actions">
                                 <button class="params-toggle-btn" id="params-toggle-btn" title="Configure Temperature, Stop sequences & Function Tools">
@@ -159,7 +176,10 @@
                         <!-- Parameters & Tools Configuration Drawer -->
                         <div class="chat-params-panel" id="chat-params-panel" style="display: none;">
                             <div class="params-header">
-                                <h4>OpenAI Parameter & Tool Settings</h4>
+                                <div class="params-title-row">
+                                    <h4>Parameter & Tool Settings</h4>
+                                    <span class="protocol-pill-badge" id="param-active-protocol-badge">🟢 OpenAI Mode (/v1/chat/completions)</span>
+                                </div>
                                 <span class="params-subtitle">Test GhostTunnel's emulation layer with real-time hyperparameter steering & tool calls</span>
                             </div>
                             <div class="params-grid">

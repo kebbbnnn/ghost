@@ -361,24 +361,74 @@ async def anthropic_messages(req: Request):
         body = await req.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
-        
+
     try:
         openai_req = anthropic_to_openai_request(body)
     except Exception as e:
         log.exception("Error converting Anthropic request")
         raise HTTPException(status_code=400, detail=str(e))
-        
+
     model = openai_req.get("model", "auto")
     provider = get_provider_for_model(model)
     if not provider:
         raise HTTPException(status_code=400, detail=f"No provider supports model '{model}'")
-        
+
     messages = openai_req.get("messages", [])
     stream = openai_req.get("stream", False)
-    
+    max_tokens = openai_req.get("max_tokens")
+    stop_sequences = openai_req.get("stop", [])
+    input_tokens = openai_req.get("_estimated_input_tokens", 0)
+
+    request_id = str(time.time())
+
+    conversation_id = body.get("conversation_id")
+    parent_message_id = body.get("parent_message_id")
+
     if stream:
+        raw_stream = provider.stream_chat(
+            messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id
+        )
+
+        async def telemetry_anthropic_stream():
+            await broadcast_event("request_start", {
+                "id": request_id,
+                "model": model,
+                "stream": True,
+                "messages_count": len(messages),
+            })
+            token_count = 0
+            try:
+                async for chunk in openai_to_anthropic_stream(
+                    raw_stream,
+                    model=model,
+                    max_tokens=max_tokens,
+                    stop_sequences=stop_sequences,
+                    input_tokens=input_tokens,
+                ):
+                    token_count += 1
+                    yield chunk
+            except Exception as e:
+                log.exception("Streaming Anthropic error: %s", e)
+                await broadcast_event("request_error", {
+                    "id": request_id,
+                    "error": str(e),
+                })
+                error_payload = json.dumps({
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": str(e)
+                    }
+                })
+                yield f"event: error\ndata: {error_payload}\n\n"
+            finally:
+                await broadcast_event("request_end", {
+                    "id": request_id,
+                    "tokens": token_count,
+                })
+
         return StreamingResponse(
-            openai_to_anthropic_stream(provider.stream_chat(messages, model), model=model),
+            telemetry_anthropic_stream(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -388,12 +438,33 @@ async def anthropic_messages(req: Request):
         )
     else:
         try:
-            resp_dict = await provider.non_streaming_chat(messages, model)
-            anthropic_resp = await openai_to_anthropic_json(resp_dict)
+            await broadcast_event("request_start", {
+                "id": request_id,
+                "model": model,
+                "stream": False,
+                "messages_count": len(messages),
+            })
+            resp_dict = await provider.non_streaming_chat(
+                messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id
+            )
+            anthropic_resp = await openai_to_anthropic_json(
+                resp_dict,
+                model=model,
+                max_tokens=max_tokens,
+                stop_sequences=stop_sequences,
+                input_tokens=input_tokens,
+            )
+            out_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)
+            await broadcast_event("request_end", {
+                "id": request_id,
+                "tokens": out_tokens,
+            })
             return JSONResponse(anthropic_resp)
         except RateLimitError as e:
+            await broadcast_event("request_error", {"id": request_id, "error": str(e)})
             raise HTTPException(status_code=429, detail=str(e))
         except Exception as e:
+            await broadcast_event("request_error", {"id": request_id, "error": str(e)})
             log.exception("Non-streaming error")
             raise HTTPException(status_code=500, detail=str(e))
 

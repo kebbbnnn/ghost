@@ -8,23 +8,27 @@ import uuid
 
 MODEL_MAP = {
     # Map common OpenAI names to guest-available ChatGPT slugs
-    "gpt-4o":               "auto",
-    "gpt-4o-mini":          "auto",
-    "gpt-4":                "auto",
-    "gpt-4-turbo":          "auto",
-    "gpt-3.5-turbo":        "auto",
-    "gpt-3.5-turbo-16k":    "auto",
-    "o1":                   "auto",
-    "o1-mini":              "auto",
-    "o3":                   "auto",
-    "gpt-5-5":              "gpt-5-5",
-    "auto":                 "auto",
+    "gpt-4o":                   "auto",
+    "gpt-4o-mini":              "auto",
+    "gpt-4":                    "auto",
+    "gpt-4-turbo":              "auto",
+    "gpt-3.5-turbo":            "auto",
+    "gpt-3.5-turbo-16k":        "auto",
+    "o1":                       "auto",
+    "o1-mini":                  "auto",
+    "o3":                       "auto",
+    "gpt-5-5":                  "gpt-5-5",
+    "auto":                     "auto",
 }
 DEFAULT_MODEL = "auto"
 
 
 def map_model(requested: str) -> str:
-    """Map an OpenAI model name to a ChatGPT guest model slug."""
+    """Map an OpenAI model name or Anthropic Claude model name to a ChatGPT guest model slug."""
+    if requested in MODEL_MAP:
+        return MODEL_MAP[requested]
+    if requested.lower().startswith("claude"):
+        return DEFAULT_MODEL
     return MODEL_MAP.get(requested, DEFAULT_MODEL)
 
 

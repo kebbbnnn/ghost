@@ -93,6 +93,8 @@ class StreamEmulationProcessor:
         self.tool_accumulator = ""
         self.tool_calls_emitted: list[dict] = []
         self.tool_call_index = 0
+        self.conversation_id: str | None = None
+        self.parent_message_id: str | None = None
 
         self.total_tokens_estimated = 0
         self.stop_triggered = False
@@ -128,6 +130,10 @@ class StreamEmulationProcessor:
                 self.chunk_id = chunk_dict["id"]
             if "model" in chunk_dict and chunk_dict["model"]:
                 self.model = chunk_dict["model"]
+            if "conversation_id" in chunk_dict and chunk_dict["conversation_id"]:
+                self.conversation_id = chunk_dict["conversation_id"]
+            if "parent_message_id" in chunk_dict and chunk_dict["parent_message_id"]:
+                self.parent_message_id = chunk_dict["parent_message_id"]
 
             choices = chunk_dict.get("choices", [])
             if not choices:
@@ -163,6 +169,7 @@ class StreamEmulationProcessor:
                 if open_idx != -1:
                     # Emit everything before OPEN_TAG as normal content
                     pre_text = self.buffer[:open_idx]
+                    pre_text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", pre_text)
                     if pre_text and pre_text.strip():
                         async for c in self._emit_content(pre_text):
                             yield c
@@ -235,6 +242,11 @@ class StreamEmulationProcessor:
 
     async def _emit_content(self, text: str) -> AsyncGenerator[str, None]:
         """Emits standard OpenAI delta.content chunk after stop and max_tokens checks."""
+        # Strip internal google card tokens if any leak through
+        text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", text)
+        if not text:
+            return
+
         # Stop sequence checking
         if self.stop_sequences:
             for s in self.stop_sequences:
@@ -354,6 +366,10 @@ class StreamEmulationProcessor:
                 }
             ],
         }
+        if self.conversation_id:
+            chunk["conversation_id"] = self.conversation_id
+        if self.parent_message_id:
+            chunk["parent_message_id"] = self.parent_message_id
         return f"data: {json.dumps(chunk)}\n\n"
 
 
@@ -377,6 +393,7 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
     executed_tools: set[str] = set(context.get("executed_tool_names", []))
 
     raw_content = raw_content.replace("<escape>", "").replace("</escape>", "")
+    raw_content = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", raw_content)
 
     # 1. Enforce stop sequences
     if stop_sequences:

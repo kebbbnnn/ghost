@@ -430,7 +430,7 @@ class GeminiProvider(BaseProvider):
             elif role == "tool":
                 chat_parts.append(f"[Tool Output]: {text}")
             else:
-                chat_parts.append(text)
+                chat_parts.append(f"[User]: {text}")
 
         system_prefix = "\n\n".join(system_parts).strip()
 
@@ -448,14 +448,36 @@ class GeminiProvider(BaseProvider):
             latest_turn_text = "\n\n".join(turn_parts) if turn_parts else chat_parts[-1]
 
             if system_prefix:
-                return f"[System Instructions]:\n{system_prefix}\n\n{latest_turn_text}"
+                directive_reinforcement = ""
+                if "TOOL_CALL_REQUIRED" in system_prefix:
+                    directive_reinforcement = (
+                        "\n\n[MANDATORY RULE]: Emit fresh <tool_call> tags for this query. "
+                        "Even if this repeats a previous query, you MUST invoke tools again. "
+                        "Do not answer directly or use previous turn answers."
+                    )
+                return f"[System Instructions]:\n{system_prefix}\n\n{latest_turn_text}{directive_reinforcement}"
             return latest_turn_text
 
-        # Fresh conversation: concatenate all messages
+        # Fresh/stateless conversation: concatenate all messages
         prompt_parts = []
         if system_prefix:
             prompt_parts.append(f"[System Instructions]:\n{system_prefix}")
         prompt_parts.extend(chat_parts)
+
+        # Recency reinforcement for headless tool calling:
+        # If tool calling is active and NOT in synthesis phase, reinforce the active directive at the END
+        # so multi-turn conversations do not suffer from attention dilution.
+        if system_prefix and "TOOL_CALL_REQUIRED" in system_prefix:
+            prompt_parts.append(
+                f"[ACTIVE DIRECTIVE FOR CURRENT TURN]:\n{system_prefix}\n\n"
+                "MANDATORY: Emit fresh <tool_call> tags for the current query above. "
+                "Even if the query repeats an earlier question or asks for information already answered in the chat history, you MUST emit fresh <tool_call> tags. "
+                "Output ONLY <tool_call> tags, nothing else."
+            )
+        elif system_prefix and "SYNTHESIS PHASE" in system_prefix:
+            prompt_parts.append(
+                "[ACTIVE DIRECTIVE FOR SYNTHESIS]: Provide the final answer to the user based strictly on the latest [Tool Results] above. Do NOT emit any tool calls."
+            )
 
         return "\n\n".join(prompt_parts)
 

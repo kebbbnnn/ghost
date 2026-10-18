@@ -12,9 +12,10 @@ This module handles:
   4. Generating SSE streaming chunks
 """
 import json
+import logging
+import re
 import time
 import uuid
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -199,7 +200,9 @@ def _extract_content(inner) -> str:
             parts = first[1]
             if isinstance(parts, list) and len(parts) > 0:
                 content = parts[0]
-                return content if isinstance(content, str) else str(content)
+                text = content if isinstance(content, str) else str(content)
+                text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", text)
+                return text
     except (IndexError, TypeError):
         pass
     return ""
