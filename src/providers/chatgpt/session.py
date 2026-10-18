@@ -437,8 +437,16 @@ class ChatGPTProvider(BaseProvider):
         Ensure we have valid sentinel headers.
         """
         async with self._lock:
-            if not self._sentinel_headers or self._is_token_expired():
+            if not self._sentinel_headers:
                 await self._refresh_chat_requirements()
+            elif self._is_token_expired():
+                if self._next_sentinel_headers:
+                    self._sentinel_headers = self._next_sentinel_headers
+                    self._next_sentinel_headers = None
+                    self._token_fetched_at = time.time()
+                    self._schedule_next_token_prefetch()
+                else:
+                    await self._refresh_chat_requirements()
 
     async def start_background_tasks(self):
         # Pre-initialize the HTTP session and fetch the first sentinel token

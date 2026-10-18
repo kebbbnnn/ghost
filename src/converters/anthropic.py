@@ -318,6 +318,8 @@ async def openai_to_anthropic_stream(
     max_tokens: int | None = None,
     stop_sequences: list[str] | None = None,
     input_tokens: int = 0,
+    session_metadata: dict | None = None,
+    expose_session_metadata_in_body: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Convert OpenAI SSE stream to Anthropic SSE stream, intercepting tool calls, enforcing max_tokens and stop_sequences."""
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
@@ -328,7 +330,8 @@ async def openai_to_anthropic_stream(
         normalized_stops = [s for s in stop_sequences if isinstance(s, str) and s]
 
     # Message Start
-    yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'model': model, 'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': input_tokens, 'output_tokens': 0}}})}\n\n"
+    yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'model': model, 'content': [], 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': input_tokens, 'output_tokens': 1}}})}\n\n"
+    yield 'event: ping\ndata: {"type": "ping"}\n\n'
 
     block_index = 0
     active_block_type = None  # None, "text", or "tool_use"
@@ -365,8 +368,12 @@ async def openai_to_anthropic_stream(
 
         if "conversation_id" in data and data["conversation_id"]:
             captured_conversation_id = data["conversation_id"]
+            if session_metadata is not None:
+                session_metadata["conversation_id"] = captured_conversation_id
         if "parent_message_id" in data and data["parent_message_id"]:
             captured_parent_message_id = data["parent_message_id"]
+            if session_metadata is not None:
+                session_metadata["parent_message_id"] = captured_parent_message_id
 
         choices = data.get("choices", [])
         if not choices:
@@ -573,10 +580,11 @@ async def openai_to_anthropic_stream(
         'delta': {'stop_reason': stop_reason, 'stop_sequence': matched_stop_sequence},
         'usage': {'output_tokens': final_output_tokens}
     }
-    if captured_conversation_id:
-        delta_payload['conversation_id'] = captured_conversation_id
-    if captured_parent_message_id:
-        delta_payload['parent_message_id'] = captured_parent_message_id
+    if expose_session_metadata_in_body:
+        if captured_conversation_id:
+            delta_payload['conversation_id'] = captured_conversation_id
+        if captured_parent_message_id:
+            delta_payload['parent_message_id'] = captured_parent_message_id
     yield f"event: message_delta\ndata: {json.dumps(delta_payload)}\n\n"
     yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
 
@@ -587,17 +595,28 @@ async def openai_to_anthropic_json(
     max_tokens: int | None = None,
     stop_sequences: list[str] | None = None,
     input_tokens: int = 0,
+    session_metadata: dict | None = None,
+    expose_session_metadata_in_body: bool = False,
 ) -> dict:
     """Convert OpenAI JSON response to Anthropic JSON response with support for tools, stop_sequences, and max_tokens."""
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     model = model or openai_resp.get("model", "unknown")
 
     if "error" in openai_resp:
+        err = openai_resp["error"]
+        err_type = err.get("type", "api_error")
+        valid_anthropic_error_types = {
+            "invalid_request_error", "authentication_error", "permission_error",
+            "not_found_error", "request_too_large", "rate_limit_error",
+            "api_error", "overloaded_error"
+        }
+        if err_type not in valid_anthropic_error_types:
+            err_type = "rate_limit_error" if "rate" in str(err).lower() else "api_error"
         return {
             "type": "error",
             "error": {
-                "type": "api_error",
-                "message": openai_resp["error"].get("message", "Unknown error")
+                "type": err_type,
+                "message": err.get("message", "Unknown error")
             }
         }
 
@@ -722,9 +741,16 @@ async def openai_to_anthropic_json(
         "stop_sequence": matched_stop_sequence,
         "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}
     }
-    if openai_resp.get("conversation_id"):
-        resp["conversation_id"] = openai_resp["conversation_id"]
-    if openai_resp.get("parent_message_id"):
-        resp["parent_message_id"] = openai_resp["parent_message_id"]
+    if session_metadata is not None:
+        if openai_resp.get("conversation_id"):
+            session_metadata["conversation_id"] = openai_resp["conversation_id"]
+        if openai_resp.get("parent_message_id"):
+            session_metadata["parent_message_id"] = openai_resp["parent_message_id"]
+
+    if expose_session_metadata_in_body:
+        if openai_resp.get("conversation_id"):
+            resp["conversation_id"] = openai_resp["conversation_id"]
+        if openai_resp.get("parent_message_id"):
+            resp["parent_message_id"] = openai_resp["parent_message_id"]
     return resp
 

@@ -628,12 +628,14 @@ def test_null_content_in_assistant_message():
 
 
 def test_stream_emulation_preserves_conversation_id_and_parent_message_id():
-    """Verify StreamEmulationProcessor captures and emits conversation_id and parent_message_id."""
+    """Verify StreamEmulationProcessor captures conversation_id and parent_message_id on processor,
+    and only includes in chunk payload when expose_session_metadata_in_chunks is enabled."""
     async def run():
         async def mock_stream():
             yield 'data: {"id": "c1", "conversation_id": "conv_123", "parent_message_id": "resp_456", "choices": [{"delta": {"content": "Hello"}}]}\n\n'
             yield 'data: [DONE]\n\n'
 
+        # 1. Strict standard mode (default)
         processor = StreamEmulationProcessor({"model": "test-model"})
         chunks = []
         async for c in processor.process_stream(mock_stream()):
@@ -641,8 +643,21 @@ def test_stream_emulation_preserves_conversation_id_and_parent_message_id():
                 chunks.append(json.loads(c[6:]))
 
         assert len(chunks) > 0
-        assert chunks[0]["conversation_id"] == "conv_123"
-        assert chunks[0]["parent_message_id"] == "resp_456"
+        assert processor.conversation_id == "conv_123"
+        assert processor.parent_message_id == "resp_456"
+        assert "conversation_id" not in chunks[0]
+        assert "parent_message_id" not in chunks[0]
+
+        # 2. Explicit chunk exposure mode
+        proc_legacy = StreamEmulationProcessor({"model": "test-model", "expose_session_metadata_in_chunks": True})
+        chunks_legacy = []
+        async for c in proc_legacy.process_stream(mock_stream()):
+            if c.strip() != "data: [DONE]":
+                chunks_legacy.append(json.loads(c[6:]))
+
+        assert len(chunks_legacy) > 0
+        assert chunks_legacy[0]["conversation_id"] == "conv_123"
+        assert chunks_legacy[0]["parent_message_id"] == "resp_456"
 
     import asyncio
     asyncio.run(run())

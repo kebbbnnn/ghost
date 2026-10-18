@@ -25,7 +25,7 @@ from .pow_solver import solve_pow, build_requirements_token
 from .vm import execute_turnstile_vm
 
 
-def _build_config(client_version: str, sid: str) -> list:
+def _build_config(client_version: str | None = None, sid: str | None = None) -> list:
     """
     Build the 18-element config array that getConfig() returns in the SDK.
 
@@ -49,6 +49,16 @@ def _build_config(client_version: str, sid: str) -> list:
       16 hardwareConcurrency
       17 start time epoch ms
     """
+    if client_version is not None and sid is None:
+        if len(client_version) == 36 and "-" in client_version:
+            sid = client_version
+            client_version = "prod-abc"
+        else:
+            sid = str(uuid.uuid4())
+    elif client_version is None:
+        client_version = "prod-abc"
+    if sid is None:
+        sid = str(uuid.uuid4())
     # Simulate realistic browser timing:
     # - The browser loaded the page ~1-3s before calling getConfig()
     # - performance.now() counts ms since page load (NOT since system boot)
@@ -87,7 +97,7 @@ def _build_config(client_version: str, sid: str) -> list:
     ], now_ms
 
 
-def generate_requirements_token(client_version: str, sid: str | None = None) -> tuple[str, str]:
+def generate_requirements_token(client_version: str = "prod-abc", sid: str | None = None) -> tuple[str, str]:
     """
     Generate the lightweight gAAAAAC requirements/proof token.
     Returns:

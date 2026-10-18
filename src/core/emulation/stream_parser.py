@@ -101,6 +101,15 @@ class StreamEmulationProcessor:
         self.length_triggered = False
         self.first_chunk_sent = False
 
+        self.system_fingerprint = context.get("system_fingerprint") or f"fp_ghost_{uuid.uuid4().hex[:10]}"
+        self.stream_options = context.get("stream_options") or {}
+        self.include_usage = bool(
+            isinstance(self.stream_options, dict)
+            and self.stream_options.get("include_usage")
+        )
+        self.prompt_tokens = context.get("prompt_tokens", 0)
+        self.expose_session_metadata_in_chunks = context.get("expose_session_metadata_in_chunks", False)
+
     async def process_stream(
         self, raw_stream: AsyncGenerator[str, None]
     ) -> AsyncGenerator[str, None]:
@@ -152,6 +161,22 @@ class StreamEmulationProcessor:
         # Stream ended or truncated: flush buffers and emit final chunks
         async for sse_chunk in self._finalize():
             yield sse_chunk
+
+        if self.include_usage:
+            usage_chunk = {
+                "id": self.chunk_id,
+                "object": "chat.completion.chunk",
+                "created": self.created,
+                "model": self.model,
+                "system_fingerprint": self.system_fingerprint,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": self.prompt_tokens,
+                    "completion_tokens": max(1, self.total_tokens_estimated),
+                    "total_tokens": self.prompt_tokens + max(1, self.total_tokens_estimated),
+                },
+            }
+            yield f"data: {json.dumps(usage_chunk)}\n\n"
 
         yield "data: [DONE]\n\n"
 
@@ -358,18 +383,21 @@ class StreamEmulationProcessor:
             "object": "chat.completion.chunk",
             "created": self.created,
             "model": self.model,
+            "system_fingerprint": self.system_fingerprint,
             "choices": [
                 {
                     "index": 0,
                     "delta": delta,
+                    "logprobs": None,
                     "finish_reason": finish_reason,
                 }
             ],
         }
-        if self.conversation_id:
-            chunk["conversation_id"] = self.conversation_id
-        if self.parent_message_id:
-            chunk["parent_message_id"] = self.parent_message_id
+        if self.expose_session_metadata_in_chunks:
+            if self.conversation_id:
+                chunk["conversation_id"] = self.conversation_id
+            if self.parent_message_id:
+                chunk["parent_message_id"] = self.parent_message_id
         return f"data: {json.dumps(chunk)}\n\n"
 
 
@@ -386,6 +414,33 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
     choice = dict(choices[0])
     message = dict(choice.get("message", {}))
     raw_content = message.get("content") or ""
+
+    def _finalize_response(r: dict, ch: dict, msg: dict) -> dict:
+        ch["message"] = msg
+        r["choices"] = [ch]
+        r["object"] = "chat.completion"
+        r.setdefault("id", f"chatcmpl-{uuid.uuid4().hex[:24]}")
+        r.setdefault("created", int(time.time()))
+        r.setdefault("model", context.get("model", "auto"))
+        r.setdefault("system_fingerprint", f"fp_ghost_{uuid.uuid4().hex[:10]}")
+        ch.setdefault("index", 0)
+        ch.setdefault("logprobs", None)
+
+        prompt_tokens = context.get("prompt_tokens", 0)
+        final_text = msg.get("content") or ""
+        completion_tokens = max(1, len(final_text) // 4) if final_text else 1
+        r["usage"] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
+
+        if not context.get("expose_session_metadata_in_chunks", False):
+            if "conversation_id" in r:
+                context["captured_conversation_id"] = r.pop("conversation_id")
+            if "parent_message_id" in r:
+                context["captured_parent_message_id"] = r.pop("parent_message_id")
+        return r
 
     stop_sequences: list[str] = context.get("stop", [])
     max_tokens: int | None = context.get("max_tokens")
@@ -434,18 +489,14 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
         if tool_calls:
             message["content"] = clean_content if clean_content else None
             message["tool_calls"] = tool_calls
-            choice["message"] = message
             choice["finish_reason"] = "tool_calls"
-            resp["choices"] = [choice]
-            return resp
+            return _finalize_response(resp, choice, message)
         elif clean_content:
             # All tool calls were suppressed echoes; emit synthesized content
             message["content"] = clean_content
             message.pop("tool_calls", None)
-            choice["message"] = message
             choice["finish_reason"] = "stop"
-            resp["choices"] = [choice]
-            return resp
+            return _finalize_response(resp, choice, message)
 
     # 3. Enforce max_tokens if no tool calls
     if max_tokens is not None:
@@ -455,6 +506,4 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
             choice["finish_reason"] = "length"
 
     message["content"] = raw_content
-    choice["message"] = message
-    resp["choices"] = [choice]
-    return resp
+    return _finalize_response(resp, choice, message)

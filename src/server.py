@@ -83,6 +83,122 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.exceptions import RequestValidationError
+
+def make_openai_headers(
+    request_id: str,
+    elapsed_ms: int = 0,
+    conversation_id: str | None = None,
+    parent_message_id: str | None = None,
+    is_stream: bool = False,
+) -> dict[str, str]:
+    headers = {
+        "X-Request-ID": f"req_{request_id.replace('.', '')}",
+        "OpenAI-Organization": "org-ghost",
+        "OpenAI-Processing-Ms": str(max(1, elapsed_ms)),
+        "OpenAI-Version": "2020-10-01",
+    }
+    if is_stream:
+        headers.update({
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        })
+    else:
+        headers["Content-Type"] = "application/json"
+    if conversation_id:
+        headers["X-Ghost-Conversation-Id"] = conversation_id
+    if parent_message_id:
+        headers["X-Ghost-Parent-Message-Id"] = parent_message_id
+    return headers
+
+
+def make_anthropic_headers(
+    request_id: str,
+    conversation_id: str | None = None,
+    parent_message_id: str | None = None,
+    is_stream: bool = False,
+) -> dict[str, str]:
+    headers = {
+        "Request-ID": f"req_{request_id.replace('.', '')}",
+        "Anthropic-Version": "2023-06-01",
+        "Anthropic-Ratelimit-Requests-Limit": "1000",
+        "Anthropic-Ratelimit-Requests-Remaining": "999",
+        "Anthropic-Ratelimit-Tokens-Limit": "100000",
+        "Anthropic-Ratelimit-Tokens-Remaining": "99000",
+    }
+    if is_stream:
+        headers.update({
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        })
+    else:
+        headers["Content-Type"] = "application/json"
+    if conversation_id:
+        headers["X-Ghost-Conversation-Id"] = conversation_id
+    if parent_message_id:
+        headers["X-Ghost-Parent-Message-Id"] = parent_message_id
+    return headers
+
+
+def make_openai_error_response(
+    message: str,
+    status_code: int = 400,
+    error_type: str = "invalid_request_error",
+    code: str | None = None,
+    request_id: str | None = None,
+) -> JSONResponse:
+    headers = {}
+    if request_id:
+        headers = make_openai_headers(request_id)
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "message": message,
+                "type": error_type,
+                "param": None,
+                "code": code,
+            }
+        },
+        headers=headers,
+    )
+
+
+def make_anthropic_error_response(
+    message: str,
+    status_code: int = 400,
+    error_type: str = "invalid_request_error",
+    request_id: str | None = None,
+) -> JSONResponse:
+    headers = {}
+    if request_id:
+        headers = make_anthropic_headers(request_id)
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "type": "error",
+            "error": {
+                "type": error_type,
+                "message": message,
+            }
+        },
+        headers=headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    path = request.url.path
+    if path.startswith("/v1/messages"):
+        return make_anthropic_error_response(str(exc), status_code=400)
+    elif path.startswith("/v1/chat/completions"):
+        return make_openai_error_response(str(exc), status_code=400)
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
 # Mount dashboard static files
 import os
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -140,6 +256,7 @@ class ChatCompletionRequest(BaseModel):
     model: str = "auto"
     messages: list[ChatMessage]
     stream: bool = False
+    stream_options: dict | None = None
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
@@ -152,11 +269,13 @@ class ChatCompletionRequest(BaseModel):
     frequency_penalty: float | None = None
     conversation_id: str | None = None
     parent_message_id: str | None = None
+    expose_session_metadata_in_chunks: bool = False
 
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest):
     request_id = str(time.time())
+    start_time = time.time()
     trace = start_trace(request_id, "POST /v1/chat/completions", model=req.model, stream=req.stream)
     trace.log_client_request(req.model_dump())
 
@@ -165,7 +284,12 @@ async def chat_completions(req: ChatCompletionRequest):
     if not provider:
         trace.log_error(f"No provider supports model '{req.model}'")
         trace.finish()
-        raise HTTPException(status_code=400, detail=f"No provider supports model '{req.model}'")
+        return make_openai_error_response(
+            f"No provider supports model '{req.model}'",
+            status_code=400,
+            error_type="invalid_request_error",
+            request_id=request_id,
+        )
 
     messages, emulation_ctx = EmulationPipeline.prepare_request(req)
 
@@ -195,16 +319,22 @@ async def chat_completions(req: ChatCompletionRequest):
                     "id": request_id,
                     "error": str(e),
                 })
+                err_type = "rate_limit_error" if isinstance(e, RateLimitError) or "rate" in str(e).lower() else "server_error"
+                err_code = "rate_limit_exceeded" if err_type == "rate_limit_error" else None
                 error_payload = json.dumps({
                     "error": {
                         "message": str(e),
-                        "type": type(e).__name__,
-                        "code": 403 if "flagged" in str(e).lower() or "403" in str(e) else 500,
+                        "type": err_type,
+                        "param": None,
+                        "code": err_code,
                     }
                 })
                 error_chunk = f"data: {error_payload}\n\n"
                 trace.log_client_chunk(error_chunk)
                 yield error_chunk
+                done_chunk = "data: [DONE]\n\n"
+                trace.log_client_chunk(done_chunk)
+                yield done_chunk
             finally:
                 trace.finish()
                 await broadcast_event("request_end", {
@@ -212,14 +342,16 @@ async def chat_completions(req: ChatCompletionRequest):
                     "tokens": token_count,
                 })
 
+        stream_headers = make_openai_headers(
+            request_id=request_id,
+            conversation_id=req.conversation_id,
+            parent_message_id=req.parent_message_id,
+            is_stream=True,
+        )
         return StreamingResponse(
             telemetry_stream_generator(),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
+            headers=stream_headers,
         )
     else:
         await broadcast_event("request_start", {
@@ -237,14 +369,26 @@ async def chat_completions(req: ChatCompletionRequest):
             await broadcast_event("request_end", {
                 "id": request_id,
             })
-            return JSONResponse(resp_dict)
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            captured_conv = emulation_ctx.get("captured_conversation_id") or req.conversation_id
+            captured_parent = emulation_ctx.get("captured_parent_message_id") or req.parent_message_id
+            resp_headers = make_openai_headers(
+                request_id=request_id,
+                elapsed_ms=elapsed_ms,
+                conversation_id=captured_conv,
+                parent_message_id=captured_parent,
+                is_stream=False,
+            )
+            return JSONResponse(resp_dict, headers=resp_headers)
         except RateLimitError as e:
             trace.log_error(e)
             await broadcast_event("request_error", {
                 "id": request_id,
                 "error": str(e),
             })
-            raise HTTPException(status_code=429, detail=str(e))
+            return make_openai_error_response(
+                str(e), status_code=429, error_type="rate_limit_error", code="rate_limit_exceeded", request_id=request_id
+            )
         except Exception as e:
             trace.log_error(e)
             log.exception("Non-streaming error")
@@ -252,7 +396,9 @@ async def chat_completions(req: ChatCompletionRequest):
                 "id": request_id,
                 "error": str(e),
             })
-            raise HTTPException(status_code=500, detail=str(e))
+            return make_openai_error_response(
+                str(e), status_code=500, error_type="server_error", request_id=request_id
+            )
         finally:
             trace.finish()
 
@@ -382,12 +528,12 @@ async def video_chat(
 
 @app.post("/v1/messages")
 async def anthropic_messages(req: Request):
+    request_id = str(time.time())
     try:
         body = await req.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        return make_anthropic_error_response("Invalid JSON", status_code=400, request_id=request_id)
 
-    request_id = str(time.time())
     stream = body.get("stream", False)
     model = body.get("model", "auto")
     trace = start_trace(request_id, "POST /v1/messages", model=model, stream=stream)
@@ -399,7 +545,7 @@ async def anthropic_messages(req: Request):
         log.exception("Error converting Anthropic request")
         trace.log_error(e)
         trace.finish()
-        raise HTTPException(status_code=400, detail=str(e))
+        return make_anthropic_error_response(str(e), status_code=400, request_id=request_id)
 
     model = openai_req.get("model", "auto")
     trace.model = model
@@ -407,7 +553,7 @@ async def anthropic_messages(req: Request):
     if not provider:
         trace.log_error(f"No provider supports model '{model}'")
         trace.finish()
-        raise HTTPException(status_code=400, detail=f"No provider supports model '{model}'")
+        return make_anthropic_error_response(f"No provider supports model '{model}'", status_code=400, request_id=request_id)
 
     messages = openai_req.get("messages", [])
     stream = openai_req.get("stream", False)
@@ -417,11 +563,13 @@ async def anthropic_messages(req: Request):
 
     conversation_id = body.get("conversation_id")
     parent_message_id = body.get("parent_message_id")
+    expose_session_metadata_in_body = body.get("expose_session_metadata_in_body", False)
 
     if stream:
         raw_stream = provider.stream_chat(
             messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id
         )
+        session_metadata = {}
 
         async def telemetry_anthropic_stream():
             await broadcast_event("request_start", {
@@ -438,6 +586,8 @@ async def anthropic_messages(req: Request):
                     max_tokens=max_tokens,
                     stop_sequences=stop_sequences,
                     input_tokens=input_tokens,
+                    session_metadata=session_metadata,
+                    expose_session_metadata_in_body=expose_session_metadata_in_body,
                 ):
                     token_count += 1
                     trace.log_client_chunk(chunk)
@@ -449,10 +599,11 @@ async def anthropic_messages(req: Request):
                     "id": request_id,
                     "error": str(e),
                 })
+                err_type = "rate_limit_error" if isinstance(e, RateLimitError) or "rate" in str(e).lower() else "api_error"
                 error_payload = json.dumps({
                     "type": "error",
                     "error": {
-                        "type": "api_error",
+                        "type": err_type,
                         "message": str(e)
                     }
                 })
@@ -466,14 +617,16 @@ async def anthropic_messages(req: Request):
                     "tokens": token_count,
                 })
 
+        stream_headers = make_anthropic_headers(
+            request_id=request_id,
+            conversation_id=conversation_id,
+            parent_message_id=parent_message_id,
+            is_stream=True,
+        )
         return StreamingResponse(
             telemetry_anthropic_stream(),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
+            headers=stream_headers,
         )
     else:
         try:
@@ -483,6 +636,7 @@ async def anthropic_messages(req: Request):
                 "stream": False,
                 "messages_count": len(messages),
             })
+            session_metadata = {}
             resp_dict = await provider.non_streaming_chat(
                 messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id
             )
@@ -492,6 +646,8 @@ async def anthropic_messages(req: Request):
                 max_tokens=max_tokens,
                 stop_sequences=stop_sequences,
                 input_tokens=input_tokens,
+                session_metadata=session_metadata,
+                expose_session_metadata_in_body=expose_session_metadata_in_body,
             )
             trace.log_client_response(anthropic_resp)
             out_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)
@@ -499,16 +655,24 @@ async def anthropic_messages(req: Request):
                 "id": request_id,
                 "tokens": out_tokens,
             })
-            return JSONResponse(anthropic_resp)
+            captured_conv = session_metadata.get("conversation_id") or conversation_id
+            captured_parent = session_metadata.get("parent_message_id") or parent_message_id
+            resp_headers = make_anthropic_headers(
+                request_id=request_id,
+                conversation_id=captured_conv,
+                parent_message_id=captured_parent,
+                is_stream=False,
+            )
+            return JSONResponse(anthropic_resp, headers=resp_headers)
         except RateLimitError as e:
             trace.log_error(e)
             await broadcast_event("request_error", {"id": request_id, "error": str(e)})
-            raise HTTPException(status_code=429, detail=str(e))
+            return make_anthropic_error_response(str(e), status_code=429, error_type="rate_limit_error", request_id=request_id)
         except Exception as e:
             trace.log_error(e)
             await broadcast_event("request_error", {"id": request_id, "error": str(e)})
             log.exception("Non-streaming error")
-            raise HTTPException(status_code=500, detail=str(e))
+            return make_anthropic_error_response(str(e), status_code=500, error_type="api_error", request_id=request_id)
         finally:
             trace.finish()
 

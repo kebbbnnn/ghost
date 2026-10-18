@@ -81,6 +81,17 @@ class EmulationPipeline:
         elif isinstance(stop, list):
             normalized_stop = [s for s in stop if isinstance(s, str) and s]
 
+        prompt_chars = 0
+        for m in raw_messages:
+            c = m.get("content")
+            if isinstance(c, str):
+                prompt_chars += len(c)
+            elif isinstance(c, list):
+                for part in c:
+                    if isinstance(part, dict) and "text" in part:
+                        prompt_chars += len(part["text"])
+        est_prompt_tokens = max(1, prompt_chars // 4) if prompt_chars else 1
+
         emulation_context = {
             "model": model,
             "has_tools": bool(tools and tool_choice != "none"),
@@ -91,6 +102,9 @@ class EmulationPipeline:
             "temperature": temperature,
             "is_synthesis_phase": is_synthesis_phase,
             "executed_tool_names": list(active_executed_tools) if is_synthesis_phase else [],
+            "prompt_tokens": est_prompt_tokens,
+            "stream_options": req_dict.get("stream_options"),
+            "expose_session_metadata_in_chunks": req_dict.get("expose_session_metadata_in_chunks", False),
         }
 
         return transpiled_messages, emulation_context

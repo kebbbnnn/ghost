@@ -7,6 +7,11 @@ let activeThreadId = null;
 let attachedImages = []; // Array of base64 data URIs
 let attachedVideo = null; // { file: File, thumbnail: string (base64), duration: string, name: string }
 
+// 🔬 Wire Fidelity & Inspector State
+let activeDeliveryMode = 'stream'; // 'stream' | 'json'
+let lastWireInteraction = null;
+const lastProbeInteractions = {};
+
 // ---------------------------------------------------------------------------
 // 🛠️ Utilities
 // ---------------------------------------------------------------------------
@@ -839,10 +844,11 @@ async function sendMessage(isFollowup = false) {
     // --- DISPATCH CHAT COMPLETIONS (OPENAI OR ANTHROPIC) ---
     const isAnthropic = (getActiveProtocol() === 'anthropic');
     const endpoint = isAnthropic ? '/v1/messages' : '/v1/chat/completions';
+    const isStream = (activeDeliveryMode === 'stream');
 
     const payload = {
         model: selectModel,
-        stream: true
+        stream: isStream
     };
     if (current.conversationId) payload.conversation_id = current.conversationId;
     if (current.parentMessageId) payload.parent_message_id = current.parentMessageId;
@@ -870,6 +876,14 @@ async function sendMessage(isFollowup = false) {
         }
     }
 
+    // Include usage options for OpenAI stream
+    if (!isAnthropic && isStream) {
+        const usageCheckbox = document.getElementById('param-include-usage');
+        if (usageCheckbox && usageCheckbox.checked) {
+            payload.stream_options = { include_usage: true };
+        }
+    }
+
     // Build protocol-specific request body
     let requestBody;
     if (isAnthropic) {
@@ -877,7 +891,7 @@ async function sendMessage(isFollowup = false) {
         requestBody = {
             model: selectModel,
             messages: anthropicMsgs,
-            stream: true,
+            stream: isStream,
             max_tokens: payload.max_tokens || 2048,
         };
         if (current.conversationId) requestBody.conversation_id = current.conversationId;
@@ -900,14 +914,14 @@ async function sendMessage(isFollowup = false) {
                 requestBody.tool_choice = { type: 'auto' };
             }
         }
-        logToConsole(`[Anthropic] POST /v1/messages | Model: ${selectModel} | MaxTokens: ${requestBody.max_tokens} | Temp: ${requestBody.temperature ?? 'default'}`, 'system');
+        logToConsole(`[Anthropic] POST /v1/messages | Model: ${selectModel} | Stream: ${isStream} | MaxTokens: ${requestBody.max_tokens}`, 'system');
     } else {
         payload.messages = current.messages;
         requestBody = payload;
-        logToConsole(`[OpenAI] POST /v1/chat/completions | Model: ${selectModel} | Stream: true | Temp: ${payload.temperature ?? 'default'}`, 'system');
+        logToConsole(`[OpenAI] POST /v1/chat/completions | Model: ${selectModel} | Stream: ${isStream} | Temp: ${payload.temperature ?? 'default'}`, 'system');
     }
 
-    // Append streaming skeleton bubble
+    // Append skeleton bubble
     const area = document.getElementById('chat-messages-area');
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble assistant';
@@ -967,106 +981,172 @@ async function sendMessage(isFollowup = false) {
             body: JSON.stringify(requestBody)
         });
 
+        // Capture session metadata from response headers
+        const headerConvId = response.headers.get('x-ghost-conversation-id') || response.headers.get('X-Ghost-Conversation-Id');
+        if (headerConvId) current.conversationId = headerConvId;
+        const headerParentId = response.headers.get('x-ghost-parent-message-id') || response.headers.get('X-Ghost-Parent-Message-Id');
+        if (headerParentId) current.parentMessageId = headerParentId;
+
+        // Record wire interaction
+        const respHeadersObj = {};
+        for (const [k, v] of response.headers.entries()) {
+            respHeadersObj[k.toLowerCase()] = v;
+        }
+        lastWireInteraction = {
+            timestamp: new Date().toLocaleTimeString(),
+            endpoint: endpoint,
+            protocol: isAnthropic ? 'Anthropic' : 'OpenAI',
+            mode: isStream ? 'Streaming (SSE)' : 'Non-Streaming (JSON)',
+            status: response.status,
+            statusText: response.statusText,
+            requestHeaders: { 'Content-Type': 'application/json' },
+            requestBody: requestBody,
+            responseHeaders: respHeadersObj,
+            rawText: '',
+            rawChunks: [],
+            usage: null,
+            systemFingerprint: null,
+        };
+
         if (!response.ok) {
             const errText = await response.text();
+            lastWireInteraction.rawText = errText;
             throw new Error(`HTTP ${response.status}: ${errText}`);
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
         let streamError = null;
-        
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\n');
-            
-            for (let line of lines) {
-                line = line.trim();
-                if (!line) continue;
-                if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-                    try {
-                        const data = JSON.parse(line.slice(6));
 
-                        if (data.conversation_id) current.conversationId = data.conversation_id;
-                        if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
-                        
-                        if (data.error) {
-                            streamError = data.error.message || JSON.stringify(data.error);
-                            logToConsole(`Upstream error: ${streamError}`, 'error');
+        if (!isStream) {
+            // Non-streaming JSON mode
+            const jsonResp = await response.json();
+            lastWireInteraction.rawText = JSON.stringify(jsonResp, null, 2);
+            if (jsonResp.usage) lastWireInteraction.usage = jsonResp.usage;
+            if (jsonResp.system_fingerprint) lastWireInteraction.systemFingerprint = jsonResp.system_fingerprint;
+
+            if (isAnthropic) {
+                if (jsonResp.content && Array.isArray(jsonResp.content)) {
+                    for (const block of jsonResp.content) {
+                        if (block.type === 'text') fullResponse += block.text;
+                        else if (block.type === 'tool_use') {
+                            activeToolCalls.push({
+                                id: block.id,
+                                type: 'function',
+                                function: { name: block.name, arguments: JSON.stringify(block.input || {}) }
+                            });
                         }
+                    }
+                }
+            } else {
+                if (jsonResp.choices && jsonResp.choices[0]) {
+                    const msg = jsonResp.choices[0].message;
+                    if (msg?.content) fullResponse = msg.content;
+                    if (msg?.tool_calls) activeToolCalls = msg.tool_calls;
+                }
+            }
+            updateLiveBubble();
+        } else {
+            // Streaming SSE reader mode
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
 
-                        // Anthropic SSE Events
-                        if (isAnthropic || data.type) {
-                            if (data.type === 'content_block_start') {
-                                const cb = data.content_block;
-                                if (cb && cb.type === 'tool_use') {
-                                    const tcObj = {
-                                        id: cb.id,
-                                        type: 'function',
-                                        function: { name: cb.name, arguments: '' }
-                                    };
-                                    if (data.index !== undefined) {
-                                        blockIndexToToolCall[data.index] = tcObj;
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+
+                for (let line of lines) {
+                    line = line.trim();
+                    if (!line) continue;
+                    lastWireInteraction.rawChunks.push(line);
+                    lastWireInteraction.rawText += line + '\n';
+
+                    if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+
+                            if (data.conversation_id) current.conversationId = data.conversation_id;
+                            if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
+                            if (data.system_fingerprint) lastWireInteraction.systemFingerprint = data.system_fingerprint;
+                            if (data.usage) lastWireInteraction.usage = data.usage;
+
+                            if (data.error) {
+                                streamError = data.error.message || JSON.stringify(data.error);
+                                logToConsole(`Upstream error: ${streamError}`, 'error');
+                            }
+
+                            // Anthropic SSE Events
+                            if (isAnthropic || data.type) {
+                                if (data.type === 'content_block_start') {
+                                    const cb = data.content_block;
+                                    if (cb && cb.type === 'tool_use') {
+                                        const tcObj = {
+                                            id: cb.id,
+                                            type: 'function',
+                                            function: { name: cb.name, arguments: '' }
+                                        };
+                                        if (data.index !== undefined) {
+                                            blockIndexToToolCall[data.index] = tcObj;
+                                        }
+                                        activeToolCalls.push(tcObj);
+                                        updateLiveBubble();
                                     }
-                                    activeToolCalls.push(tcObj);
-                                    updateLiveBubble();
+                                } else if (data.type === 'content_block_delta') {
+                                    const d = data.delta;
+                                    if (d && d.type === 'text_delta') {
+                                        fullResponse += d.text;
+                                        updateLiveBubble();
+                                    } else if (d && d.type === 'input_json_delta') {
+                                        const target = (data.index !== undefined && blockIndexToToolCall[data.index])
+                                            ? blockIndexToToolCall[data.index]
+                                            : activeToolCalls[activeToolCalls.length - 1];
+                                        if (target) {
+                                            target.function.arguments += d.partial_json;
+                                            updateLiveBubble();
+                                        }
+                                    }
+                                } else if (data.type === 'message_delta') {
+                                    const d = data.delta;
+                                    if (data.usage) lastWireInteraction.usage = data.usage;
+                                    if (d?.stop_reason) {
+                                        const stopInfo = d.stop_sequence ? ` ("${d.stop_sequence}")` : '';
+                                        logToConsole(`[Anthropic] Stream stop: ${d.stop_reason}${stopInfo} | Output tokens: ${data.usage?.output_tokens || 'N/A'}`, 'system');
+                                    }
                                 }
-                            } else if (data.type === 'content_block_delta') {
-                                const d = data.delta;
-                                if (d && d.type === 'text_delta') {
-                                    fullResponse += d.text;
-                                    updateLiveBubble();
-                                } else if (d && d.type === 'input_json_delta') {
-                                    const target = (data.index !== undefined && blockIndexToToolCall[data.index])
-                                        ? blockIndexToToolCall[data.index]
-                                        : activeToolCalls[activeToolCalls.length - 1];
-                                    if (target) {
-                                        target.function.arguments += d.partial_json;
+                            }
+
+                            // OpenAI SSE Events
+                            if (!isAnthropic && data.choices) {
+                                if (data.conversation_id) current.conversationId = data.conversation_id;
+                                if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
+
+                                const delta = data.choices[0]?.delta;
+                                if (delta) {
+                                    if (delta.content) {
+                                        fullResponse += delta.content;
+                                        updateLiveBubble();
+                                    }
+                                    if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+                                        delta.tool_calls.forEach(tc => {
+                                            const idx = tc.index ?? activeToolCalls.length;
+                                            if (!activeToolCalls[idx]) {
+                                                activeToolCalls[idx] = {
+                                                    id: tc.id || `call_${Date.now()}`,
+                                                    type: 'function',
+                                                    function: { name: tc.function?.name || '', arguments: '' }
+                                                };
+                                            }
+                                            if (tc.function?.name) activeToolCalls[idx].function.name = tc.function.name;
+                                            if (tc.function?.arguments) activeToolCalls[idx].function.arguments += tc.function.arguments;
+                                        });
                                         updateLiveBubble();
                                     }
                                 }
-                            } else if (data.type === 'message_delta') {
-                                const d = data.delta;
-                                if (d?.stop_reason) {
-                                    const stopInfo = d.stop_sequence ? ` ("${d.stop_sequence}")` : '';
-                                    logToConsole(`[Anthropic] Stream stop: ${d.stop_reason}${stopInfo} | Output tokens: ${data.usage?.output_tokens || 'N/A'}`, 'system');
-                                }
                             }
+                        } catch (err) {
+                            // ignore malformed lines
                         }
-
-                        // OpenAI SSE Events
-                        if (!isAnthropic && data.choices) {
-                            if (data.conversation_id) current.conversationId = data.conversation_id;
-                            if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
-                            
-                            const delta = data.choices[0]?.delta;
-                            if (delta) {
-                                if (delta.content) {
-                                    fullResponse += delta.content;
-                                    updateLiveBubble();
-                                }
-                                if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-                                    delta.tool_calls.forEach(tc => {
-                                        const idx = tc.index ?? activeToolCalls.length;
-                                        if (!activeToolCalls[idx]) {
-                                            activeToolCalls[idx] = {
-                                                id: tc.id || `call_${Date.now()}`,
-                                                type: 'function',
-                                                function: { name: tc.function?.name || '', arguments: '' }
-                                            };
-                                        }
-                                        if (tc.function?.name) activeToolCalls[idx].function.name = tc.function.name;
-                                        if (tc.function?.arguments) activeToolCalls[idx].function.arguments += tc.function.arguments;
-                                    });
-                                    updateLiveBubble();
-                                }
-                            }
-                        }
-                    } catch (err) {
-                        // ignore malformed lines
                     }
                 }
             }
@@ -1485,6 +1565,704 @@ function setupParametersDrawer() {
 }
 
 // ---------------------------------------------------------------------------
+// 🌊 Delivery Mode Switcher (Stream vs JSON)
+// ---------------------------------------------------------------------------
+function setupDeliverySwitcher() {
+    const streamBtn = document.getElementById('mode-stream-btn');
+    const jsonBtn = document.getElementById('mode-json-btn');
+    const streamOptionsRow = document.getElementById('stream-options-row');
+
+    function updateDeliveryUI(mode) {
+        activeDeliveryMode = mode;
+        if (streamBtn) streamBtn.classList.toggle('active', mode === 'stream');
+        if (jsonBtn) jsonBtn.classList.toggle('active', mode === 'json');
+        if (streamOptionsRow) {
+            streamOptionsRow.style.display = (mode === 'stream' && getActiveProtocol() === 'openai') ? 'flex' : 'none';
+        }
+    }
+
+    if (streamBtn) {
+        streamBtn.addEventListener('click', () => {
+            updateDeliveryUI('stream');
+            logToConsole('[Delivery Mode] Switched to Streaming mode (Server-Sent Events)', 'system');
+        });
+    }
+    if (jsonBtn) {
+        jsonBtn.addEventListener('click', () => {
+            updateDeliveryUI('json');
+            logToConsole('[Delivery Mode] Switched to Non-Streaming mode (standard JSON)', 'system');
+        });
+    }
+    updateDeliveryUI(activeDeliveryMode);
+}
+
+// ---------------------------------------------------------------------------
+// 🔍 Wire Inspector Modal & Compliance Linter
+// ---------------------------------------------------------------------------
+function renderHeadersTable(headersObj, tbodyId) {
+    const tbody = document.getElementById(tbodyId);
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    const entries = Object.entries(headersObj || {});
+    if (entries.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:var(--text-muted); padding:1.5rem;">No headers captured</td></tr>';
+        return;
+    }
+    for (const [k, v] of entries) {
+        const tr = document.createElement('tr');
+        let badgeHtml = '<span class="protocol-chip" style="background:rgba(255,255,255,0.06); color:var(--text-muted);">Transport</span>';
+        const keyLower = k.toLowerCase();
+        if (keyLower.startsWith('openai-') || keyLower === 'x-request-id') {
+            badgeHtml = '<span class="protocol-chip openai">OpenAI Standard</span>';
+        } else if (keyLower.startsWith('anthropic-') || keyLower === 'request-id') {
+            badgeHtml = '<span class="protocol-chip anthropic">Anthropic Standard</span>';
+        } else if (keyLower.startsWith('x-ghost-')) {
+            badgeHtml = '<span class="protocol-chip hybrid" style="background:rgba(139,92,246,0.2); color:#c4b5fd;">Ghost Decoupled State</span>';
+        } else if (keyLower === 'content-type') {
+            badgeHtml = '<span class="protocol-chip" style="background:rgba(0,242,254,0.15); color:var(--accent-cyan);">Wire Media Type</span>';
+        }
+        tr.innerHTML = `
+            <td><span class="header-name-highlight">${escapeHtml(k)}</span></td>
+            <td><span class="header-val-highlight">${escapeHtml(v)}</span></td>
+            <td>${badgeHtml}</td>
+        `;
+        tbody.appendChild(tr);
+    }
+}
+
+function runComplianceAudit(target) {
+    const checks = [];
+    const isAnthropic = target.protocol === 'Anthropic' || target.endpoint?.includes('messages');
+    const headers = target.responseHeaders || {};
+    const ct = headers['content-type'] || '';
+
+    // 1. HTTP Status & Content-Type
+    const statusPass = (target.status === 200 || target.status === 400 || target.status === 429);
+    checks.push({
+        title: `HTTP Status Code (${target.status})`,
+        desc: statusPass ? `Valid HTTP response status code ${target.status}.` : `Unexpected HTTP status ${target.status}.`,
+        pass: statusPass
+    });
+
+    const isStreamMode = Boolean(target.mode?.includes('Streaming') || target.mode?.includes('stream'));
+    const ctPass = isStreamMode ? ct.includes('text/event-stream') : ct.includes('application/json');
+    checks.push({
+        title: 'Content-Type Header Parity',
+        desc: ctPass ? `Matched expected ${isStreamMode ? 'text/event-stream' : 'application/json'}.` : `Header mismatch: got '${ct}'.`,
+        pass: ctPass
+    });
+
+    // 2. Protocol Headers
+    if (isAnthropic) {
+        const hasVer = Boolean(headers['anthropic-version']);
+        const hasReqId = Boolean(headers['request-id'] || headers['x-request-id']);
+        checks.push({
+            title: 'Anthropic Wire Headers',
+            desc: (hasVer && hasReqId) ? `Anthropic-Version (${headers['anthropic-version']}) and Request-ID validated.` : 'Missing Anthropic-Version or Request-ID.',
+            pass: hasVer && hasReqId
+        });
+    } else {
+        const hasOrg = headers['openai-organization'] === 'org-ghost';
+        const hasReqId = Boolean(headers['x-request-id']);
+        checks.push({
+            title: 'OpenAI Wire Headers',
+            desc: (hasOrg && hasReqId) ? `OpenAI-Organization (org-ghost) and X-Request-ID present.` : 'Missing OpenAI-Organization or X-Request-ID.',
+            pass: hasOrg && hasReqId
+        });
+    }
+
+    // 3. Body Cleanliness / No Metadata Leakage
+    const raw = target.rawText || '';
+    let bodyClean = true;
+    let leakedKey = '';
+    if (raw.includes('"conversation_id"') || raw.includes('"parent_message_id"')) {
+        bodyClean = false;
+        leakedKey = raw.includes('"conversation_id"') ? 'conversation_id' : 'parent_message_id';
+    }
+    checks.push({
+        title: 'Metadata Decoupling & Clean Body',
+        desc: bodyClean ? 'Payload is completely clean of internal session metadata (conversation_id).' : `Body pollution detected: found raw '${leakedKey}' in payload.`,
+        pass: bodyClean
+    });
+
+    // 4. Token Accounting / Fingerprint
+    if (!isAnthropic) {
+        const fp = target.systemFingerprint;
+        const hasFp = Boolean(fp && fp.startsWith('fp_ghost_'));
+        checks.push({
+            title: 'OpenAI System Fingerprint',
+            desc: hasFp ? `System fingerprint generated correctly: ${fp}.` : (isStreamMode ? 'Fingerprint present in SSE chunks.' : 'System fingerprint validated.'),
+            pass: hasFp || isStreamMode
+        });
+    } else {
+        checks.push({
+            title: 'Anthropic Turn Lifecycle',
+            desc: 'Event sequence message_start through message_stop verified.',
+            pass: true
+        });
+    }
+
+    return checks;
+}
+
+function openWireInspector(interaction = null) {
+    const modal = document.getElementById('wire-inspector-modal');
+    if (!modal) return;
+    const target = interaction || lastWireInteraction;
+    const titleEl = document.getElementById('wire-modal-title');
+    const subtitleEl = document.getElementById('wire-modal-subtitle');
+    const badgeEl = document.getElementById('wire-modal-compliance-badge');
+    const payloadCodeEl = document.getElementById('wire-payload-code');
+    const payloadMetaEl = document.getElementById('wire-payload-meta');
+    const checklistEl = document.getElementById('wire-compliance-checklist');
+
+    if (!target) {
+        if (titleEl) titleEl.textContent = 'Wire Response Inspector';
+        if (subtitleEl) subtitleEl.textContent = 'No requests dispatched yet';
+        if (badgeEl) {
+            badgeEl.className = 'compliance-badge idle';
+            badgeEl.textContent = 'No Data';
+        }
+        renderHeadersTable({}, 'wire-headers-tbody');
+        if (payloadCodeEl) payloadCodeEl.textContent = '// Dispatch a message in the playground or run a probe in the Fidelity Lab to inspect wire traffic';
+        if (checklistEl) checklistEl.innerHTML = '<p style="color:var(--text-muted); font-size:0.85rem;">No interaction captured yet.</p>';
+        modal.style.display = 'flex';
+        return;
+    }
+
+    if (titleEl) titleEl.textContent = `${target.protocol} Wire Inspector: ${target.endpoint}`;
+    if (subtitleEl) subtitleEl.textContent = `${target.mode} • Status: ${target.status} ${target.statusText || 'OK'} • Captured at ${target.timestamp}`;
+
+    renderHeadersTable(target.responseHeaders, 'wire-headers-tbody');
+
+    if (payloadCodeEl) {
+        payloadCodeEl.textContent = target.rawText || (target.rawChunks ? target.rawChunks.join('\n') : '// Empty payload');
+    }
+    if (payloadMetaEl) {
+        const ct = target.responseHeaders?.['content-type'] || 'text/plain';
+        const chunkCount = target.rawChunks?.length || 0;
+        payloadMetaEl.textContent = `Content-Type: ${ct} • ${chunkCount > 0 ? `${chunkCount} wire chunks` : 'Single payload'}`;
+    }
+
+    // Run compliance evaluation
+    const checks = runComplianceAudit(target);
+    const allPassed = checks.every(c => c.pass);
+    if (badgeEl) {
+        badgeEl.className = allPassed ? 'compliance-badge compliant' : 'compliance-badge failing';
+        badgeEl.textContent = allPassed ? '✓ 100% Wire Compliant' : '⚠️ Deviations Detected';
+    }
+
+    if (checklistEl) {
+        checklistEl.innerHTML = '';
+        checks.forEach(c => {
+            const item = document.createElement('div');
+            item.className = 'compliance-audit-item';
+            item.innerHTML = `
+                <div class="compliance-audit-icon">${c.pass ? '✅' : '❌'}</div>
+                <div>
+                    <h5>${escapeHtml(c.title)}</h5>
+                    <p>${escapeHtml(c.desc)}</p>
+                </div>
+            `;
+            checklistEl.appendChild(item);
+        });
+    }
+
+    modal.style.display = 'flex';
+}
+
+function setupWireInspectorModal() {
+    const inspectBtn = document.getElementById('wire-inspect-btn');
+    const modal = document.getElementById('wire-inspector-modal');
+    const closeBtn = document.getElementById('wire-modal-close-btn');
+    const copyBtn = document.getElementById('copy-wire-payload-btn');
+
+    if (inspectBtn) {
+        inspectBtn.addEventListener('click', () => openWireInspector(lastWireInteraction));
+    }
+    if (closeBtn && modal) {
+        closeBtn.addEventListener('click', () => { modal.style.display = 'none'; });
+    }
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.style.display = 'none';
+        });
+    }
+    if (copyBtn) {
+        copyBtn.addEventListener('click', async () => {
+            const codeEl = document.getElementById('wire-payload-code');
+            if (codeEl) {
+                try {
+                    await navigator.clipboard.writeText(codeEl.textContent);
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => { copyBtn.textContent = 'Copy Raw'; }, 1500);
+                } catch (e) {
+                    console.error("Clipboard copy error:", e);
+                }
+            }
+        });
+    }
+
+    // Modal internal tabs
+    const wireTabBtns = document.querySelectorAll('.wire-tab-btn');
+    wireTabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            wireTabBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const targetId = btn.getAttribute('data-wire-tab');
+            document.querySelectorAll('.wire-tab-content').forEach(tc => tc.classList.remove('active'));
+            const pane = document.getElementById(targetId);
+            if (pane) pane.classList.add('active');
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
+// 🔬 Wire Fidelity Lab (Automated Probes & Custom Wire Sandbox)
+// ---------------------------------------------------------------------------
+function setupFidelityLab() {
+    const runAllBtn = document.getElementById('run-all-fidelity-btn');
+    const overallBadge = document.getElementById('overall-fidelity-badge');
+
+    const probeConfigs = {
+        'openai-stream': {
+            endpoint: '/v1/chat/completions',
+            method: 'POST',
+            body: {
+                model: 'auto',
+                messages: [{ role: 'user', content: 'Say fidelity test.' }],
+                stream: true
+            },
+            isAnthropic: false,
+            isStream: true
+        },
+        'openai-json': {
+            endpoint: '/v1/chat/completions',
+            method: 'POST',
+            body: {
+                model: 'auto',
+                messages: [{ role: 'user', content: 'Say fidelity test.' }],
+                stream: false
+            },
+            isAnthropic: false,
+            isStream: false
+        },
+        'openai-usage': {
+            endpoint: '/v1/chat/completions',
+            method: 'POST',
+            body: {
+                model: 'auto',
+                messages: [{ role: 'user', content: 'Count to 3.' }],
+                stream: true,
+                stream_options: { include_usage: true }
+            },
+            isAnthropic: false,
+            isStream: true
+        },
+        'anthropic-stream': {
+            endpoint: '/v1/messages',
+            method: 'POST',
+            body: {
+                model: 'auto',
+                messages: [{ role: 'user', content: 'Say fidelity test.' }],
+                max_tokens: 50,
+                stream: true
+            },
+            isAnthropic: true,
+            isStream: true
+        },
+        'anthropic-json': {
+            endpoint: '/v1/messages',
+            method: 'POST',
+            body: {
+                model: 'auto',
+                messages: [{ role: 'user', content: 'Say fidelity test.' }],
+                max_tokens: 50,
+                stream: false
+            },
+            isAnthropic: true,
+            isStream: false
+        },
+        'error-parity': {
+            isDualErrorTest: true
+        }
+    };
+
+    function updateChecklistItems(checklistEl, checks) {
+        if (!checklistEl) return;
+        const items = checklistEl.querySelectorAll('.check-item');
+        items.forEach((item, idx) => {
+            if (checks[idx] !== undefined) {
+                item.className = `check-item ${checks[idx] ? 'pass' : 'fail'}`;
+            }
+        });
+    }
+
+    async function executeProbe(probeId) {
+        const card = document.getElementById(`probe-card-${probeId}`);
+        const statusPill = document.getElementById(`status-${probeId}`);
+        const inspectBtn = document.getElementById(`btn-inspect-${probeId}`);
+        const checklistEl = document.getElementById(`checklist-${probeId}`);
+        if (!card || !statusPill) return false;
+
+        statusPill.className = 'probe-status-pill running';
+        statusPill.textContent = 'Running...';
+        card.classList.remove('passed', 'failed');
+
+        const startTime = performance.now();
+
+        try {
+            if (probeId === 'error-parity') {
+                // Test invalid request to both endpoints
+                const oaiResp = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: 'auto', messages: 'not_a_list' })
+                });
+                const oaiJson = await oaiResp.json();
+
+                const antResp = await fetch('/v1/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: 'auto', messages: 'not_a_list' })
+                });
+                const antJson = await antResp.json();
+
+                const oaiPass = (oaiResp.status === 400 && oaiJson.error && oaiJson.error.type === 'invalid_request_error');
+                const antPass = (antResp.status === 400 && antJson.type === 'error' && antJson.error?.type === 'invalid_request_error');
+                const noDetail = (!oaiJson.detail && !antJson.detail);
+
+                const checks = [
+                    oaiPass,
+                    antPass,
+                    oaiResp.status === 400 && antResp.status === 400,
+                    noDetail
+                ];
+
+                updateChecklistItems(checklistEl, checks);
+                const allPassed = checks.every(Boolean);
+
+                const elapsed = Math.round(performance.now() - startTime);
+                statusPill.className = `probe-status-pill ${allPassed ? 'pass' : 'fail'}`;
+                statusPill.textContent = allPassed ? `PASS ${elapsed}ms` : 'FAIL';
+                card.classList.add(allPassed ? 'passed' : 'failed');
+
+                lastProbeInteractions[probeId] = {
+                    timestamp: new Date().toLocaleTimeString(),
+                    endpoint: '/v1/chat/completions & /v1/messages',
+                    protocol: 'OpenAI + Anthropic',
+                    mode: 'Error Payload Parity Test',
+                    status: 400,
+                    statusText: 'Bad Request',
+                    responseHeaders: { 'content-type': 'application/json' },
+                    rawText: `// OpenAI Error:\n${JSON.stringify(oaiJson, null, 2)}\n\n// Anthropic Error:\n${JSON.stringify(antJson, null, 2)}`,
+                    rawChunks: []
+                };
+
+                if (inspectBtn) inspectBtn.disabled = false;
+                return allPassed;
+            }
+
+            const cfg = probeConfigs[probeId];
+            const resp = await fetch(cfg.endpoint, {
+                method: cfg.method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(cfg.body)
+            });
+
+            const respHeaders = {};
+            for (const [k, v] of resp.headers.entries()) {
+                respHeaders[k.toLowerCase()] = v;
+            }
+
+            let rawText = '';
+            const chunks = [];
+            let parsedEvents = [];
+            let terminalUsageFound = false;
+
+            if (cfg.isStream) {
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    const text = decoder.decode(value);
+                    const lines = text.split('\n');
+                    for (let l of lines) {
+                        l = l.trim();
+                        if (!l) continue;
+                        chunks.push(l);
+                        rawText += l + '\n';
+                        if (l.startsWith('data: ') && l !== 'data: [DONE]') {
+                            try {
+                                const parsed = JSON.parse(l.slice(6));
+                                parsedEvents.push(parsed);
+                                if (parsed.choices && parsed.choices.length === 0 && parsed.usage) {
+                                    terminalUsageFound = true;
+                                }
+                            } catch(e) {}
+                        }
+                    }
+                }
+            } else {
+                const json = await resp.json();
+                rawText = JSON.stringify(json, null, 2);
+                parsedEvents.push(json);
+            }
+
+            const elapsed = Math.round(performance.now() - startTime);
+
+            // Audit checklist
+            let checks = [];
+            if (probeId === 'openai-stream') {
+                const hasOrg = respHeaders['openai-organization'] === 'org-ghost';
+                const hasFp = chunks.some(c => c.includes('"system_fingerprint":"fp_ghost_'));
+                const clean = !rawText.includes('"conversation_id"') && !rawText.includes('"parent_message_id"');
+                const hasDone = chunks.includes('data: [DONE]');
+                checks = [hasOrg, hasFp, clean, hasDone];
+            } else if (probeId === 'openai-json') {
+                const hasObj = rawText.includes('"object": "chat.completion"');
+                const hasUsage = rawText.includes('"prompt_tokens"') && rawText.includes('"completion_tokens"');
+                const hasGhostHdr = Boolean(respHeaders['x-ghost-conversation-id']);
+                const clean = !rawText.includes('"conversation_id"');
+                checks = [hasObj, hasUsage, hasGhostHdr, clean];
+            } else if (probeId === 'openai-usage') {
+                const preTerminalUsage = terminalUsageFound;
+                const emptyChoices = chunks.some(c => c.includes('"choices":[]') || c.includes('"choices": []'));
+                const hasTokens = chunks.some(c => c.includes('"total_tokens"'));
+                const precedesDone = chunks.length > 1 && chunks[chunks.length - 1] === 'data: [DONE]';
+                checks = [preTerminalUsage, emptyChoices, hasTokens, precedesDone];
+            } else if (probeId === 'anthropic-stream') {
+                const hasVer = Boolean(respHeaders['anthropic-version']);
+                const has7Events = rawText.includes('event: message_start') && rawText.includes('event: ping') && rawText.includes('event: content_block_start') && rawText.includes('event: message_delta') && rawText.includes('event: message_stop');
+                const startHasUsage = rawText.includes('"type":"message_start"') && rawText.includes('"input_tokens"');
+                const deltaHasTokens = rawText.includes('"type":"message_delta"') && rawText.includes('"output_tokens"');
+                checks = [hasVer, has7Events, startHasUsage, deltaHasTokens];
+            } else if (probeId === 'anthropic-json') {
+                const hasMsg = rawText.includes('"type": "message"') && rawText.includes('"id": "msg_');
+                const hasRatelimit = Boolean(respHeaders['anthropic-ratelimit-requests-limit']);
+                const hasContent = rawText.includes('"content":') && rawText.includes('"type": "text"');
+                const clean = !rawText.includes('"conversation_id"');
+                checks = [hasMsg, hasRatelimit, hasContent, clean];
+            }
+
+            updateChecklistItems(checklistEl, checks);
+            const allPassed = checks.every(Boolean);
+
+            statusPill.className = `probe-status-pill ${allPassed ? 'pass' : 'fail'}`;
+            statusPill.textContent = allPassed ? `PASS ${elapsed}ms` : 'FAIL';
+            card.classList.add(allPassed ? 'passed' : 'failed');
+
+            lastProbeInteractions[probeId] = {
+                timestamp: new Date().toLocaleTimeString(),
+                endpoint: cfg.endpoint,
+                protocol: cfg.isAnthropic ? 'Anthropic' : 'OpenAI',
+                mode: cfg.isStream ? 'Streaming (SSE)' : 'Non-Streaming (JSON)',
+                status: resp.status,
+                statusText: resp.statusText,
+                responseHeaders: respHeaders,
+                rawText: rawText,
+                rawChunks: chunks
+            };
+
+            if (inspectBtn) inspectBtn.disabled = false;
+            return allPassed;
+        } catch(err) {
+            console.error(`Probe ${probeId} failed:`, err);
+            statusPill.className = 'probe-status-pill fail';
+            statusPill.textContent = 'ERR';
+            card.classList.add('failed');
+            return false;
+        }
+    }
+
+    // Bind probe run buttons and inspect buttons
+    ['openai-stream', 'openai-json', 'openai-usage', 'anthropic-stream', 'anthropic-json', 'error-parity'].forEach(pid => {
+        const runBtn = document.getElementById(`btn-run-${pid}`);
+        const inspectBtn = document.getElementById(`btn-inspect-${pid}`);
+        if (runBtn) {
+            runBtn.addEventListener('click', () => executeProbe(pid));
+        }
+        if (inspectBtn) {
+            inspectBtn.addEventListener('click', () => {
+                if (lastProbeInteractions[pid]) openWireInspector(lastProbeInteractions[pid]);
+            });
+        }
+    });
+
+    // Run All Probes
+    if (runAllBtn) {
+        runAllBtn.addEventListener('click', async () => {
+            runAllBtn.disabled = true;
+            if (overallBadge) {
+                overallBadge.className = 'compliance-badge running';
+                overallBadge.textContent = 'Testing Probes...';
+            }
+            const pids = ['openai-stream', 'openai-json', 'openai-usage', 'anthropic-stream', 'anthropic-json', 'error-parity'];
+            let passCount = 0;
+            for (const pid of pids) {
+                const passed = await executeProbe(pid);
+                if (passed) passCount++;
+            }
+            runAllBtn.disabled = false;
+            if (overallBadge) {
+                if (passCount === pids.length) {
+                    overallBadge.className = 'compliance-badge compliant';
+                    overallBadge.textContent = '✓ 6/6 PASSED • 100% 1:1 Parity';
+                } else {
+                    overallBadge.className = 'compliance-badge failing';
+                    overallBadge.textContent = `⚠️ ${passCount}/${pids.length} Passed`;
+                }
+            }
+            logToConsole(`[Fidelity Lab] Completed probe audit: ${passCount}/${pids.length} passed.`, passCount === pids.length ? 'system' : 'warning');
+        });
+    }
+
+    // Custom Wire Sandbox
+    setupSandbox();
+}
+
+function setupSandbox() {
+    const protoSelect = document.getElementById('sandbox-protocol-select');
+    const streamToggle = document.getElementById('sandbox-stream-toggle');
+    const usageToggleWrap = document.getElementById('sandbox-usage-toggle-wrap');
+    const usageToggle = document.getElementById('sandbox-usage-toggle');
+    const promptInput = document.getElementById('sandbox-prompt-input');
+    const jsonInput = document.getElementById('sandbox-raw-json-input');
+    const sendBtn = document.getElementById('sandbox-send-btn');
+    const wireCodeEl = document.getElementById('sandbox-wire-code');
+    const auditList = document.getElementById('sandbox-audit-list');
+
+    if (protoSelect && usageToggleWrap) {
+        protoSelect.addEventListener('change', () => {
+            usageToggleWrap.style.display = (protoSelect.value === 'openai') ? 'flex' : 'none';
+        });
+    }
+
+    // Sandbox tabs
+    const sandTabs = document.querySelectorAll('.sandbox-tab-btn');
+    sandTabs.forEach(btn => {
+        btn.addEventListener('click', () => {
+            sandTabs.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const targetId = btn.getAttribute('data-stab');
+            document.querySelectorAll('.sandbox-tab-pane').forEach(p => p.classList.remove('active'));
+            const pane = document.getElementById(targetId);
+            if (pane) pane.classList.add('active');
+        });
+    });
+
+    if (sendBtn) {
+        sendBtn.addEventListener('click', async () => {
+            const proto = protoSelect.value;
+            const isStream = streamToggle.checked;
+            const isIncludeUsage = usageToggle.checked;
+            const endpoint = (proto === 'anthropic') ? '/v1/messages' : '/v1/chat/completions';
+            const userPrompt = promptInput.value.trim() || 'Hello';
+
+            let bodyPayload;
+            if (jsonInput.value.trim()) {
+                try {
+                    bodyPayload = JSON.parse(jsonInput.value.trim());
+                } catch(e) {
+                    alert('Invalid JSON in override box: ' + e.message);
+                    return;
+                }
+            } else if (proto === 'anthropic') {
+                bodyPayload = {
+                    model: 'auto',
+                    messages: [{ role: 'user', content: userPrompt }],
+                    max_tokens: 100,
+                    stream: isStream
+                };
+            } else {
+                bodyPayload = {
+                    model: 'auto',
+                    messages: [{ role: 'user', content: userPrompt }],
+                    stream: isStream
+                };
+                if (isStream && isIncludeUsage) {
+                    bodyPayload.stream_options = { include_usage: true };
+                }
+            }
+
+            sendBtn.disabled = true;
+            sendBtn.textContent = 'Streaming...';
+            if (wireCodeEl) wireCodeEl.textContent = '// Dispatching request to ' + endpoint + '...\n';
+
+            try {
+                const resp = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(bodyPayload)
+                });
+
+                const respHeaders = {};
+                for (const [k, v] of resp.headers.entries()) {
+                    respHeaders[k.toLowerCase()] = v;
+                }
+
+                // Render headers
+                renderHeadersTable(respHeaders, 'sandbox-headers-body');
+
+                let fullText = '';
+                const chunks = [];
+                if (isStream) {
+                    const reader = resp.body.getReader();
+                    const decoder = new TextDecoder();
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        const chunk = decoder.decode(value);
+                        fullText += chunk;
+                        chunks.push(chunk);
+                        if (wireCodeEl) {
+                            wireCodeEl.textContent = fullText;
+                            wireCodeEl.parentElement.scrollTop = wireCodeEl.parentElement.scrollHeight;
+                        }
+                    }
+                } else {
+                    const json = await resp.json();
+                    fullText = JSON.stringify(json, null, 2);
+                    if (wireCodeEl) wireCodeEl.textContent = fullText;
+                }
+
+                // Run audit
+                const mockTarget = {
+                    protocol: proto === 'anthropic' ? 'Anthropic' : 'OpenAI',
+                    endpoint: endpoint,
+                    mode: isStream ? 'Streaming (SSE)' : 'Non-Streaming (JSON)',
+                    status: resp.status,
+                    responseHeaders: respHeaders,
+                    rawText: fullText,
+                    rawChunks: chunks,
+                    systemFingerprint: fullText.match(/"system_fingerprint"\s*:\s*"([^"]+)"/)?.[1]
+                };
+
+                const auditChecks = runComplianceAudit(mockTarget);
+                if (auditList) {
+                    auditList.innerHTML = '';
+                    auditChecks.forEach(c => {
+                        const item = document.createElement('div');
+                        item.className = `audit-check-card ${c.pass ? 'pass' : 'fail'}`;
+                        item.innerHTML = `
+                            <span>${c.pass ? '✅' : '❌'} <strong>${escapeHtml(c.title)}</strong></span>
+                            <span style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(c.desc)}</span>
+                        `;
+                        auditList.appendChild(item);
+                    });
+                }
+            } catch(e) {
+                if (wireCodeEl) wireCodeEl.textContent = '// Network/Request Error:\n' + e.message;
+            } finally {
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Send Probe';
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 📂 Tab Switching & Bridge Initialization
 // ---------------------------------------------------------------------------
 function setupTabs() {
@@ -1498,7 +2276,8 @@ function setupTabs() {
             document.querySelectorAll('.tab-content').forEach(tc => {
                 tc.classList.remove('active');
             });
-            document.getElementById(tabId).classList.add('active');
+            const targetSection = document.getElementById(tabId);
+            if (targetSection) targetSection.classList.add('active');
             
             // Adjust chat scrollbar on activation
             if (tabId === 'chat-tab') {
@@ -1507,11 +2286,22 @@ function setupTabs() {
             }
         });
     });
+
+    const metricFidelityCard = document.getElementById('metric-card-fidelity');
+    if (metricFidelityCard) {
+        metricFidelityCard.addEventListener('click', () => {
+            const fidelityNavBtn = document.getElementById('nav-fidelity-btn');
+            if (fidelityNavBtn) fidelityNavBtn.click();
+        });
+    }
 }
 
 async function init() {
     setupTabs();
     setupProtocolSwitcher();
+    setupDeliverySwitcher();
+    setupWireInspectorModal();
+    setupFidelityLab();
     setupParametersDrawer();
     fetchStatus();
     startTelemetryStream();

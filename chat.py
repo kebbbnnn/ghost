@@ -161,6 +161,14 @@ async def interactive_chat(model: str = "auto", label: str = "ChatGPT"):
                     messages.pop() # remove the failed message
                     continue
 
+                # Capture conversation IDs from HTTP response headers if provided
+                header_conv_id = resp.headers.get("x-ghost-conversation-id") or resp.headers.get("X-Ghost-Conversation-Id")
+                if header_conv_id:
+                    conversation_id = header_conv_id
+                header_parent_id = resp.headers.get("x-ghost-parent-message-id") or resp.headers.get("X-Ghost-Parent-Message-Id")
+                if header_parent_id:
+                    parent_message_id = header_parent_id
+
                 async for chunk in resp.aiter_lines():
                     if chunk:
                         line = chunk.decode("utf-8")

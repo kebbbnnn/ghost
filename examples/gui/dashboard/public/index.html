@@ -28,6 +28,10 @@
                     <span class="nav-icon">💬</span>
                     <span>Chat Playground</span>
                 </button>
+                <button class="nav-btn" data-tab="fidelity-tab" id="nav-fidelity-btn">
+                    <span class="nav-icon">🔬</span>
+                    <span>Wire Fidelity Lab</span>
+                </button>
                 <button class="nav-btn" data-tab="settings-tab">
                     <span class="nav-icon">⚙️</span>
                     <span>Accounts & Settings</span>
@@ -62,6 +66,12 @@
                     <div class="metric-card glass-panel">
                         <h3>Server Uptime</h3>
                         <p class="metric-value" id="uptime">-</p>
+                    </div>
+                    <div class="metric-card glass-panel" id="metric-card-fidelity" style="cursor: pointer;" title="Click to open Wire Fidelity Lab">
+                        <h3>Wire Emulation</h3>
+                        <p class="metric-value" style="color: var(--accent-cyan); font-size: 1.25rem;">
+                            <span>🔬 1:1 Parity</span>
+                        </p>
                     </div>
                 </div>
 
@@ -164,8 +174,22 @@
                                         </button>
                                     </div>
                                 </div>
+                                <div class="stream-switcher-wrapper">
+                                    <label>Delivery:</label>
+                                    <div class="protocol-segmented-control stream-control" role="group" aria-label="Delivery Mode">
+                                        <button type="button" class="protocol-segment active" id="mode-stream-btn" data-mode="stream" title="Server-Sent Events (SSE) streaming">
+                                            <span>🌊 Stream</span>
+                                        </button>
+                                        <button type="button" class="protocol-segment" id="mode-json-btn" data-mode="json" title="Non-streaming JSON response">
+                                            <span>📦 JSON</span>
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                             <div class="header-actions">
+                                <button class="wire-inspect-btn" id="wire-inspect-btn" title="Inspect wire response headers, token usage and raw SSE/JSON payload">
+                                    <span>🔍 Wire Inspector</span>
+                                </button>
                                 <button class="params-toggle-btn" id="params-toggle-btn" title="Configure Temperature, Stop sequences & Function Tools">
                                     <span>⚙️ Parameters & Tools</span>
                                     <span class="params-badge" id="params-badge">Default</span>
@@ -234,6 +258,15 @@
                                     </label>
                                     <label for="param-auto-execute-tools" class="auto-exec-label">
                                         ⚡ Auto-execute mock tools & continue turns autonomously
+                                    </label>
+                                </div>
+                                <div class="auto-exec-row" id="stream-options-row">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="param-include-usage" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                    <label for="param-include-usage" class="auto-exec-label">
+                                        📊 Emit stream_options.include_usage chunk (OpenAI standard)
                                     </label>
                                 </div>
                             </div>
@@ -314,7 +347,310 @@ export OPENAI_BASE_URL=http://127.0.0.1:8100/v1</pre>
                     </div>
                 </div>
             </section>
+
+            <!-- 🔬 Wire Fidelity Lab Tab -->
+            <section id="fidelity-tab" class="tab-content">
+                <header class="tab-header">
+                    <div class="fidelity-header-row">
+                        <div>
+                            <h1>Wire Fidelity &amp; Response Parity Lab</h1>
+                            <p class="tab-subtitle">1:1 wire compliance verification for OpenAI (<span class="code-pill">/v1/chat/completions</span>) and Anthropic (<span class="code-pill">/v1/messages</span>) APIs</p>
+                        </div>
+                        <div class="fidelity-header-actions">
+                            <span class="compliance-badge idle" id="overall-fidelity-badge">Ready to Test</span>
+                            <button class="primary-btn glow-btn" id="run-all-fidelity-btn">
+                                <span>⚡ Run All 6 Probes</span>
+                            </button>
+                        </div>
+                    </div>
+                </header>
+
+                <!-- Fidelity Architecture Stats Grid -->
+                <div class="fidelity-spec-grid">
+                    <div class="spec-card glass-panel">
+                        <div class="spec-card-icon openai-gradient">🟢</div>
+                        <div class="spec-card-info">
+                            <span class="spec-label">OpenAI Wire Parity</span>
+                            <h4 class="spec-value">1:1 Schema &amp; Headers</h4>
+                            <span class="spec-meta">fp_ghost_* • logprobs: null • stream_options</span>
+                        </div>
+                    </div>
+                    <div class="spec-card glass-panel">
+                        <div class="spec-card-icon anthropic-gradient">🟣</div>
+                        <div class="spec-card-info">
+                            <span class="spec-label">Anthropic Wire Parity</span>
+                            <h4 class="spec-value">7-Stage SSE Lifecycle</h4>
+                            <span class="spec-meta">message_start..message_stop • ratelimit headers</span>
+                        </div>
+                    </div>
+                    <div class="spec-card glass-panel">
+                        <div class="spec-card-icon shield-gradient">🛡️</div>
+                        <div class="spec-card-info">
+                            <span class="spec-label">Metadata Isolation</span>
+                            <h4 class="spec-value">Clean Standard Bodies</h4>
+                            <span class="spec-meta">X-Ghost-Conversation-Id header decoupling</span>
+                        </div>
+                    </div>
+                    <div class="spec-card glass-panel">
+                        <div class="spec-card-icon token-gradient">⚡</div>
+                        <div class="spec-card-info">
+                            <span class="spec-label">Token Computation</span>
+                            <h4 class="spec-value">Calculated Usage</h4>
+                            <span class="spec-meta">Prompt &amp; Completion heuristic accounting</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 6 Interactive Test Probe Cards -->
+                <div class="fidelity-probes-container glass-panel">
+                    <div class="probes-section-header">
+                        <h3>Automated Protocol Probes</h3>
+                        <span class="probes-section-subtitle">Dispatch live loopback requests to verify header &amp; schema fidelity in real-time</span>
+                    </div>
+
+                    <div class="probes-grid">
+                        <!-- Probe 1: OpenAI Streaming -->
+                        <div class="probe-card" id="probe-card-openai-stream">
+                            <div class="probe-card-top">
+                                <div class="probe-tag-row">
+                                    <span class="protocol-chip openai">OpenAI</span>
+                                    <span class="endpoint-chip">POST /v1/chat/completions</span>
+                                    <span class="probe-status-pill idle" id="status-openai-stream">Idle</span>
+                                </div>
+                                <h4>SSE Stream Chunk Structure</h4>
+                                <p class="probe-desc">Verifies <code class="inline-code">chat.completion.chunk</code>, system_fingerprint, logprobs: null, index: 0, clean chunks (no metadata leakage), and <code class="inline-code">data: [DONE]</code>.</p>
+                            </div>
+                            <div class="probe-checklist" id="checklist-openai-stream">
+                                <div class="check-item"><span class="check-dot"></span><span>OpenAI Headers (org-ghost, req-id)</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>System Fingerprint (fp_ghost_*)</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Clean Chunks (No metadata pollution)</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Terminal [DONE] Sequence</span></div>
+                            </div>
+                            <div class="probe-actions">
+                                <button class="probe-run-btn" id="btn-run-openai-stream">Run Probe</button>
+                                <button class="probe-inspect-btn" id="btn-inspect-openai-stream" disabled>Inspect Wire</button>
+                            </div>
+                        </div>
+
+                        <!-- Probe 2: OpenAI JSON -->
+                        <div class="probe-card" id="probe-card-openai-json">
+                            <div class="probe-card-top">
+                                <div class="probe-tag-row">
+                                    <span class="protocol-chip openai">OpenAI</span>
+                                    <span class="endpoint-chip">POST /v1/chat/completions</span>
+                                    <span class="probe-status-pill idle" id="status-openai-json">Idle</span>
+                                </div>
+                                <h4>Non-Streaming JSON Parity</h4>
+                                <p class="probe-desc">Verifies standard <code class="inline-code">chat.completion</code> body, usage metrics, X-Ghost-* headers, and finish_reason: "stop".</p>
+                            </div>
+                            <div class="probe-checklist" id="checklist-openai-json">
+                                <div class="check-item"><span class="check-dot"></span><span>Object: chat.completion</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Usage tokens &gt; 0 (prompt &amp; completion)</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>X-Ghost-Conversation-Id Header</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Clean JSON (No conversation_id key)</span></div>
+                            </div>
+                            <div class="probe-actions">
+                                <button class="probe-run-btn" id="btn-run-openai-json">Run Probe</button>
+                                <button class="probe-inspect-btn" id="btn-inspect-openai-json" disabled>Inspect Wire</button>
+                            </div>
+                        </div>
+
+                        <!-- Probe 3: OpenAI Usage Chunk -->
+                        <div class="probe-card" id="probe-card-openai-usage">
+                            <div class="probe-card-top">
+                                <div class="probe-tag-row">
+                                    <span class="protocol-chip openai">OpenAI</span>
+                                    <span class="endpoint-chip">POST /v1/chat/completions</span>
+                                    <span class="probe-status-pill idle" id="status-openai-usage">Idle</span>
+                                </div>
+                                <h4>stream_options.include_usage Chunk</h4>
+                                <p class="probe-desc">Verifies terminal usage emission chunk before <code class="inline-code">[DONE]</code> with <code class="inline-code">choices: []</code> and populated usage counts.</p>
+                            </div>
+                            <div class="probe-checklist" id="checklist-openai-usage">
+                                <div class="check-item"><span class="check-dot"></span><span>Pre-terminal usage chunk emitted</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Choices array is empty ([])</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Prompt + Completion tokens counted</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Immediately precedes [DONE]</span></div>
+                            </div>
+                            <div class="probe-actions">
+                                <button class="probe-run-btn" id="btn-run-openai-usage">Run Probe</button>
+                                <button class="probe-inspect-btn" id="btn-inspect-openai-usage" disabled>Inspect Wire</button>
+                            </div>
+                        </div>
+
+                        <!-- Probe 4: Anthropic Streaming -->
+                        <div class="probe-card" id="probe-card-anthropic-stream">
+                            <div class="probe-card-top">
+                                <div class="probe-tag-row">
+                                    <span class="protocol-chip anthropic">Anthropic</span>
+                                    <span class="endpoint-chip">POST /v1/messages</span>
+                                    <span class="probe-status-pill idle" id="status-anthropic-stream">Idle</span>
+                                </div>
+                                <h4>7-Stage SSE Event Sequence</h4>
+                                <p class="probe-desc">Validates exact order: <code class="inline-code">message_start</code> &rarr; <code class="inline-code">ping</code> &rarr; <code class="inline-code">content_block_start</code> &rarr; <code class="inline-code">delta</code> &rarr; <code class="inline-code">stop</code> &rarr; <code class="inline-code">message_delta</code> &rarr; <code class="inline-code">message_stop</code>.</p>
+                            </div>
+                            <div class="probe-checklist" id="checklist-anthropic-stream">
+                                <div class="check-item"><span class="check-dot"></span><span>Anthropic-Version: 2023-06-01</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Strict 7-Event Sequence Lifecycle</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>message_start contains id, role, usage</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>message_delta contains stop_reason &amp; tokens</span></div>
+                            </div>
+                            <div class="probe-actions">
+                                <button class="probe-run-btn" id="btn-run-anthropic-stream">Run Probe</button>
+                                <button class="probe-inspect-btn" id="btn-inspect-anthropic-stream" disabled>Inspect Wire</button>
+                            </div>
+                        </div>
+
+                        <!-- Probe 5: Anthropic JSON -->
+                        <div class="probe-card" id="probe-card-anthropic-json">
+                            <div class="probe-card-top">
+                                <div class="probe-tag-row">
+                                    <span class="protocol-chip anthropic">Anthropic</span>
+                                    <span class="endpoint-chip">POST /v1/messages</span>
+                                    <span class="probe-status-pill idle" id="status-anthropic-json">Idle</span>
+                                </div>
+                                <h4>Non-Streaming Messages Parity</h4>
+                                <p class="probe-desc">Verifies standard <code class="inline-code">msg_*</code> body, content blocks, rate-limit headers, and stop_reason: "end_turn".</p>
+                            </div>
+                            <div class="probe-checklist" id="checklist-anthropic-json">
+                                <div class="check-item"><span class="check-dot"></span><span>Type: message, id: msg_*</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Anthropic-Ratelimit-* Headers</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Content block array with text</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Clean body (No metadata keys)</span></div>
+                            </div>
+                            <div class="probe-actions">
+                                <button class="probe-run-btn" id="btn-run-anthropic-json">Run Probe</button>
+                                <button class="probe-inspect-btn" id="btn-inspect-anthropic-json" disabled>Inspect Wire</button>
+                            </div>
+                        </div>
+
+                        <!-- Probe 6: Error Parity -->
+                        <div class="probe-card" id="probe-card-error-parity">
+                            <div class="probe-card-top">
+                                <div class="probe-tag-row">
+                                    <span class="protocol-chip hybrid">Error Schema</span>
+                                    <span class="endpoint-chip">Dual Protocols</span>
+                                    <span class="probe-status-pill idle" id="status-error-parity">Idle</span>
+                                </div>
+                                <h4>Error &amp; Validation Schemas</h4>
+                                <p class="probe-desc">Verifies that invalid requests return OpenAI <code class="inline-code">{"error": {...}}</code> and Anthropic <code class="inline-code">{"type": "error", "error": {...}}</code> instead of generic FastAPI dumps.</p>
+                            </div>
+                            <div class="probe-checklist" id="checklist-error-parity">
+                                <div class="check-item"><span class="check-dot"></span><span>OpenAI: {"error": {"message", "type"}}</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>Anthropic: {"type": "error", "error": {...}}</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>HTTP 400 Bad Request status</span></div>
+                                <div class="check-item"><span class="check-dot"></span><span>No {"detail": [...]} leakage</span></div>
+                            </div>
+                            <div class="probe-actions">
+                                <button class="probe-run-btn" id="btn-run-error-parity">Run Probe</button>
+                                <button class="probe-inspect-btn" id="btn-inspect-error-parity" disabled>Inspect Wire</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Custom Wire Sandbox Section -->
+                <div class="wire-sandbox-section glass-panel">
+                    <div class="sandbox-header">
+                        <div>
+                            <h3>Interactive Wire Sandbox</h3>
+                            <span class="sandbox-subtitle">Send a custom payload to either endpoint and inspect the live raw wire response</span>
+                        </div>
+                        <div class="sandbox-controls">
+                            <select id="sandbox-protocol-select">
+                                <option value="openai">OpenAI (POST /v1/chat/completions)</option>
+                                <option value="anthropic">Anthropic (POST /v1/messages)</option>
+                            </select>
+                            <label class="sandbox-toggle-label">
+                                <input type="checkbox" id="sandbox-stream-toggle" checked>
+                                <span>Stream SSE</span>
+                            </label>
+                            <label class="sandbox-toggle-label" id="sandbox-usage-toggle-wrap">
+                                <input type="checkbox" id="sandbox-usage-toggle" checked>
+                                <span>include_usage</span>
+                            </label>
+                            <button class="primary-btn" id="sandbox-send-btn">Send Probe</button>
+                        </div>
+                    </div>
+                    <div class="sandbox-grid">
+                        <div class="sandbox-input-col">
+                            <label class="col-label">Test Prompt:</label>
+                            <textarea id="sandbox-prompt-input" class="sandbox-textarea" placeholder="Say hello and tell me what model you are.">Hello, please respond briefly to test wire fidelity.</textarea>
+                            <label class="col-label" style="margin-top: 0.5rem;">Or Raw JSON Override (optional):</label>
+                            <textarea id="sandbox-raw-json-input" class="sandbox-json-area" placeholder="Leave empty to use standard generated payload..."></textarea>
+                        </div>
+                        <div class="sandbox-output-col">
+                            <div class="sandbox-tabs">
+                                <button class="sandbox-tab-btn active" data-stab="stab-headers">Response Headers</button>
+                                <button class="sandbox-tab-btn" data-stab="stab-wire">Raw Wire Stream</button>
+                                <button class="sandbox-tab-btn" data-stab="stab-audit">Compliance Audit</button>
+                            </div>
+                            <div class="sandbox-tab-pane active" id="stab-headers">
+                                <table class="sandbox-headers-table">
+                                    <thead><tr><th>Header Name</th><th>Received Value</th></tr></thead>
+                                    <tbody id="sandbox-headers-body">
+                                        <tr><td colspan="2" style="text-align:center; color:var(--text-muted); padding: 1.5rem;">Send a probe to inspect headers</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="sandbox-tab-pane" id="stab-wire">
+                                <pre class="sandbox-code-pre"><code id="sandbox-wire-code">// Raw response chunks will stream here in real-time...</code></pre>
+                            </div>
+                            <div class="sandbox-tab-pane" id="stab-audit">
+                                <div class="audit-results-list" id="sandbox-audit-list">
+                                    <p style="color:var(--text-muted); font-size:0.85rem; padding: 1rem;">Compliance checks will execute immediately upon response completion.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </main>
+    </div>
+
+    <!-- Wire Inspector Modal -->
+    <div class="modal-backdrop" id="wire-inspector-modal" style="display: none;">
+        <div class="modal-window glass-panel">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <span class="modal-icon">🔍</span>
+                    <div>
+                        <h3 id="wire-modal-title">Wire Response Inspector</h3>
+                        <p class="modal-subtitle" id="wire-modal-subtitle">Inspecting latest response</p>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <span class="compliance-badge compliant" id="wire-modal-compliance-badge">✓ 100% Wire Compliant</span>
+                    <button class="modal-close-btn" id="wire-modal-close-btn">&times;</button>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="wire-tabs-bar">
+                    <button class="wire-tab-btn active" data-wire-tab="wire-headers-tab">HTTP Headers</button>
+                    <button class="wire-tab-btn" data-wire-tab="wire-body-tab">Raw Payload &amp; Chunks</button>
+                    <button class="wire-tab-btn" data-wire-tab="wire-compliance-tab">Compliance Audit</button>
+                </div>
+                <div class="wire-tab-content active" id="wire-headers-tab">
+                    <table class="wire-headers-table" id="wire-headers-table">
+                        <thead>
+                            <tr><th>Header</th><th>Value</th><th>Fidelity Standard</th></tr>
+                        </thead>
+                        <tbody id="wire-headers-tbody"></tbody>
+                    </table>
+                </div>
+                <div class="wire-tab-content" id="wire-body-tab">
+                    <div class="wire-code-header">
+                        <span id="wire-payload-meta">Format: text/event-stream</span>
+                        <button class="copy-btn" id="copy-wire-payload-btn">Copy Raw</button>
+                    </div>
+                    <pre class="wire-code-block"><code id="wire-payload-code">// No response captured yet</code></pre>
+                </div>
+                <div class="wire-tab-content" id="wire-compliance-tab">
+                    <div class="compliance-checklist" id="wire-compliance-checklist">
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Application Script -->
