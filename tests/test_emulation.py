@@ -43,11 +43,96 @@ def test_system_prompt_tool_injection():
     assert ctx["has_tools"] is True
     assert len(messages) == 2
     assert messages[0]["role"] == "system"
-    assert "Tool Calling Instructions" in messages[0]["content"]
+    assert "HEADLESS API GATEWAY" in messages[0]["content"]
     assert "get_weather" in messages[0]["content"]
     assert "<tool_call>" in messages[0]["content"]
     assert messages[1]["role"] == "user"
     assert messages[1]["content"] == "What's the weather in Tokyo?"
+
+
+def test_tool_synthesis_phase_directive():
+    """Verify tool results trigger SYNTHESIS PHASE ACTIVE directive rather than TOOL_CALL_REQUIRED."""
+    tools = [{"type": "function", "function": {"name": "calculator"}}]
+    messages = [
+        {"role": "user", "content": "Compute 5*5"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "calculator", "arguments": '{"expr": "5*5"}'}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "25"},
+    ]
+    req = {
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+    }
+    folded, ctx = EmulationPipeline.prepare_request(req)
+    system_msg = next(m for m in folded if m["role"] == "system")
+    assert "SYNTHESIS PHASE: External tool execution is COMPLETE" in system_msg["content"]
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" not in system_msg["content"]
+    assert "DO NOT invoke or emit any <tool_call> tags" in system_msg["content"]
+    assert ctx["is_synthesis_phase"] is True
+    assert "calculator" in ctx["executed_tool_names"]
+
+
+def test_synthesis_phase_suppresses_duplicate_tool_echo_non_streaming():
+    """Verify echoed tool calls in synthesis phase are stripped, preserving content and setting finish_reason='stop'."""
+    raw_resp = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": '<tool_call>{"name": "calculator", "arguments": {"expr": "5*5"}}</tool_call> The answer is 25.',
+                },
+                "finish_reason": "stop",
+            }
+        ]
+    }
+    context = {
+        "is_synthesis_phase": True,
+        "executed_tool_names": ["calculator"],
+    }
+    processed = process_non_streaming_response(raw_resp, context)
+    choice = processed["choices"][0]
+    assert choice["finish_reason"] == "stop"
+    assert "tool_calls" not in choice["message"]
+    assert choice["message"]["content"] == "The answer is 25."
+
+
+def test_synthesis_phase_suppresses_duplicate_tool_echo_streaming():
+    """Verify streaming processor suppresses echoed tool calls in synthesis phase."""
+    async def run():
+        processor = StreamEmulationProcessor({
+            "is_synthesis_phase": True,
+            "executed_tool_names": ["calculator"],
+        })
+        async def mock_stream():
+            yield 'data: {"choices": [{"delta": {"content": "<tool_call>{\\"name\\": \\"calculator\\", \\"arguments\\": {}}</tool_call> The answer is 25."}}]}\n\n'
+            yield 'data: [DONE]\n\n'
+
+        chunks = []
+        async for c in processor.process_stream(mock_stream()):
+            chunks.append(c)
+
+        # Parse SSE lines
+        tool_deltas = []
+        content_deltas = []
+        finish_reasons = []
+        for line in chunks:
+            line = line.strip()
+            if line.startswith("data: ") and line != "data: [DONE]":
+                payload = json.loads(line[6:])
+                delta = payload["choices"][0]["delta"]
+                if "tool_calls" in delta:
+                    tool_deltas.extend(delta["tool_calls"])
+                if "content" in delta:
+                    content_deltas.append(delta["content"])
+                if payload["choices"][0].get("finish_reason"):
+                    finish_reasons.append(payload["choices"][0]["finish_reason"])
+
+        assert len(tool_deltas) == 0, "No duplicate tool calls should be emitted"
+        assert "".join(content_deltas).strip() == "The answer is 25."
+        assert "stop" in finish_reasons
+        assert "tool_calls" not in finish_reasons
+
+    asyncio.run(run())
 
 
 def test_tool_choice_directives():
@@ -121,7 +206,9 @@ def test_multi_turn_tool_folding():
 
     # Check tool result folded into user message
     tool_folded_user = [m for m in folded if m["role"] == "user"][-1]
-    assert "[Tool Result for call_calc_1]" in tool_folded_user["content"]
+    assert "[Tool Results]:" in tool_folded_user["content"]
+    assert "call_calc_1" in tool_folded_user["content"]
+    assert "calculator" in tool_folded_user["content"]
     assert "4" in tool_folded_user["content"]
 
 

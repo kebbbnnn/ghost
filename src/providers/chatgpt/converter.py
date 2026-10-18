@@ -84,54 +84,68 @@ def chatgpt_event_to_openai_chunk(event: dict, model: str, chunk_id: str) -> dic
         }
 
     # --- New delta-encoding format ---
-    # Either {"p": "/message/content/parts/0", "o": "append", "v": "text"}
-    # or shorthand continuation {"v": "text"} (no "p" key, just the value)
     event_v = event.get("v")
-    event_o = event.get("o", "append")
+    event_o = event.get("o")
 
-    if event_v is not None and isinstance(event_v, str) and event_o == "append":
-        # Text delta — yield it
-        if event_v:
-            return {
-                "id": chunk_id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model,
-                "choices": [{"index": 0, "delta": {"role": "assistant", "content": event_v}, "finish_reason": None}],
-            }
-        return None
-
-    # Shorthand: {"v": "text"} without explicit "o" = continuation append
-    if event_v is not None and isinstance(event_v, str) and "o" not in event and "p" not in event:
-        if event_v:
-            return {
-                "id": chunk_id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model,
-                "choices": [{"index": 0, "delta": {"content": event_v}, "finish_reason": None}],
-            }
-        return None
-
-    # Handle patch operations: {"p": "", "o": "patch", "v": [...]}
-    if event_o == "patch" and isinstance(event_v, list):
+    # Case 1: event carries a list of patch operations:
+    # {"p": "", "o": "patch", "v": [...]} or shorthand {"v": [...]}
+    if isinstance(event_v, list):
         text_parts = []
+        is_finished = False
         for op in event_v:
-            if isinstance(op, dict) and op.get("o") == "append" and isinstance(op.get("v"), str):
-                text_parts.append(op["v"])
+            if isinstance(op, dict):
+                p_path = op.get("p", "")
+                if op.get("o") == "append" and isinstance(op.get("v"), str):
+                    # Strictly capture only content parts, ignoring metadata/fallbackMarkdown
+                    if not p_path or p_path.startswith("/message/content/parts"):
+                        text_parts.append(op["v"])
+                elif p_path == "/message/end_turn" and op.get("v") is True:
+                    is_finished = True
+
         if text_parts:
-            combined = "".join(text_parts)
+            combined = "".join(text_parts).replace("<escape>", "").replace("</escape>", "")
+            if combined:
+                return {
+                    "id": chunk_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {"content": combined}, "finish_reason": "stop" if is_finished else None}],
+                }
+        if is_finished:
             return {
                 "id": chunk_id,
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
                 "model": model,
-                "choices": [{"index": 0, "delta": {"content": combined}, "finish_reason": None}],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
         return None
 
-    # --- Legacy format: {"message": {...}} ---
+    # Case 2: String delta:
+    # Either {"p": "/message/content/parts/0", "o": "append", "v": "text"}
+    # or shorthand continuation {"v": "text"}
+    if event_v is not None and isinstance(event_v, str) and (event_o in ("append", None)):
+        cleaned_v = event_v.replace("<escape>", "").replace("</escape>", "")
+        if cleaned_v:
+            role = "assistant" if ("o" in event or event.get("p") == "/message/content/parts/0") else None
+            delta_dict = {"content": cleaned_v}
+            if role:
+                delta_dict["role"] = role
+            return {
+                "id": chunk_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{"index": 0, "delta": delta_dict, "finish_reason": None}],
+            }
+        return None
+
+    # --- Legacy format or message initiation: {"message": {...}} or {"v": {"message": {...}}} ---
     msg = event.get("message")
+    if not msg and isinstance(event_v, dict):
+        msg = event_v.get("message")
+
     if not msg:
         return None
 
@@ -143,17 +157,20 @@ def chatgpt_event_to_openai_chunk(event: dict, model: str, chunk_id: str) -> dic
     text_delta = ""
     for part in parts:
         if isinstance(part, str):
-            text_delta = part
+            text_delta = part.replace("<escape>", "").replace("</escape>", "")
             break
 
+    # Only assign finish_reason if this message is addressed to the user (not an internal tool recipient)
+    recipient = msg.get("recipient", "all")
     status = msg.get("status", "")
     finish_reason = None
-    if status in ("finished_successfully", "stopped"):
-        finish_reason = "stop"
-    elif status == "max_tokens":
-        finish_reason = "length"
+    if recipient in ("all", None, ""):
+        if status in ("finished_successfully", "stopped"):
+            finish_reason = "stop"
+        elif status == "max_tokens":
+            finish_reason = "length"
 
-    if not text_delta and not finish_reason:
+    if not text_delta:
         return None
 
     delta = {}

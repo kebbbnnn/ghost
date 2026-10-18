@@ -934,6 +934,7 @@ async function sendMessage(isFollowup = false) {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
+        let streamError = null;
         
         while (true) {
             const { value, done } = await reader.read();
@@ -948,6 +949,11 @@ async function sendMessage(isFollowup = false) {
                     try {
                         const data = JSON.parse(line.slice(6));
                         
+                        if (data.error) {
+                            streamError = data.error.message || JSON.stringify(data.error);
+                            logToConsole(`Upstream error: ${streamError}`, 'error');
+                        }
+
                         if (data.conversation_id) current.conversationId = data.conversation_id;
                         if (data.parent_message_id) current.parentMessageId = data.parent_message_id;
                         
@@ -980,8 +986,20 @@ async function sendMessage(isFollowup = false) {
             }
         }
 
-        // Save assistant message to thread
-        if (fullResponse || activeToolCalls.length > 0) {
+        // Save assistant message to thread or show error
+        if (streamError) {
+            bubbleContent.innerHTML = `<div style="padding: 10px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; color: var(--danger-color); font-size: 13px; line-height: 1.5;">
+                <div style="font-weight: 600; margin-bottom: 4px;">⚠️ Provider Error</div>
+                <div>${escapeHtml(streamError)}</div>
+                <div style="margin-top: 8px; font-size: 11px; opacity: 0.85;">Tip: If using ChatGPT and getting a 403 device/activity flag, switch to Gemini or wait a few minutes for OpenAI's rate limiter to reset.</div>
+            </div>`;
+            current.messages.push({
+                role: 'assistant',
+                content: `⚠️ Provider Error: ${streamError}`
+            });
+            saveThreads(threads);
+            logToConsole(`Stream error received: ${streamError}`, 'error');
+        } else if (fullResponse || activeToolCalls.length > 0) {
             const assistantMsg = {
                 role: 'assistant',
                 content: fullResponse || null
@@ -1010,11 +1028,19 @@ async function sendMessage(isFollowup = false) {
                 window._autoExecTurnCount = 0;
             }
         } else {
-            bubble.remove();
+            bubbleContent.innerHTML = `<div style="padding: 10px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; color: var(--danger-color); font-size: 13px; line-height: 1.5;">
+                <div style="font-weight: 600; margin-bottom: 4px;">⚠️ Empty Response</div>
+                <div>The upstream model closed the connection without returning any content or tool calls.</div>
+                <div style="margin-top: 8px; font-size: 11px; opacity: 0.85;">Tip: The provider may be temporarily throttling this IP. Switch to Gemini or wait a few minutes.</div>
+            </div>`;
+            logToConsole('Empty response received from provider.', 'warning');
         }
     } catch (e) {
         console.error(e);
-        bubbleContent.innerHTML = `<span style="color: var(--danger-color); font-weight: 500;">Connection Failed: ${e.message}</span>`;
+        bubbleContent.innerHTML = `<div style="padding: 10px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; color: var(--danger-color); font-size: 13px; line-height: 1.5;">
+            <div style="font-weight: 600; margin-bottom: 4px;">⚠️ Connection Failed</div>
+            <div>${escapeHtml(e.message)}</div>
+        </div>`;
         logToConsole(`Completions loop failure: ${e.message}`, 'error');
     }
 }

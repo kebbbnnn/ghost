@@ -44,7 +44,13 @@ class EmulationPipeline:
         model: str = req_dict.get("model", "auto")
 
         # 1. Fold multi-turn tool messages
-        folded_messages = cls._fold_messages(raw_messages)
+        folded_messages, executed_tool_names = cls._fold_messages(raw_messages)
+
+        has_tool_results = bool(executed_tool_names) or any(
+            isinstance(m.get("content"), str) and "[Tool Results]" in m.get("content", "")
+            for m in folded_messages
+        )
+        is_synthesis_phase = bool(has_tool_results and tool_choice != "required")
 
         # 2. Inject tool instructions and behavioral steering into system prompt
         transpiled_messages = cls._inject_system_instructions(
@@ -52,6 +58,7 @@ class EmulationPipeline:
             tools=tools,
             tool_choice=tool_choice,
             temperature=temperature,
+            is_synthesis_phase=is_synthesis_phase,
         )
 
         # Normalize stop sequences to list[str]
@@ -69,24 +76,57 @@ class EmulationPipeline:
             "stop": normalized_stop,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "is_synthesis_phase": is_synthesis_phase,
+            "executed_tool_names": list(executed_tool_names),
         }
 
         return transpiled_messages, emulation_context
 
     @classmethod
-    def _fold_messages(cls, messages: list[dict]) -> list[dict]:
+    def _fold_messages(cls, messages: list[dict]) -> tuple[list[dict], set[str]]:
         """
         Fold agentic message sequences into standard user/assistant/system roles.
         - Assistant messages with tool_calls serialize into <tool_call> tags.
-        - Tool role messages fold into user messages formatted as [Tool Result for ...].
+        - Consecutive tool messages fold into a single cohesive [Tool Results] user turn.
+        Returns (folded_messages, executed_tool_names).
         """
         folded: list[dict] = []
+        pending_tool_results: list[dict] = []
+        call_id_to_name: dict[str, str] = {}
+        executed_tool_names: set[str] = set()
+
+        def flush_tool_results():
+            nonlocal pending_tool_results
+            if not pending_tool_results:
+                return
+            formatted_parts = ["[Tool Results]:"]
+            for tr in pending_tool_results:
+                call_id = tr.get("tool_call_id") or "call"
+                fn_name = tr.get("name") or call_id_to_name.get(call_id) or "tool"
+                if fn_name != "tool":
+                    executed_tool_names.add(fn_name)
+                raw_content = tr.get("content", "")
+                content_str = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
+                formatted_parts.append(f"- Function {fn_name} ({call_id}):\n{content_str}")
+            formatted_parts.append("\nPlease review the tool results above and provide the final answer to the user's request.")
+            folded.append({
+                "role": "user",
+                "content": "\n\n".join(formatted_parts)
+            })
+            pending_tool_results = []
 
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content")
             tool_calls = msg.get("tool_calls")
             tool_call_id = msg.get("tool_call_id")
+
+            if role == "tool":
+                pending_tool_results.append(msg)
+                continue
+
+            # Non-tool message: flush any accumulated tool results first
+            flush_tool_results()
 
             if role == "assistant":
                 text_content = ""
@@ -103,8 +143,12 @@ class EmulationPipeline:
                 if tool_calls and isinstance(tool_calls, list):
                     serialized_calls = []
                     for tc in tool_calls:
+                        tc_id = tc.get("id")
                         func = tc.get("function", {})
                         func_name = func.get("name", "")
+                        if tc_id and func_name:
+                            call_id_to_name[tc_id] = func_name
+
                         func_args = func.get("arguments", "{}")
                         if isinstance(func_args, str):
                             try:
@@ -123,23 +167,12 @@ class EmulationPipeline:
 
                 folded.append({"role": "assistant", "content": text_content})
 
-            elif role == "tool":
-                # Upstream providers reject role='tool'. Fold into user role.
-                if tool_call_id:
-                    call_tag = tool_call_id if tool_call_id.startswith("call_") else f"call_{tool_call_id}"
-                else:
-                    call_tag = "unknown_call"
-                tool_text = content if isinstance(content, str) else json.dumps(content)
-                folded.append({
-                    "role": "user",
-                    "content": f"[Tool Result for {call_tag}]:\n{tool_text}",
-                })
-
             else:
                 # Normal user or system message
                 folded.append(dict(msg))
 
-        return folded
+        flush_tool_results()
+        return folded, executed_tool_names
 
     @classmethod
     def _inject_system_instructions(
@@ -148,6 +181,7 @@ class EmulationPipeline:
         tools: list[dict] | None = None,
         tool_choice: Any = None,
         temperature: float | None = None,
+        is_synthesis_phase: bool = False,
     ) -> list[dict]:
         """
         Appends tool calling rules and temperature behavioral steering to the system prompt.
@@ -174,34 +208,54 @@ class EmulationPipeline:
                 elif "name" in t:
                     tools_spec.append(t)
 
-            tool_prompt = (
-                "# Tool Calling Instructions\n"
-                "You have access to the following tools:\n"
-                f"{json.dumps(tools_spec, indent=2)}\n\n"
-                "To call one or more tools, you MUST format your call using this XML tag:\n"
-                "<tool_call>\n"
-                '{"name": "<function_name>", "arguments": <arguments_json_object>}\n'
-                "</tool_call>\n\n"
-                "CRITICAL INSTRUCTIONS:\n"
-                "1. If a user query can be answered or assisted by any of the tools above (e.g. calculation, weather, time, search), "
-                "you MUST invoke the appropriate tool using the <tool_call> tag. Do NOT answer directly with your internal knowledge or execute python/search internally.\n"
-                "2. When invoking tools, your response should be the <tool_call> block (you may include brief reasoning before it).\n"
-                "3. If calling multiple tools, provide each inside its own <tool_call>...</tool_call> block.\n"
-                "4. When no tool applies, respond with standard text directly."
-            )
-            instructions.append(tool_prompt)
+            compact_signatures = []
+            for t in tools_spec:
+                fn_name = t.get("name", "")
+                params = t.get("parameters", {}).get("properties", {})
+                param_strs = []
+                for p_name, p_info in params.items():
+                    p_type = p_info.get("type", "string")
+                    param_strs.append(f"{p_name}: {p_type}")
+                sig = f"- {fn_name}({', '.join(param_strs)})"
+                compact_signatures.append(sig)
+            signatures_text = "\n".join(compact_signatures)
 
-            # Mandatory tool calling directive
-            if tool_choice == "required":
-                instructions.append(
-                    "MANDATORY REQUIREMENT: You MUST invoke at least one tool using the <tool_call> tag."
+            if is_synthesis_phase:
+                tool_prompt = (
+                    "[SYSTEM: HEADLESS API GATEWAY]\n"
+                    "SYNTHESIS PHASE: External tool execution is COMPLETE. The results are provided above in [Tool Results].\n"
+                    "CRITICAL PROTOCOL RULES:\n"
+                    "1. Provide the direct, complete, and final answer to the user's inquiry based on the [Tool Results] provided in the conversation.\n"
+                    "2. DO NOT invoke or emit any <tool_call> tags. Tool execution has already finished.\n"
+                    "3. Output the final answer directly in clear, helpful markdown text."
                 )
-            elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
-                target_func = tool_choice.get("function", {}).get("name")
-                if target_func:
+                instructions.append(tool_prompt)
+            else:
+                tool_prompt = (
+                    "[SYSTEM: HEADLESS API GATEWAY]\n"
+                    "CRITICAL MODE: TOOL_CALL_REQUIRED.\n"
+                    "You are an automated API proxy that converts user input into JSON RPC tool calls.\n"
+                    "You are running in a sandbox environment with NO web access, NO python access, and NO UI widgets.\n"
+                    "DO NOT attempt to call web.run or functions.exec or render widgets. Any markdown output is invalid.\n"
+                    "Available external RPC tools:\n"
+                    f"{signatures_text}\n\n"
+                    "Your task: Emit the necessary <tool_call> tags for the user's request.\n"
+                    "Output ONLY <tool_call> tags, nothing else:\n"
+                    '<tool_call>{"name": "tool_name", "arguments": {"arg": "val"}}</tool_call>'
+                )
+                instructions.append(tool_prompt)
+
+                # Mandatory tool calling directive
+                if tool_choice == "required":
                     instructions.append(
-                        f"MANDATORY REQUIREMENT: You MUST invoke the tool '{target_func}' using the <tool_call> tag."
+                        "MANDATORY REQUIREMENT: You MUST invoke at least one tool using the <tool_call> tag."
                     )
+                elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+                    target_func = tool_choice.get("function", {}).get("name")
+                    if target_func:
+                        instructions.append(
+                            f"MANDATORY REQUIREMENT: You MUST invoke the tool '{target_func}' using the <tool_call> tag."
+                        )
 
         if not instructions:
             return messages

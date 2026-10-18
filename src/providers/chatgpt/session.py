@@ -10,6 +10,7 @@ Handles:
 import asyncio
 import typing
 import json
+import os
 import re
 import time
 import uuid
@@ -194,7 +195,7 @@ class ChatGPTProvider(BaseProvider):
         self._next_token_task: asyncio.Task | None = None
         # Dynamically scraped build metadata (updated on each device-id fetch)
         self._build_number: str = "8338682"
-        self._client_version: str = "prod-e8f67765f24e1c6773b4b61b4310d5ff9297439a"
+        self._client_version: str = "prod-6e1773e1c0cf3d4b9ca4def1e4c24b9ac1fa26f4"
         self._geo_info: dict = {}
 
     # ------------------------------------------------------------------
@@ -203,7 +204,8 @@ class ChatGPTProvider(BaseProvider):
 
     async def _get_session(self) -> AsyncSession:
         if self._session is None:
-            self._session = AsyncSession(impersonate="chrome136")
+            proxy = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("ALL_PROXY")
+            self._session = AsyncSession(impersonate="chrome136", proxy=proxy)
         return self._session
 
     async def _reset_session(self, hard: bool = True):
@@ -758,24 +760,59 @@ class ChatGPTProvider(BaseProvider):
 def _convert_messages(messages: list[dict]) -> list[dict]:
     """
     Convert OpenAI Chat Completions messages to ChatGPT guest format.
+    Merges any system instructions directly into user turns so that ChatGPT guest mode
+    properly adheres to tool calling instructions and system directives.
     """
-    out = []
+    system_parts = []
+    other_messages = []
+
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
-
         if role == "system":
-            # System messages become a user message with the instructions header
-            out.append({
-                "id": str(uuid.uuid4()),
-                "author": {"role": "user"},
-                "content": {
-                    "content_type": "text",
-                    "parts": [f"[System]: {content}"],
-                },
-            })
-        elif role == "user":
+            text = content if isinstance(content, str) else _extract_text(content)
+            if text:
+                system_parts.append(text)
+        else:
+            other_messages.append(msg)
+
+    system_prefix = "\n\n".join(system_parts).strip()
+
+    # If no other messages, treat system instruction as single user message
+    if not other_messages and system_prefix:
+        return [{
+            "id": str(uuid.uuid4()),
+            "author": {"role": "user"},
+            "create_time": time.time(),
+            "content": {"content_type": "text", "parts": [f"[System Instructions]:\n{system_prefix}"]},
+        }]
+
+    # Identify the active user turn (the last user message in the thread)
+    last_user_idx = -1
+    for i in range(len(other_messages) - 1, -1, -1):
+        if other_messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    out = []
+    for idx, msg in enumerate(other_messages):
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+
+        if role == "user":
             parts = _parse_content(content)
+            # Inject system instructions into the active user turn.
+            if system_prefix and idx == last_user_idx:
+                if parts and isinstance(parts[0], str):
+                    if parts[0].startswith("[Tool Results]"):
+                        parts[0] = f"{system_prefix}\n\n{parts[0]}"
+                    else:
+                        parts[0] = f"{system_prefix}\n\n[USER REQUEST]:\n{parts[0]}"
+                else:
+                    parts.insert(0, f"{system_prefix}\n\n[USER REQUEST]:\n")
+            elif parts and isinstance(parts[0], str) and not parts[0].startswith("[USER REQUEST]:") and not parts[0].startswith("[Tool Results]"):
+                parts[0] = f"[USER REQUEST]:\n{parts[0]}"
+
             user_msg = {
                 "id": str(uuid.uuid4()),
                 "author": {"role": "user"},
@@ -785,10 +822,10 @@ def _convert_messages(messages: list[dict]) -> list[dict]:
                     "parts": parts,
                 },
             }
-            # Pass through attachment metadata from image preprocessing
             if msg.get("metadata"):
                 user_msg["metadata"] = msg["metadata"]
             out.append(user_msg)
+
         elif role == "assistant":
             text = content if isinstance(content, str) else _extract_text(content)
             out.append({
@@ -799,6 +836,7 @@ def _convert_messages(messages: list[dict]) -> list[dict]:
                     "parts": [text],
                 },
             })
+
     return out
 
 

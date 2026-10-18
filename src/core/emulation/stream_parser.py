@@ -82,6 +82,8 @@ class StreamEmulationProcessor:
         self.model = context.get("model", "auto")
         self.stop_sequences: list[str] = context.get("stop", [])
         self.max_tokens: int | None = context.get("max_tokens")
+        self.is_synthesis_phase: bool = context.get("is_synthesis_phase", False)
+        self.executed_tools: set[str] = set(context.get("executed_tool_names", []))
 
         self.chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         self.created = int(time.time())
@@ -149,7 +151,10 @@ class StreamEmulationProcessor:
 
     async def _feed_text(self, text: str) -> AsyncGenerator[str, None]:
         """Processes incoming text fragment with lookahead sliding window."""
-        self.buffer += text
+        cleaned = text.replace("<escape>", "").replace("</escape>", "")
+        if not cleaned:
+            return
+        self.buffer += cleaned
 
         while self.buffer:
             if not self.in_tool_tag:
@@ -158,7 +163,7 @@ class StreamEmulationProcessor:
                 if open_idx != -1:
                     # Emit everything before OPEN_TAG as normal content
                     pre_text = self.buffer[:open_idx]
-                    if pre_text:
+                    if pre_text and pre_text.strip():
                         async for c in self._emit_content(pre_text):
                             yield c
                             if self.stop_triggered or self.length_triggered:
@@ -274,6 +279,10 @@ class StreamEmulationProcessor:
                 yield c
             return
 
+        # Suppress re-invocation of tools whose results were already provided in synthesis phase
+        if self.is_synthesis_phase and parsed["name"] in self.executed_tools:
+            return
+
         call_id = f"call_{uuid.uuid4().hex[:12]}"
         func_name = parsed["name"]
         arguments_str = (
@@ -317,8 +326,9 @@ class StreamEmulationProcessor:
                     yield c
         elif self.buffer:
             # Remaining buffered text (like unmatched prefix '<')
-            async for c in self._emit_content(self.buffer):
-                yield c
+            if not self.tool_calls_emitted or self.buffer.strip():
+                async for c in self._emit_content(self.buffer):
+                    yield c
             self.buffer = ""
 
         # Determine finish reason
@@ -363,6 +373,10 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
 
     stop_sequences: list[str] = context.get("stop", [])
     max_tokens: int | None = context.get("max_tokens")
+    is_synthesis_phase: bool = context.get("is_synthesis_phase", False)
+    executed_tools: set[str] = set(context.get("executed_tool_names", []))
+
+    raw_content = raw_content.replace("<escape>", "").replace("</escape>", "")
 
     # 1. Enforce stop sequences
     if stop_sequences:
@@ -380,6 +394,9 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
         for i, match in enumerate(matches):
             parsed = parse_tool_payload(match)
             if parsed:
+                if is_synthesis_phase and parsed["name"] in executed_tools:
+                    continue
+
                 call_id = f"call_{uuid.uuid4().hex[:12]}"
                 args_str = (
                     json.dumps(parsed["arguments"])
@@ -395,13 +412,21 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
                     },
                 })
 
+        clean_content = pattern.sub("", raw_content).strip()
+
         if tool_calls:
-            # Strip tags from content
-            clean_content = pattern.sub("", raw_content).strip()
             message["content"] = clean_content if clean_content else None
             message["tool_calls"] = tool_calls
             choice["message"] = message
             choice["finish_reason"] = "tool_calls"
+            resp["choices"] = [choice]
+            return resp
+        elif clean_content:
+            # All tool calls were suppressed echoes; emit synthesized content
+            message["content"] = clean_content
+            message.pop("tool_calls", None)
+            choice["message"] = message
+            choice["finish_reason"] = "stop"
             resp["choices"] = [choice]
             return resp
 

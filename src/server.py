@@ -183,11 +183,19 @@ async def chat_completions(req: ChatCompletionRequest):
                     token_count += 1
                     yield chunk
             except Exception as e:
+                log.exception("Streaming completions error: %s", e)
                 await broadcast_event("request_error", {
                     "id": request_id,
                     "error": str(e),
                 })
-                raise e
+                error_payload = json.dumps({
+                    "error": {
+                        "message": str(e),
+                        "type": type(e).__name__,
+                        "code": 403 if "flagged" in str(e).lower() or "403" in str(e) else 500,
+                    }
+                })
+                yield f"data: {error_payload}\n\n"
             finally:
                 await broadcast_event("request_end", {
                     "id": request_id,
