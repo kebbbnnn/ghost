@@ -35,6 +35,7 @@ from .converter import (
     format_openai_chunk,
 )
 from .tot import TreeOfThoughtsEngine
+from src.core.debug_logger import get_current_trace
 
 log = logging.getLogger(__name__)
 
@@ -361,6 +362,10 @@ class GeminiProvider(BaseProvider):
             "X-Same-Domain": "1",
         }
 
+        trace = get_current_trace()
+        if trace:
+            trace.log_upstream_request("Gemini", STREAM_GENERATE_URL, prompt)
+
         try:
             resp = await http.post(
                 STREAM_GENERATE_URL,
@@ -368,7 +373,11 @@ class GeminiProvider(BaseProvider):
                 content=body,
                 headers=headers,
             )
+            if trace:
+                trace.log_upstream_response(resp.status_code, resp.text)
         except httpx.HTTPError as e:
+            if trace:
+                trace.log_error(e)
             raise ProviderError(f"HTTP request to Gemini failed: {e}")
 
         # Increment request ID for next call

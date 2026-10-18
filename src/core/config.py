@@ -17,6 +17,21 @@ DATA_DIR = os.environ.get(
 
 THREADS_FILE = os.path.join(DATA_DIR, "threads.json")
 
+RAW_LOG_FILE = os.environ.get(
+    "GHOSTTUNNEL_RAW_LOG_FILE",
+    os.path.join(_PROJECT_ROOT, "debug_raw.log"),
+)
+
+RAW_LOG_LATEST_FILE = os.environ.get(
+    "GHOSTTUNNEL_RAW_LOG_LATEST_FILE",
+    os.path.join(_PROJECT_ROOT, "debug_raw_latest.log"),
+)
+
+RAW_LOGGING_ENABLED = os.environ.get(
+    "GHOSTTUNNEL_RAW_LOGGING",
+    "true",
+).lower() in ("true", "1", "yes", "on")
+
 # Ensure the data directory exists on import
 os.makedirs(DATA_DIR, exist_ok=True)
 

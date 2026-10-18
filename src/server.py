@@ -51,6 +51,7 @@ from src.converters.anthropic import (
     openai_to_anthropic_stream,
     openai_to_anthropic_json,
 )
+from src.core.debug_logger import start_trace, get_current_trace
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -155,14 +156,18 @@ class ChatCompletionRequest(BaseModel):
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest):
+    request_id = str(time.time())
+    trace = start_trace(request_id, "POST /v1/chat/completions", model=req.model, stream=req.stream)
+    trace.log_client_request(req.model_dump())
+
     # Route to the correct provider based on requested model
     provider = get_provider_for_model(req.model)
     if not provider:
+        trace.log_error(f"No provider supports model '{req.model}'")
+        trace.finish()
         raise HTTPException(status_code=400, detail=f"No provider supports model '{req.model}'")
 
     messages, emulation_ctx = EmulationPipeline.prepare_request(req)
-
-    request_id = str(time.time())
 
     if req.stream:
         raw_stream = provider.stream_chat(
@@ -181,9 +186,11 @@ async def chat_completions(req: ChatCompletionRequest):
             try:
                 async for chunk in emulated_stream:
                     token_count += 1
+                    trace.log_client_chunk(chunk)
                     yield chunk
             except Exception as e:
                 log.exception("Streaming completions error: %s", e)
+                trace.log_error(e)
                 await broadcast_event("request_error", {
                     "id": request_id,
                     "error": str(e),
@@ -195,8 +202,11 @@ async def chat_completions(req: ChatCompletionRequest):
                         "code": 403 if "flagged" in str(e).lower() or "403" in str(e) else 500,
                     }
                 })
-                yield f"data: {error_payload}\n\n"
+                error_chunk = f"data: {error_payload}\n\n"
+                trace.log_client_chunk(error_chunk)
+                yield error_chunk
             finally:
+                trace.finish()
                 await broadcast_event("request_end", {
                     "id": request_id,
                     "tokens": token_count,
@@ -223,23 +233,28 @@ async def chat_completions(req: ChatCompletionRequest):
                 messages, req.model, req.conversation_id, req.parent_message_id
             )
             resp_dict = EmulationPipeline.wrap_non_streaming(raw_resp, emulation_ctx)
+            trace.log_client_response(resp_dict)
             await broadcast_event("request_end", {
                 "id": request_id,
             })
             return JSONResponse(resp_dict)
         except RateLimitError as e:
+            trace.log_error(e)
             await broadcast_event("request_error", {
                 "id": request_id,
                 "error": str(e),
             })
             raise HTTPException(status_code=429, detail=str(e))
         except Exception as e:
+            trace.log_error(e)
             log.exception("Non-streaming error")
             await broadcast_event("request_error", {
                 "id": request_id,
                 "error": str(e),
             })
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            trace.finish()
 
 
 
@@ -312,6 +327,13 @@ async def video_chat(
         raise HTTPException(status_code=400, detail=f"No provider supports model '{model}'")
 
     request_id = str(time.time())
+    trace = start_trace(request_id, "POST /api/video/chat", model=model, stream=True)
+    trace.log_client_request({
+        "prompt": prompt,
+        "model": model,
+        "video": video.filename,
+        "keyframes_count": len(keyframes),
+    })
 
     # Stream the response (same SSE format as /v1/chat/completions)
     async def video_stream_generator():
@@ -327,14 +349,17 @@ async def video_chat(
         try:
             async for chunk in provider.stream_chat(messages, model, conversation_id, parent_message_id):
                 token_count += 1
+                trace.log_client_chunk(chunk)
                 yield chunk
         except Exception as e:
+            trace.log_error(e)
             await broadcast_event("request_error", {
                 "id": request_id,
                 "error": str(e),
             })
             raise e
         finally:
+            trace.finish()
             await broadcast_event("request_end", {
                 "id": request_id,
                 "tokens": token_count,
@@ -362,15 +387,26 @@ async def anthropic_messages(req: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    request_id = str(time.time())
+    stream = body.get("stream", False)
+    model = body.get("model", "auto")
+    trace = start_trace(request_id, "POST /v1/messages", model=model, stream=stream)
+    trace.log_client_request(body)
+
     try:
         openai_req = anthropic_to_openai_request(body)
     except Exception as e:
         log.exception("Error converting Anthropic request")
+        trace.log_error(e)
+        trace.finish()
         raise HTTPException(status_code=400, detail=str(e))
 
     model = openai_req.get("model", "auto")
+    trace.model = model
     provider = get_provider_for_model(model)
     if not provider:
+        trace.log_error(f"No provider supports model '{model}'")
+        trace.finish()
         raise HTTPException(status_code=400, detail=f"No provider supports model '{model}'")
 
     messages = openai_req.get("messages", [])
@@ -378,8 +414,6 @@ async def anthropic_messages(req: Request):
     max_tokens = openai_req.get("max_tokens")
     stop_sequences = openai_req.get("stop", [])
     input_tokens = openai_req.get("_estimated_input_tokens", 0)
-
-    request_id = str(time.time())
 
     conversation_id = body.get("conversation_id")
     parent_message_id = body.get("parent_message_id")
@@ -406,9 +440,11 @@ async def anthropic_messages(req: Request):
                     input_tokens=input_tokens,
                 ):
                     token_count += 1
+                    trace.log_client_chunk(chunk)
                     yield chunk
             except Exception as e:
                 log.exception("Streaming Anthropic error: %s", e)
+                trace.log_error(e)
                 await broadcast_event("request_error", {
                     "id": request_id,
                     "error": str(e),
@@ -420,8 +456,11 @@ async def anthropic_messages(req: Request):
                         "message": str(e)
                     }
                 })
-                yield f"event: error\ndata: {error_payload}\n\n"
+                err_chunk = f"event: error\ndata: {error_payload}\n\n"
+                trace.log_client_chunk(err_chunk)
+                yield err_chunk
             finally:
+                trace.finish()
                 await broadcast_event("request_end", {
                     "id": request_id,
                     "tokens": token_count,
@@ -454,6 +493,7 @@ async def anthropic_messages(req: Request):
                 stop_sequences=stop_sequences,
                 input_tokens=input_tokens,
             )
+            trace.log_client_response(anthropic_resp)
             out_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)
             await broadcast_event("request_end", {
                 "id": request_id,
@@ -461,12 +501,16 @@ async def anthropic_messages(req: Request):
             })
             return JSONResponse(anthropic_resp)
         except RateLimitError as e:
+            trace.log_error(e)
             await broadcast_event("request_error", {"id": request_id, "error": str(e)})
             raise HTTPException(status_code=429, detail=str(e))
         except Exception as e:
+            trace.log_error(e)
             await broadcast_event("request_error", {"id": request_id, "error": str(e)})
             log.exception("Non-streaming error")
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            trace.finish()
 
 
 

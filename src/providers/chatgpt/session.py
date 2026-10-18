@@ -38,6 +38,7 @@ from .sentinel.token_generator import (
 )
 
 from .uploader import preprocess_images
+from src.core.debug_logger import get_current_trace, start_trace
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,13 @@ class ChatGPTProvider(BaseProvider):
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         content_tracker = []
 
+        trace = get_current_trace()
+        auto_trace = False
+        if trace is None:
+            trace = start_trace(f"chatgpt-{uuid.uuid4().hex[:8]}", "ChatGPTProvider.stream_chat", model=model, stream=True)
+            trace.log_client_request({"messages": messages, "model": model})
+            auto_trace = True
+
         try:
             for attempt in range(2):
                 try:
@@ -96,7 +104,10 @@ class ChatGPTProvider(BaseProvider):
                                 else:
                                     chunk["choices"][0]["delta"].pop("content", None)
 
-                        yield format_openai_chunk(chunk)
+                        formatted_chunk = format_openai_chunk(chunk)
+                        if auto_trace and trace:
+                            trace.log_client_chunk(formatted_chunk)
+                        yield formatted_chunk
 
                         if choices and choices[0].get("finish_reason"):
                             break
@@ -112,13 +123,28 @@ class ChatGPTProvider(BaseProvider):
                         raise
         except RateLimitError:
             error_chunk = {"error": {"message": "Rate limited by ChatGPT", "type": "rate_limit_error"}}
-            yield f"data: {json.dumps(error_chunk)}\n\n"
+            err_formatted = f"data: {json.dumps(error_chunk)}\n\n"
+            if auto_trace and trace:
+                trace.log_client_chunk(err_formatted)
+                trace.log_error("Rate limited by ChatGPT")
+            yield err_formatted
         except Exception as exc:
             log.exception("Stream error")
+            if auto_trace and trace:
+                trace.log_error(exc)
             error_chunk = {"error": {"message": str(exc), "type": "server_error"}}
-            yield f"data: {json.dumps(error_chunk)}\n\n"
+            err_formatted = f"data: {json.dumps(error_chunk)}\n\n"
+            if auto_trace and trace:
+                trace.log_client_chunk(err_formatted)
+            yield err_formatted
+        finally:
+            if auto_trace and trace:
+                trace.finish()
 
-        yield "data: [DONE]\n\n"
+        done_chunk = "data: [DONE]\n\n"
+        if auto_trace and trace:
+            trace.log_client_chunk(done_chunk)
+        yield done_chunk
 
     async def non_streaming_chat(
         self,
@@ -130,6 +156,13 @@ class ChatGPTProvider(BaseProvider):
         target_model = map_model(model)
         full_content = ""
         finish_reason = "stop"
+
+        trace = get_current_trace()
+        auto_trace = False
+        if trace is None:
+            trace = start_trace(f"chatgpt-{uuid.uuid4().hex[:8]}", "ChatGPTProvider.non_streaming_chat", model=model, stream=False)
+            trace.log_client_request({"messages": messages, "model": model})
+            auto_trace = True
 
         try:
             for attempt in range(2):
@@ -160,13 +193,22 @@ class ChatGPTProvider(BaseProvider):
                         await self.ensure_ready()
                     else:
                         raise
-        except RateLimitError:
+            resp = build_non_streaming_response(full_content, target_model, finish_reason)
+            if auto_trace and trace:
+                trace.log_client_response(resp)
+            return resp
+        except RateLimitError as e:
+            if auto_trace and trace:
+                trace.log_error(e)
             raise RateLimitError("Rate limited by ChatGPT")
         except Exception as exc:
             log.exception("Non-streaming error")
+            if auto_trace and trace:
+                trace.log_error(exc)
             raise
-
-        return build_non_streaming_response(full_content, target_model, finish_reason)
+        finally:
+            if auto_trace and trace:
+                trace.finish()
 
     def _get_incremental_text(self, tracker: list, new_full_text: str) -> str:
         prev = tracker[0] if tracker else ""
@@ -596,6 +638,10 @@ class ChatGPTProvider(BaseProvider):
             try:
                 conversation_url = CONVERSATION_URL_FILES if has_images else CONVERSATION_URL
                 log.info("Requesting conversation from URL: %s", conversation_url)
+                trace = get_current_trace()
+                if trace:
+                    trace.log_upstream_request("ChatGPT", conversation_url, body, attempt=attempt + 1)
+
                 async with session.stream(
                     "POST",
                     conversation_url,
@@ -603,6 +649,8 @@ class ChatGPTProvider(BaseProvider):
                     json=body,
                 ) as resp:
                     if resp.status_code == 429:
+                        if trace:
+                            trace.log_upstream_response(429, "ChatGPT rate limit hit (429)")
                         raise RateLimitError("ChatGPT rate limit hit (429)")
                     if resp.status_code in (401, 403):
                         body_bytes = b""
@@ -610,6 +658,8 @@ class ChatGPTProvider(BaseProvider):
                             body_bytes = await resp.acontent()
                         except Exception as e:
                             log.warning(f"Failed to read error body: {e}")
+                        if trace:
+                            trace.log_upstream_response(resp.status_code, body_bytes.decode('utf-8', errors='ignore'))
                         log.warning(
                             f"POST to conversation returned {resp.status_code}. "
                             f"CF-Ray: {resp.headers.get('cf-ray', 'n/a')}. "
@@ -634,6 +684,8 @@ class ChatGPTProvider(BaseProvider):
                     if resp.status_code == 404 and conversation_id:
                         # Stale conversation — start fresh
                         log.warning("404 on conversation %s — resetting state", conversation_id)
+                        if trace:
+                            trace.log_upstream_response(404, "Stale conversation — resetting state")
                         conversation_id = None
                         parent_message_id = None
                         body.pop("conversation_id", None)
@@ -654,12 +706,17 @@ class ChatGPTProvider(BaseProvider):
                                 body_text += chunk.decode("utf-8") + "\n"
                         except:
                             pass
+                        if trace:
+                            trace.log_upstream_response(resp.status_code, body_text)
                         log.error(f"HTTP {resp.status_code} Error Body: {body_text}")
                         resp.raise_for_status()
 
                     async for chunk in resp.aiter_lines():
                         if chunk:
-                            yield chunk.decode("utf-8")
+                            line_str = chunk.decode("utf-8")
+                            if trace:
+                                trace.log_upstream_chunk(line_str)
+                            yield line_str
                     break
             except HTTPError as e:
                 status = getattr(getattr(e, "response", None), "status_code", None)
