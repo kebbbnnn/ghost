@@ -126,18 +126,23 @@ def anthropic_to_openai_request(req: dict) -> dict:
     last_content = last_msg.get("content", "")
 
     has_pending_tool_results = False
+    has_error_tool_results = False
     if last_msg.get("role") == "user":
         if isinstance(last_content, list):
             has_pending_tool_results = any(
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in last_content
             )
+            has_error_tool_results = any(
+                isinstance(b, dict) and b.get("type") == "tool_result" and b.get("is_error", False) for b in last_content
+            )
         elif isinstance(last_content, str):
             has_pending_tool_results = "<tool_result" in last_content
+            has_error_tool_results = 'is_error="true"' in last_content or "<tool_use_error>" in last_content
 
     tools = req.get("tools", [])
     tool_choice = req.get("tool_choice", {})
     t_choice_type = tool_choice.get("type") if isinstance(tool_choice, dict) else None
-    is_synthesis_phase = bool(tools and has_pending_tool_results and t_choice_type not in ("any", "tool"))
+    is_synthesis_phase = bool(tools and has_pending_tool_results and not has_error_tool_results and t_choice_type not in ("any", "tool"))
 
     if tools and t_choice_type != "none":
         tools_xml = _build_tools_xml(tools)
@@ -158,13 +163,16 @@ def anthropic_to_openai_request(req: dict) -> dict:
                 "CRITICAL MODE: TOOL_CALL_REQUIRED.\n"
                 "You are an automated API proxy running in a sandbox environment with NO web access, NO python access, and NO UI widgets.\n"
                 "DO NOT attempt to search the web, execute internal scripts, or render widgets/card links. Any direct markdown answer before required tool execution is invalid.\n"
+                "DO NOT attempt to use Google Drive, Google Workspace, or Gmail. You are running in a local developer environment.\n"
+                "When asked to build, write, create, or save code or files, you MUST invoke tools (e.g. Write or Edit) to write files to disk directly rather than outputting code blocks.\n"
                 "You have access to the following tools:\n"
                 f"{tools_xml}\n\n"
-                "Your task: For any user request that requires calculations, external data, weather, time, or actions, you MUST emit tool invocation blocks.\n"
+                "Your task: For any user request that requires creating files, writing code, editing code, executing commands, calculations, external data, or actions, you MUST emit tool invocation blocks.\n"
                 "MANDATORY PROTOCOL RULES:\n"
-                "1. Even if the user repeats a query or asks something already discussed in the chat history, you MUST emit fresh tool invocation blocks.\n"
-                "2. NEVER answer directly using previous conversation context or Google search cards when tools are available.\n"
-                "3. You may emit either:\n"
+                "1. When creating or saving files, call the Write tool with file_path and content.\n"
+                "2. When executing commands, call the Bash tool.\n"
+                "3. Ensure all required parameters are provided in your tool arguments.\n"
+                "4. You may emit either:\n"
                 '<tool_call>{"name": "tool_name", "arguments": {"param_name": "value"}}</tool_call>\n'
                 "or:\n"
                 '<invoke name="tool_name">\n'

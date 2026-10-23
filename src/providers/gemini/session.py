@@ -461,8 +461,9 @@ class GeminiProvider(BaseProvider):
                 if "TOOL_CALL_REQUIRED" in system_prefix:
                     directive_reinforcement = (
                         "\n\n[MANDATORY RULE]: Emit fresh <tool_call> tags for this query. "
-                        "Even if this repeats a previous query, you MUST invoke tools again. "
-                        "Do not answer directly or use previous turn answers."
+                        "If the user asks to build, create, or save code or files, you MUST invoke the Write, Edit, or Bash tools to write to disk. "
+                        "Do NOT use Google Drive or Gmail. "
+                        "Do not answer directly with markdown code blocks when files should be written."
                     )
                 return f"[System Instructions]:\n{system_prefix}\n\n{latest_turn_text}{directive_reinforcement}"
             return latest_turn_text
@@ -478,9 +479,11 @@ class GeminiProvider(BaseProvider):
         # so multi-turn conversations do not suffer from attention dilution.
         if system_prefix and "TOOL_CALL_REQUIRED" in system_prefix:
             prompt_parts.append(
-                f"[ACTIVE DIRECTIVE FOR CURRENT TURN]:\n{system_prefix}\n\n"
-                "MANDATORY: Emit fresh <tool_call> tags for the current query above. "
-                "Even if the query repeats an earlier question or asks for information already answered in the chat history, you MUST emit fresh <tool_call> tags. "
+                "[ACTIVE DIRECTIVE FOR CURRENT TURN]:\n"
+                "MANDATORY: Emit fresh <tool_call> tags for the current query above.\n"
+                "If the user asks to build, create, or save code or files, you MUST invoke tools (e.g. Write, Edit, or Bash) to write to disk. "
+                "DO NOT output code blocks directly in chat when files should be saved.\n"
+                "DO NOT attempt to use Google Drive, Google Workspace, or Gmail.\n"
                 "Output ONLY <tool_call> tags, nothing else."
             )
         elif system_prefix and "SYNTHESIS PHASE" in system_prefix:
