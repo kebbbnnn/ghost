@@ -293,14 +293,12 @@ function triggerRoutingAnimation(model, active) {
     
     const lines = {
         chatgpt: document.getElementById('line-proxy-chatgpt'),
-        gemini: document.getElementById('line-proxy-gemini'),
-        perplexity: document.getElementById('line-proxy-perplexity')
+        gemini: document.getElementById('line-proxy-gemini')
     };
     
     const nodes = {
         chatgpt: document.getElementById('node-chatgpt'),
-        gemini: document.getElementById('node-gemini'),
-        perplexity: document.getElementById('node-perplexity')
+        gemini: document.getElementById('node-gemini')
     };
 
     // Reset all
@@ -323,8 +321,6 @@ function triggerRoutingAnimation(model, active) {
             let provider = 'chatgpt';
             if (lowerModel.startsWith('gemini')) {
                 provider = 'gemini';
-            } else if (lowerModel.startsWith('perplexity')) {
-                provider = 'perplexity';
             }
             if (lines[provider]) lines[provider].classList.add('active');
             if (nodes[provider]) nodes[provider].classList.add('active');

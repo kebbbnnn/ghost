@@ -49,21 +49,8 @@ MODEL_PROFILES = {
             "May miss edge cases in complex reasoning chains",
         ],
     },
-    "perplexity": {
-        "provider": "perplexity",
-        "display_name": "Perplexity",
-        "strengths": [
-            "Real-time web search and current events lookup",
-            "Fact-checking and finding up-to-date information",
-            "Locating and citing source URLs",
-            "Answering questions about news, weather, and live data",
-        ],
-        "weaknesses": [
-            "May lack deep offline coding and mathematical reasoning compared to ChatGPT",
-            "Not suited for large-scale creative generation or open-ended chats",
-        ],
-    },
 }
+
 
 
 def _build_model_profiles_text(available_models: list[str]) -> str:

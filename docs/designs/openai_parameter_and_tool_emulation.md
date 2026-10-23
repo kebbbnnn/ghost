@@ -3,7 +3,7 @@
 ## 1. Overview & Understanding Summary
 
 - **What:** A decoupled, universal parameter emulation and tool-calling engine for Ghost.
-- **Why:** Reverse-engineered anonymous AI web endpoints (ChatGPT, Gemini, Perplexity) do not support OpenAI JSON schema tool calling or hyperparameter tuning (`temperature`, `top_p`, `stop`, `max_tokens`). Modern agentic tools (Cursor, Claude Code, Aider, LangChain, OpenAI SDKs) require these features to function without throwing `422 Unprocessable Entity` or failing multi-turn agent loops.
+- **Why:** Reverse-engineered anonymous AI web endpoints (ChatGPT, Gemini) do not support OpenAI JSON schema tool calling or hyperparameter tuning (`temperature`, `top_p`, `stop`, `max_tokens`). Modern agentic tools (Cursor, Claude Code, Aider, LangChain, OpenAI SDKs) require these features to function without throwing `422 Unprocessable Entity` or failing multi-turn agent loops.
 - **Who:** Developers and automated coding agents utilizing Ghost as an OpenAI-compatible drop-in proxy.
 - **Key Constraints:** 
   - Must not break fragile reverse-engineered web payloads.
@@ -45,7 +45,7 @@
 | **Tool Calling Fidelity** | Full Agentic Tool Calling | Single-turn only; General parameters first | Modern dev workflows require multi-turn agent loops (`tool_calls` $\rightarrow$ `role: "tool"` $\rightarrow$ final answer). |
 | **Streaming Interception** | Streaming Window Buffer | Full Chunk Buffering; Post-process Passthrough | Zero added latency for regular text generation; cleanly suppresses raw `<tool_call>` tags from leaking into `content`. |
 | **Hyperparameter Strategy** | Prompt Steering + Truncation | Silent acceptance; Strict schema rejection | Steers model behavior according to `temperature` bounds while strictly enforcing `stop` and `max_tokens` client-side. |
-| **Architecture Placement** | Core Proxy Emulation Pipeline | Provider Inheritance Hooks; Two-Phase ReAct Orchestrator | Fully decoupled from fragile reverse-engineered session logic; reusable across ChatGPT, Gemini, Perplexity, and Spectre with zero code duplication. |
+| **Architecture Placement** | Core Proxy Emulation Pipeline | Provider Inheritance Hooks; Two-Phase ReAct Orchestrator | Fully decoupled from fragile reverse-engineered session logic; reusable across ChatGPT, Gemini, and Spectre with zero code duplication. |
 
 ---
 

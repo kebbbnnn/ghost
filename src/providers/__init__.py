@@ -1,19 +1,16 @@
 from .chatgpt.session import ChatGPTProvider
 from .gemini.session import GeminiProvider
 from .spectre.session import SpectreProvider
-from .perplexity.session import PerplexityProvider
 
 # The ProviderRegistry holds instances of all available providers.
 _chatgpt = ChatGPTProvider()
 _gemini = GeminiProvider()
 _spectre = SpectreProvider()
-_perplexity = PerplexityProvider()
 
 PROVIDERS = [
     _chatgpt,
     _gemini,
     _spectre,
-    _perplexity,
 ]
 
 # Map provider classes to their instances for routing
@@ -38,7 +35,6 @@ def get_provider_for_model(model_name: str):
     Routes based on model name prefix:
       - spectre*    → SpectreProvider
       - gemini*     → GeminiProvider
-      - perplexity* → PerplexityProvider
       - gpt-*, auto, or anything else → ChatGPTProvider (default)
     """
     name = model_name.lower().strip()
@@ -49,9 +45,7 @@ def get_provider_for_model(model_name: str):
     if name.startswith("gemini"):
         return _PROVIDER_MAP.get(GeminiProvider)
 
-    if name.startswith("perplexity"):
-        return _PROVIDER_MAP.get(PerplexityProvider)
-
     # Default to ChatGPT for gpt-*, auto, and unknown models
     return _PROVIDER_MAP.get(ChatGPTProvider)
+
 
