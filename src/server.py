@@ -193,7 +193,7 @@ def make_anthropic_error_response(
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     path = request.url.path
-    if path.startswith("/v1/messages"):
+    if "messages" in path:
         return make_anthropic_error_response(str(exc), status_code=400)
     elif path.startswith("/v1/chat/completions"):
         return make_openai_error_response(str(exc), status_code=400)
@@ -532,6 +532,8 @@ async def video_chat(
 # ---------------------------------------------------------------------------
 
 @app.post("/v1/messages")
+@app.post("/v1/v1/messages")
+@app.post("/messages")
 async def anthropic_messages(req: Request):
     request_id = str(time.time())
     try:

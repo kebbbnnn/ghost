@@ -181,3 +181,26 @@ def test_anthropic_validation_error_response_fidelity(client):
     assert data["type"] == "error"
     assert "error" in data
     assert data["error"]["type"] == "invalid_request_error"
+
+
+def test_anthropic_route_aliases(client, monkeypatch):
+    """Verify /v1/messages, /v1/v1/messages, and /messages all route correctly."""
+    from src.providers.chatgpt.session import ChatGPTProvider
+
+    async def mock_stream_chat(self, messages, model, conversation_id=None, parent_message_id=None):
+        yield 'data: {"id":"chatcmpl-123","choices":[{"delta":{"content":"Hi"}}]}\n\n'
+        yield 'data: [DONE]\n\n'
+
+    monkeypatch.setattr(ChatGPTProvider, "stream_chat", mock_stream_chat)
+
+    payload = {
+        "model": "auto",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "stream": True,
+    }
+
+    for path in ["/v1/messages", "/v1/v1/messages", "/messages"]:
+        resp = client.post(path, json=payload)
+        assert resp.status_code == 200, f"Failed on path {path}"
+        assert resp.headers.get("content-type", "").startswith("text/event-stream")
+
