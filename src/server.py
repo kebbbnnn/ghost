@@ -233,7 +233,12 @@ async def get_model(model_id: str):
     for m in models:
         if m["id"] == model_id:
             return m
-    raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
+    return make_openai_error_response(
+        f"Model '{model_id}' not found",
+        status_code=404,
+        error_type="invalid_request_error",
+        code="model_not_found",
+    )
 
 
 # ---------------------------------------------------------------------------

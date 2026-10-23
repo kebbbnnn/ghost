@@ -251,6 +251,8 @@ class EmulationPipeline:
                 tool_prompt = (
                     "[SYSTEM: HEADLESS API GATEWAY]\n"
                     "SYNTHESIS PHASE: External tool execution is COMPLETE. The results are provided above in [Tool Results].\n"
+                    "DESIRED RESPONSE FORMAT: Respond strictly in standard markdown text only.\n"
+                    "Do NOT output GenUI components, interactive React/JSX widgets, or custom XML/HTML tags.\n"
                     "CRITICAL PROTOCOL RULES:\n"
                     "1. Provide the direct, complete, and final answer to the user's inquiry based on the [Tool Results] provided in the conversation.\n"
                     "2. DO NOT invoke or emit any <tool_call> tags. Tool execution has already finished.\n"
@@ -264,8 +266,14 @@ class EmulationPipeline:
                     "You are an automated API proxy that converts user input into JSON RPC tool calls.\n"
                     "You are running in a sandbox environment with NO web access, NO python access, and NO UI widgets.\n"
                     "DO NOT attempt to call web.run or functions.exec or render widgets. Any markdown output is invalid.\n"
+                    "DO NOT emit GenUI tags, interactive components, or custom XML/JSX tags.\n"
                     "Available external RPC tools:\n"
                     f"{signatures_text}\n\n"
+                    "PARALLEL & MULTI-TOOL CALLS:\n"
+                    "If the user request contains multiple tasks or inquiries, you MUST emit multiple <tool_call> tags in sequence.\n"
+                    "Example of parallel tool calls:\n"
+                    '<tool_call>{"name": "get_current_time", "arguments": {"timezone": "Asia/Tokyo"}}</tool_call>\n'
+                    '<tool_call>{"name": "calculator", "arguments": {"expression": "450 * 1.15"}}</tool_call>\n\n'
                     "Your task: Emit the necessary <tool_call> tags for the user's request.\n"
                     "MANDATORY PROTOCOL RULES:\n"
                     "1. Even if the user query repeats or asks for information already answered earlier in the chat history, you MUST emit fresh <tool_call> tags.\n"

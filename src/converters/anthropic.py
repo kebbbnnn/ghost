@@ -98,6 +98,9 @@ def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
 
 def anthropic_to_openai_request(req: dict) -> dict:
     """Convert Anthropic Messages API request to OpenAI chat completions format with parameter emulation."""
+    if "messages" not in req or not isinstance(req["messages"], list):
+        raise ValueError("'messages' is a required field and must be a list")
+
     messages = []
     total_input_chars = 0
 

@@ -21,6 +21,66 @@ log = logging.getLogger(__name__)
 OPEN_TAG = "<tool_call>"
 CLOSE_TAG = "</tool_call>"
 
+GENUI_TAG_PATTERN = re.compile(
+    r'(```[\s\S]*?```|`[^`\n]*`)|<([A-Z][a-zA-Z0-9_]*)\b([^>]*?)(?:\/>|>(?:(.*?)(?:<\/\2>))|>)',
+    re.DOTALL
+)
+
+GENUI_OPEN_PATTERN = re.compile(r'<([A-Z][a-zA-Z0-9_]*)\b([^>]*?)(?:\/>|>(?:(.*?)(?:<\/\1>))|>)', re.DOTALL)
+
+
+def sanitize_genui_tags(text: str) -> str:
+    """Sanitize GenUI React widget tags into human-readable text."""
+    if not text:
+        return ""
+
+    framework_attrs = {
+        'mode', 'duration', 'locale', 'key', 'resolutionid', '__resolutionid',
+        'version', 'id', 'ref', 'classname', 'class', 'style', 'time_format', 'format',
+        'lang', 'interactive', 'disabled'
+    }
+
+    def replacer(m):
+        code_block = m.group(1)
+        if code_block:
+            return code_block
+        attrs_str = m.group(3) or ""
+        inner_content = m.group(4)
+        if inner_content is not None and inner_content.strip():
+            return inner_content.strip()
+
+        attr_regex = re.compile(r'([a-zA-Z0-9_-]+)=(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))')
+        attrs = {}
+        for am in attr_regex.finditer(attrs_str):
+            key = am.group(1)
+            val = (
+                am.group(2) if am.group(2) is not None
+                else (am.group(3) if am.group(3) is not None else (am.group(4) or ""))
+            ).strip()
+            if val and not val.startswith('{') and key.lower() not in framework_attrs:
+                attrs[key] = val
+
+        if not attrs:
+            return ""
+
+        primary_keys = ['location', 'city', 'title', 'name', 'label', 'symbol', 'query', 'flight']
+        primary_key = next((k for k in primary_keys if k in attrs), next(iter(attrs)))
+        primary_val = attrs.pop(primary_key)
+
+        remaining = []
+        for k, v in attrs.items():
+            if k in ('tz_name', 'timezone'):
+                remaining.append(v)
+            else:
+                clean_key = k.replace('_', ' ').title()
+                remaining.append(f"{clean_key}: {v}")
+
+        if remaining:
+            return f"**{primary_val}** ({', '.join(remaining)})"
+        return f"**{primary_val}**"
+
+    return GENUI_TAG_PATTERN.sub(replacer, text)
+
 
 def _sanitize_json_string(raw: str) -> str:
     """Tolerant cleaner for LLM JSON outputs (fixes unescaped newlines, trailing commas)."""
@@ -207,7 +267,37 @@ class StreamEmulationProcessor:
                     self.buffer = self.buffer[open_idx + len(OPEN_TAG):]
                     continue
 
-                # Not found: check if buffer ends with a potential prefix of OPEN_TAG
+                # Not found: check if buffer contains a GenUI component tag or incomplete GenUI tag
+                genui_match = re.search(r'<[A-Z]', self.buffer)
+                if genui_match:
+                    start_idx = genui_match.start()
+                    if start_idx > 0:
+                        safe_text = self.buffer[:start_idx]
+                        self.buffer = self.buffer[start_idx:]
+                        if safe_text:
+                            async for c in self._emit_content(safe_text):
+                                yield c
+                                if self.stop_triggered or self.length_triggered:
+                                    return
+                        continue
+
+                    # Buffer starts with <[A-Z]; check if the tag is complete
+                    gm = GENUI_OPEN_PATTERN.match(self.buffer)
+                    if gm:
+                        full_tag = gm.group(0)
+                        sanitized = sanitize_genui_tags(full_tag)
+                        self.buffer = self.buffer[gm.end():]
+                        if sanitized:
+                            async for c in self._emit_content(sanitized):
+                                yield c
+                                if self.stop_triggered or self.length_triggered:
+                                    return
+                        continue
+                    else:
+                        # Incomplete GenUI tag; wait for more stream chunks
+                        break
+
+                # Check if buffer ends with a potential prefix of OPEN_TAG
                 match_prefix_len = 0
                 for length in range(min(len(OPEN_TAG) - 1, len(self.buffer)), 0, -1):
                     if OPEN_TAG.startswith(self.buffer[-length:]):
@@ -362,9 +452,10 @@ class StreamEmulationProcessor:
                 async for c in self._emit_tool_call(full_tool_payload):
                     yield c
         elif self.buffer:
-            # Remaining buffered text (like unmatched prefix '<')
-            if not self.tool_calls_emitted or self.buffer.strip():
-                async for c in self._emit_content(self.buffer):
+            # Remaining buffered text (like unmatched prefix '<' or partial GenUI tag)
+            cleaned_remaining = sanitize_genui_tags(self.buffer)
+            if not self.tool_calls_emitted or cleaned_remaining.strip():
+                async for c in self._emit_content(cleaned_remaining):
                     yield c
             self.buffer = ""
 
@@ -425,6 +516,7 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
         r.setdefault("system_fingerprint", f"fp_ghost_{uuid.uuid4().hex[:10]}")
         ch.setdefault("index", 0)
         ch.setdefault("logprobs", None)
+        ch.setdefault("finish_reason", "stop")
 
         prompt_tokens = context.get("prompt_tokens", 0)
         final_text = msg.get("content") or ""
@@ -449,6 +541,7 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
 
     raw_content = raw_content.replace("<escape>", "").replace("</escape>", "")
     raw_content = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", raw_content)
+    raw_content = sanitize_genui_tags(raw_content)
 
     # 1. Enforce stop sequences
     if stop_sequences:

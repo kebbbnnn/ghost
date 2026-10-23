@@ -51,6 +51,11 @@ MODELS_URL = f"{BASE_URL}/backend-anon/models"
 # Chat requirements token must be fresh per request flow to prevent fingerprinting; TTL set to 5s
 TOKEN_TTL_SECONDS = 5
 
+CHATGPT_BASE_DIRECTIVE = (
+    "Desired Response Format: Respond strictly in standard markdown text only.\n"
+    "Do NOT output GenUI components, interactive React/JSX widgets, or custom XML/HTML tags."
+)
+
 
 class ChatGPTProvider(BaseProvider):
     """
@@ -867,14 +872,23 @@ def _convert_messages(messages: list[dict]) -> list[dict]:
         if role == "user":
             parts = _parse_content(content)
             # Inject system instructions into the active user turn.
-            if system_prefix and idx == last_user_idx:
-                if parts and isinstance(parts[0], str):
-                    if parts[0].startswith("[Tool Results]"):
-                        parts[0] = f"{system_prefix}\n\n{parts[0]}"
+            if idx == last_user_idx:
+                if system_prefix:
+                    if parts and isinstance(parts[0], str):
+                        if parts[0].startswith("[Tool Results]"):
+                            parts[0] = f"{system_prefix}\n\n{parts[0]}"
+                        else:
+                            parts[0] = f"{system_prefix}\n\n{CHATGPT_BASE_DIRECTIVE}\n\n[USER REQUEST]:\n{parts[0]}"
                     else:
-                        parts[0] = f"{system_prefix}\n\n[USER REQUEST]:\n{parts[0]}"
+                        parts.insert(0, f"{system_prefix}\n\n{CHATGPT_BASE_DIRECTIVE}\n\n[USER REQUEST]:\n")
                 else:
-                    parts.insert(0, f"{system_prefix}\n\n[USER REQUEST]:\n")
+                    if parts and isinstance(parts[0], str):
+                        if parts[0].startswith("[Tool Results]"):
+                            parts[0] = parts[0]
+                        else:
+                            parts[0] = f"{CHATGPT_BASE_DIRECTIVE}\n\n[USER REQUEST]:\n{parts[0]}"
+                    else:
+                        parts.insert(0, f"{CHATGPT_BASE_DIRECTIVE}\n\n[USER REQUEST]:\n")
             elif parts and isinstance(parts[0], str) and not parts[0].startswith("[USER REQUEST]:") and not parts[0].startswith("[Tool Results]"):
                 parts[0] = f"[USER REQUEST]:\n{parts[0]}"
 
