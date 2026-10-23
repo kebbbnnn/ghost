@@ -120,7 +120,52 @@ function getActiveTools() {
 
 function parseMarkdown(text) {
     if (!text) return "";
-    let escaped = text
+
+    // Clean any unhandled GenUI component tags generalized across arbitrary components
+    let sanitized = text.replace(
+        /(```[\s\S]*?```|`[^`\n]*`)|<([A-Z][a-zA-Z0-9_]*)\b([^>]*?)(?:\/>|>(?:(.*?)(?:<\/\2>))|>)/gs,
+        (match, codeBlock, tagName, attrsStr, innerContent) => {
+            if (codeBlock) return codeBlock;
+            if (innerContent && innerContent.trim()) {
+                return innerContent.trim();
+            }
+            const frameworkAttrs = new Set([
+                'mode', 'duration', 'locale', 'key', 'resolutionid', '__resolutionid',
+                'version', 'id', 'ref', 'classname', 'class', 'style', 'time_format', 'format',
+                'lang', 'interactive', 'disabled'
+            ]);
+            const attrRegex = /([a-zA-Z0-9_-]+)=(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+            const attrs = {};
+            let m;
+            while ((m = attrRegex.exec(attrsStr || '')) !== null) {
+                const key = m[1];
+                const val = (m[2] !== undefined ? m[2] : (m[3] !== undefined ? m[3] : m[4] || '')).trim();
+                if (val && !val.startsWith('{') && !frameworkAttrs.has(key.toLowerCase())) {
+                    attrs[key] = val;
+                }
+            }
+            const keys = Object.keys(attrs);
+            if (keys.length === 0) return '';
+
+            const primaryKeys = ['location', 'city', 'title', 'name', 'label', 'symbol', 'query', 'flight'];
+            let primaryKey = primaryKeys.find(k => k in attrs) || keys[0];
+            const primaryVal = attrs[primaryKey];
+            delete attrs[primaryKey];
+
+            const remaining = Object.entries(attrs).map(([k, v]) => {
+                if (k === 'tz_name' || k === 'timezone') return v;
+                const cleanKey = k.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                return `${cleanKey}: ${v}`;
+            });
+
+            if (remaining.length > 0) {
+                return `**${primaryVal}** (${remaining.join(', ')})`;
+            }
+            return `**${primaryVal}**`;
+        }
+    );
+
+    let escaped = sanitized
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
@@ -133,6 +178,9 @@ function parseMarkdown(text) {
     // Inline code
     escaped = escaped.replace(/`([^`]+)`/g, '<code>$1</code>');
     
+    // Bold
+    escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
     // Newlines
     escaped = escaped.replace(/\n/g, "<br>");
     

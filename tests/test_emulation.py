@@ -704,3 +704,198 @@ def test_gemini_session_build_prompt_multi_turn_recency():
     assert "[ACTIVE DIRECTIVE FOR CURRENT TURN]" in prompt
     assert "MANDATORY: Emit fresh <tool_call> tags" in prompt
 
+
+# ============================================================================
+# 8. GenUI Tag Sanitization & Parallel Tool Calling Tests
+# ============================================================================
+
+def test_genui_tag_sanitization_non_streaming():
+    """Verify GenUI React widget tags are sanitized into human-readable text in non-streaming responses."""
+    from src.core.emulation.stream_parser import sanitize_genui_tags
+
+    raw_text = (
+        '<ClockWidget location="Tokyo, Japan" tz_name="Asia/Tokyo" time_format="24h" mode="live" />\n\n'
+        '**Paris weather:** Sunny\n'
+        '<WeatherLiveSource location="Paris" duration={1} locale="en-US" />'
+    )
+    cleaned = sanitize_genui_tags(raw_text)
+    assert "<ClockWidget" not in cleaned
+    assert "<WeatherLiveSource" not in cleaned
+    assert "**Tokyo, Japan** (Asia/Tokyo)" in cleaned
+    assert "**Paris**" in cleaned
+
+    # Test arbitrary unfamiliar custom element (generalized, no hardcoded component guard)
+    stock_text = '<StockCard symbol="AAPL" price="150.25" currency="USD" />'
+    cleaned_stock = sanitize_genui_tags(stock_text)
+    assert cleaned_stock == "**AAPL** (Price: 150.25, Currency: USD)"
+
+    # Test element with inner content
+    alert_text = '<AlertBox type="warning">Low disk space</AlertBox>'
+    assert sanitize_genui_tags(alert_text) == "Low disk space"
+
+    # Test code block and inline code preservation (must not be mangled)
+    code_text = "```jsx\n<ClockWidget location=\"Tokyo\" />\n```\nAnd inline: `<ClockWidget />`\nAnd html: <div>text</div>"
+    cleaned_code = sanitize_genui_tags(code_text)
+    assert "<ClockWidget location=\"Tokyo\" />" in cleaned_code
+    assert "`<ClockWidget />`" in cleaned_code
+    assert "<div>text</div>" in cleaned_code
+
+    # Test via process_non_streaming_response
+    raw_resp = {
+        "id": "chatcmpl-test",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": '<ClockWidget location="Tokyo, Japan" tz_name="Asia/Tokyo" time_format="24h" mode="live" />\n\nAll good!',
+            },
+            "finish_reason": "stop"
+        }]
+    }
+    processed = process_non_streaming_response(raw_resp, {"model": "auto"})
+    final_content = processed["choices"][0]["message"]["content"]
+    assert "<ClockWidget" not in final_content
+    assert "**Tokyo, Japan** (Asia/Tokyo)" in final_content
+
+
+def test_genui_tag_sanitization_streaming():
+    """Verify GenUI React widget tags split across streaming chunks are held and cleanly formatted."""
+    async def run():
+        async def mock_stream():
+            yield 'data: {"choices": [{"delta": {"content": "<ClockWidget"}}]}\n\n'
+            yield 'data: {"choices": [{"delta": {"content": " location=\\"Tokyo, Japan\\" tz_name=\\"Asia/Tokyo\\""}}]}\n\n'
+            yield 'data: {"choices": [{"delta": {"content": " time_format=\\"24h\\" mode=\\"live\\" />\\n\\n**Paris weather:** Sunny"}}]}\n\n'
+            yield 'data: [DONE]\n\n'
+
+        processor = StreamEmulationProcessor({"model": "auto"})
+        contents = []
+        async for c in processor.process_stream(mock_stream()):
+            if c.strip() != "data: [DONE]":
+                delta = json.loads(c[6:])["choices"][0]["delta"]
+                if "content" in delta and delta["content"]:
+                    contents.append(delta["content"])
+
+        full_content = "".join(contents)
+        assert "<ClockWidget" not in full_content
+        assert "**Tokyo, Japan** (Asia/Tokyo)" in full_content
+        assert "**Paris weather:** Sunny" in full_content
+
+    import asyncio
+    asyncio.run(run())
+
+
+def test_parallel_tool_calling_system_prompt():
+    """Verify system instructions include parallel tool calling rules and multi-intent examples."""
+    tools = [
+        {"type": "function", "function": {"name": "calculator"}},
+        {"type": "function", "function": {"name": "get_weather"}},
+        {"type": "function", "function": {"name": "get_current_time"}},
+    ]
+    req = {
+        "messages": [{"role": "user", "content": "Time in Tokyo, weather in Paris, and calculate 450 * 1.15"}],
+        "tools": tools,
+    }
+    messages, ctx = EmulationPipeline.prepare_request(req)
+    system_msg = next(m for m in messages if m["role"] == "system")
+    assert "PARALLEL & MULTI-TOOL CALLS" in system_msg["content"]
+    assert "Example of parallel tool calls:" in system_msg["content"]
+    assert "get_current_time" in system_msg["content"]
+    assert "calculator" in system_msg["content"]
+
+
+def test_parallel_multi_tool_call_parsing():
+    """Verify both streaming and non-streaming parsers handle multiple consecutive <tool_call> tags."""
+    # 1. Non-streaming
+    raw_content = (
+        '<tool_call>{"name": "get_current_time", "arguments": {"timezone": "Asia/Tokyo"}}</tool_call>\n'
+        '<tool_call>{"name": "get_weather", "arguments": {"location": "Paris"}}</tool_call>\n'
+        '<tool_call>{"name": "calculator", "arguments": {"expression": "450 * 1.15"}}</tool_call>'
+    )
+    raw_resp = {
+        "id": "chatcmpl-test",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": raw_content},
+            "finish_reason": "stop"
+        }]
+    }
+    processed = process_non_streaming_response(raw_resp, {"model": "auto"})
+    tool_calls = processed["choices"][0]["message"]["tool_calls"]
+    assert len(tool_calls) == 3
+    assert tool_calls[0]["function"]["name"] == "get_current_time"
+    assert tool_calls[1]["function"]["name"] == "get_weather"
+    assert tool_calls[2]["function"]["name"] == "calculator"
+    assert processed["choices"][0]["finish_reason"] == "tool_calls"
+
+    # 2. Streaming
+    async def run():
+        async def mock_stream():
+            chunk_json = json.dumps({"choices": [{"delta": {"content": raw_content}}]})
+            yield f"data: {chunk_json}\n\n"
+            yield "data: [DONE]\n\n"
+
+        processor = StreamEmulationProcessor({"model": "auto"})
+        streamed_calls = []
+        async for c in processor.process_stream(mock_stream()):
+            if c.strip() != "data: [DONE]":
+                delta = json.loads(c[6:])["choices"][0]["delta"]
+                if "tool_calls" in delta:
+                    streamed_calls.extend(delta["tool_calls"])
+
+        assert len(streamed_calls) == 3
+        assert streamed_calls[0]["function"]["name"] == "get_current_time"
+        assert streamed_calls[1]["function"]["name"] == "get_weather"
+        assert streamed_calls[2]["function"]["name"] == "calculator"
+
+    import asyncio
+    asyncio.run(run())
+
+
+def test_genui_suppression_prompt_injection():
+    """Verify explicit GenUI suppression and desired response directives in pipeline and ChatGPT session."""
+    from src.providers.chatgpt.session import _convert_messages, CHATGPT_BASE_DIRECTIVE
+
+    # 1. Plain chat completions with ChatGPT session -> injects CHATGPT_BASE_DIRECTIVE
+    guest_msgs = _convert_messages([{"role": "user", "content": "What is the time in Tokyo?"}])
+    assert len(guest_msgs) == 1
+    content_part = guest_msgs[0]["content"]["parts"][0]
+    assert "Desired Response Format: Respond strictly in standard markdown" in content_part
+    assert "Do NOT output GenUI components" in content_part
+    assert "[USER REQUEST]:\nWhat is the time in Tokyo?" in content_part
+
+    # 2. Emulation pipeline tool-calling phase -> explicit GenUI suppression in TOOL_CALL_REQUIRED
+    req_tools = {
+        "messages": [{"role": "user", "content": "Check weather in Tokyo"}],
+        "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+    }
+    msgs_tool, _ = EmulationPipeline.prepare_request(req_tools)
+    sys_tool = next(m for m in msgs_tool if m["role"] == "system")
+    assert "DO NOT emit GenUI tags, interactive components, or custom XML/JSX tags" in sys_tool["content"]
+    assert "Available external RPC tools:" in sys_tool["content"]
+
+    # 3. Emulation pipeline synthesis phase -> explicit desired response format in SYNTHESIS PHASE
+    req_synthesis = {
+        "messages": [
+            {"role": "user", "content": "Check weather in Tokyo"},
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"location\": \"Tokyo\"}"}
+                }]
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "{\"temp\": \"20C\", \"condition\": \"Sunny\"}"
+            }
+        ],
+        "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+    }
+    msgs_synth, ctx_synth = EmulationPipeline.prepare_request(req_synthesis)
+    assert ctx_synth["is_synthesis_phase"] is True
+    sys_synth = next(m for m in msgs_synth if m["role"] == "system")
+    assert "DESIRED RESPONSE FORMAT: Respond strictly in standard markdown text only" in sys_synth["content"]
+    assert "Do NOT output GenUI components" in sys_synth["content"]
+
