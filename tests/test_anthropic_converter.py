@@ -647,3 +647,178 @@ def test_server_post_v1_messages_endpoint(monkeypatch):
     assert "protocol-segment" in css
 
 
+# ============================================================================
+# Claude Code & Coding Harness Regression Tests
+# ============================================================================
+
+def test_claude_code_massive_tool_schema_compaction():
+    """Verify 24KB+ tool descriptions (e.g. Claude Code Artifact tool) are compacted without losing schema fidelity."""
+    huge_desc = "Artifact creation guide. " + ("Detailed instructions on claude.ai artifacts. " * 600)
+    tools = [
+        {
+            "name": "Artifact",
+            "description": huge_desc,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Unique identifier. " * 30},
+                    "command": {"type": "string", "enum": ["create", "update", "rewrite"]},
+                },
+                "required": ["id", "command"],
+            },
+        },
+        {
+            "name": "Write",
+            "description": "Writes a file to the local filesystem.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "The absolute path to the file to write"},
+                    "content": {"type": "string", "description": "The content to write to the file"},
+                },
+                "required": ["file_path", "content"],
+            },
+        },
+    ]
+    xml = _build_tools_xml(tools)
+    assert len(xml) < 2000, f"Expected compacted XML under 2000 chars, got {len(xml)}"
+    assert '<tool name="Artifact">' in xml
+    assert '<tool name="Write">' in xml
+    assert 'enum="create|update|rewrite"' in xml
+    assert 'name="file_path" type="string" required="required"' in xml
+
+
+def test_claude_code_mid_conversation_system_message_consolidation():
+    """Verify mid-conversation role=='system' messages (Claude Code # Environment block) are consolidated
+    before the Ghost Kernel Override so they never bury TOOL_CALL_REQUIRED."""
+    req = {
+        "model": "gemini",
+        "system": [{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.114"}],
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "create island.html"}]},
+            {"role": "system", "content": "# System Prompt\nYou are an interactive CLI tool.\n# Environment\nWorking directory: /tmp"},
+        ],
+        "tools": [
+            {
+                "name": "Write",
+                "description": "Writes a file to the local filesystem.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}},
+                    "required": ["file_path", "content"],
+                },
+            }
+        ],
+    }
+    openai_req = anthropic_to_openai_request(req)
+    # Only one system message at index 0; no mid-conversation system message after user turn
+    sys_msgs = [m for m in openai_req["messages"] if m["role"] == "system"]
+    assert len(sys_msgs) == 1
+    assert openai_req["messages"][0]["role"] == "system"
+    assert openai_req["messages"][1]["role"] == "user"
+
+    sys_content = openai_req["messages"][0]["content"]
+    # Client environment block comes BEFORE the Ghost Kernel Override & TOOL_CALL_REQUIRED block
+    env_pos = sys_content.find("# Environment")
+    override_pos = sys_content.find("GHOST KERNEL OVERRIDE")
+    tool_req_pos = sys_content.find("CRITICAL MODE: TOOL_CALL_REQUIRED")
+    assert env_pos != -1 and override_pos != -1 and tool_req_pos != -1
+    assert env_pos < override_pos < tool_req_pos
+
+
+def test_claude_code_suggestion_mode_and_away_recap_suppress_tool_calls():
+    """Verify Claude Code background [SUGGESTION MODE] and away-recap requests do not force TOOL_CALL_REQUIRED."""
+    tools = [{"name": "Write", "description": "Write file"}]
+
+    req_suggestion = {
+        "model": "gemini",
+        "messages": [
+            {"role": "user", "content": "create island.html"},
+            {"role": "assistant", "content": "Created island.html."},
+            {
+                "role": "user",
+                "content": '[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code. Reply with ONLY the suggestion, no quotes or explanation.]',
+            },
+        ],
+        "tools": tools,
+    }
+    out_sug = anthropic_to_openai_request(req_suggestion)
+    sys_sug = out_sug["messages"][0]["content"]
+    assert "[AUXILIARY TEXT MODE]" in sys_sug
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" not in sys_sug
+
+    req_recap = {
+        "model": "gemini",
+        "messages": [
+            {"role": "user", "content": "create island.html"},
+            {"role": "assistant", "content": "Created island.html."},
+            {
+                "role": "user",
+                "content": "The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences, no markdown, what was last worked on.",
+            },
+        ],
+        "tools": tools,
+    }
+    out_recap = anthropic_to_openai_request(req_recap)
+    sys_recap = out_recap["messages"][0]["content"]
+    assert "[AUXILIARY TEXT MODE]" in sys_recap
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" not in sys_recap
+
+
+def test_claude_code_discovery_tools_keep_tool_call_required_active():
+    """Verify that after calling a discovery/read tool (ToolSearch, Skill, Read) when Write/Edit/Bash are available,
+    the next turn stays in TOOL_CALL_REQUIRED mode so the agent chains into Write/Edit/Bash."""
+    tools = [
+        {"name": "ToolSearch", "description": "Search deferred tools"},
+        {"name": "Skill", "description": "Load skill"},
+        {"name": "Read", "description": "Read file"},
+        {"name": "Write", "description": "Write file"},
+        {"name": "Bash", "description": "Run bash"},
+    ]
+    req = {
+        "model": "gemini",
+        "tools": tools,
+        "messages": [
+            {"role": "user", "content": "Create a 3D island simulation and save it in island.html"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "name": "Skill", "input": {"skill": "artifact-design"}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Skill guide loaded."}],
+            },
+        ],
+    }
+    res = anthropic_to_openai_request(req)
+    assert res["_is_synthesis_phase"] is False
+    sys_content = res["messages"][0]["content"]
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" in sys_content
+    assert "[SYNTHESIS PHASE]" not in sys_content
+
+
+def test_parse_invoke_xml_stray_bracket_and_autolink_unwrapping():
+    """Verify _parse_invoke_xml handles stray trailing ']' (Trace #1012) and unwraps Gemini [url](url) auto-links (Trace #1075)."""
+    # 1. Stray trailing ']' from Trace #1012
+    raw_trace_1012 = '<tool_call>{"name": "ToolSearch", "arguments": {"max_results": 5, "query": "select:Artifact"}}]</tool_call>'
+    name, args = _parse_invoke_xml(raw_trace_1012)
+    assert name == "ToolSearch"
+    assert args == {"max_results": 5, "query": "select:Artifact"}
+
+    # 2. Gemini markdown auto-link corruption inside HTML <script src="[url](url)"> from Trace #1075
+    raw_trace_1075 = (
+        '<tool_call>{"name": "Write", "arguments": {'
+        '"file_path": "/tmp/island.html", '
+        '"content": "<!DOCTYPE html>\\n<script src=\\"[https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js](https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js)\\"></script>\\n'
+        'See [Documentation](https://threejs.org/docs) for details."'
+        '}}</tool_call>'
+    )
+    w_name, w_args = _parse_invoke_xml(raw_trace_1075)
+    assert w_name == "Write"
+    assert w_args["file_path"] == "/tmp/island.html"
+    assert '<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>' in w_args["content"]
+    # Normal markdown links where label != url must be preserved
+    assert "[Documentation](https://threejs.org/docs)" in w_args["content"]
+
+
+

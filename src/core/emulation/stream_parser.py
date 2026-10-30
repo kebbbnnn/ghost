@@ -20,6 +20,11 @@ log = logging.getLogger(__name__)
 
 OPEN_TAG = "<tool_call>"
 CLOSE_TAG = "</tool_call>"
+OPEN_TAGS = ["<tool_call>", "<invoke"]
+
+AUTOLINK_URL_PATTERN = re.compile(
+    r"\[(https?://[^\s\[\]\(\)\"']+?)\]\(https?://[^\s\[\]\(\)\"']+?\)"
+)
 
 GENUI_TAG_PATTERN = re.compile(
     r'(```[\s\S]*?```|`[^`\n]*`)|<([A-Z][a-zA-Z0-9_]*)\b([^>]*?)(?:\/>|>(?:(.*?)(?:<\/\2>))|>)',
@@ -27,6 +32,24 @@ GENUI_TAG_PATTERN = re.compile(
 )
 
 GENUI_OPEN_PATTERN = re.compile(r'<([A-Z][a-zA-Z0-9_]*)\b([^>]*?)(?:\/>|>(?:(.*?)(?:<\/\1>))|>)', re.DOTALL)
+
+
+def unwrap_markdown_autolinks(text: str) -> str:
+    """Unwrap Gemini's automatic [https://...](https://...) markdown link injection inside code/strings."""
+    if not text or "[http" not in text:
+        return text
+    return AUTOLINK_URL_PATTERN.sub(r"\1", text)
+
+
+def _unwrap_autolinks_in_obj(obj: Any) -> Any:
+    """Recursively unwrap [https://...](https://...) markdown auto-links inside parsed tool arguments."""
+    if isinstance(obj, str):
+        return unwrap_markdown_autolinks(obj)
+    if isinstance(obj, dict):
+        return {k: _unwrap_autolinks_in_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_unwrap_autolinks_in_obj(v) for v in obj]
+    return obj
 
 
 def sanitize_genui_tags(text: str) -> str:
@@ -82,9 +105,69 @@ def sanitize_genui_tags(text: str) -> str:
     return GENUI_TAG_PATTERN.sub(replacer, text)
 
 
+def _escape_control_chars_in_json_strings(raw: str) -> str:
+    """Escape raw newlines, carriage returns, and tabs only inside double-quoted JSON string literals."""
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in raw:
+        if escaped:
+            out.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            out.append(ch)
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            out.append(ch)
+            continue
+        if in_string:
+            if ch == "\n":
+                out.append("\\n")
+                continue
+            if ch == "\r":
+                out.append("\\r")
+                continue
+            if ch == "\t":
+                out.append("\\t")
+                continue
+        out.append(ch)
+    return "".join(out)
+
+
+def _extract_balanced_braces(text: str, start_idx: int) -> str | None:
+    """Extract a balanced {...} substring starting at start_idx, respecting string quotes and escapes."""
+    if start_idx < 0 or start_idx >= len(text) or text[start_idx] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start_idx, len(text)):
+        ch = text[i]
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start_idx : i + 1]
+    return None
+
+
 def _sanitize_json_string(raw: str) -> str:
-    """Tolerant cleaner for LLM JSON outputs (fixes unescaped newlines, trailing commas)."""
-    clean = raw.strip()
+    """Tolerant cleaner for LLM JSON outputs (unwraps auto-links, strips fences, fixes trailing commas)."""
+    clean = unwrap_markdown_autolinks(raw).strip()
     # Remove markdown code fences if wrapped
     if clean.startswith("```json"):
         clean = clean[7:]
@@ -98,34 +181,127 @@ def _sanitize_json_string(raw: str) -> str:
     return clean
 
 
+def _normalize_parsed_tool_dict(data: dict) -> dict | None:
+    """Normalize a parsed tool dict with 'name'/'tool'/'function' and 'arguments'/'input'/'parameters'."""
+    name = data.get("name") or data.get("tool") or data.get("function")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    args = (
+        data.get("arguments")
+        if "arguments" in data
+        else (
+            data.get("input")
+            if "input" in data
+            else (data.get("parameters") if "parameters" in data else data.get("args", {}))
+        )
+    )
+    if isinstance(args, str):
+        args_clean = _sanitize_json_string(args)
+        try:
+            args = json.loads(args_clean)
+        except Exception:
+            try:
+                args = json.loads(_escape_control_chars_in_json_strings(args_clean))
+            except Exception:
+                pass
+    if not isinstance(args, dict):
+        args = {}
+    return {"name": name.strip(), "arguments": _unwrap_autolinks_in_obj(args)}
+
+
 def parse_tool_payload(raw_payload: str) -> dict | None:
-    """Safely parse a string payload into a tool call dict with 'name' and 'arguments'."""
-    clean = _sanitize_json_string(raw_payload)
-    try:
-        data = json.loads(clean)
-        if isinstance(data, dict) and "name" in data:
-            args = data.get("arguments", {})
-            if isinstance(args, str):
+    """Safely parse a string payload (JSON or <invoke> XML) into a tool call dict with 'name' and 'arguments'."""
+    if not raw_payload or not raw_payload.strip():
+        return None
+
+    unwrapped = unwrap_markdown_autolinks(raw_payload).strip()
+
+    # 1. Support <invoke name="...">...</invoke> XML format if present
+    if "<parameter" in unwrapped or unwrapped.startswith("<invoke") or 'name="' in unwrapped[:60] or "name='" in unwrapped[:60]:
+        m_name = re.search(r'name=["\']([^"\']+)["\']', unwrapped)
+        if m_name and ("<parameter" in unwrapped or "</invoke>" in unwrapped or unwrapped.startswith("<invoke")):
+            tool_name = m_name.group(1).strip()
+            params: dict = {}
+            param_matches = list(
+                re.finditer(r'<parameter\s+name=["\']([^"\']+)["\']\s*>(.*?)</parameter>', unwrapped, re.DOTALL)
+            )
+            if param_matches:
+                for match in param_matches:
+                    p_name = match.group(1)
+                    p_val_raw = unwrap_markdown_autolinks(match.group(2).strip())
+                    try:
+                        p_val = json.loads(p_val_raw)
+                    except Exception:
+                        p_val = p_val_raw
+                    params[p_name] = _unwrap_autolinks_in_obj(p_val)
+                return {"name": tool_name, "arguments": params}
+            # Check for raw JSON inside <invoke ...>{...}</invoke>
+            brace_idx = unwrapped.find("{")
+            if brace_idx != -1:
+                balanced = _extract_balanced_braces(unwrapped, brace_idx)
+                if balanced:
+                    for candidate in (balanced, _escape_control_chars_in_json_strings(balanced)):
+                        try:
+                            parsed_inner = json.loads(re.sub(r",\s*(\}|\])", r"\1", candidate))
+                            if isinstance(parsed_inner, dict):
+                                return {"name": tool_name, "arguments": _unwrap_autolinks_in_obj(parsed_inner)}
+                        except Exception:
+                            pass
+            return {"name": tool_name, "arguments": params}
+
+    clean = _sanitize_json_string(unwrapped)
+    decoder = json.JSONDecoder()
+
+    # 2. Try direct json.loads or raw_decode from the first '{' (handles trailing ']' or extra text)
+    first_brace = clean.find("{")
+    candidates = [clean]
+    if first_brace > 0:
+        candidates.append(clean[first_brace:])
+    escaped_clean = _escape_control_chars_in_json_strings(clean)
+    if escaped_clean != clean:
+        candidates.append(escaped_clean)
+        if first_brace > 0:
+            candidates.append(escaped_clean[ escaped_clean.find("{") :])
+
+    for cand in candidates:
+        if not cand.startswith("{"):
+            continue
+        try:
+            data, _ = decoder.raw_decode(cand)
+            if isinstance(data, dict):
+                norm = _normalize_parsed_tool_dict(data)
+                if norm:
+                    return norm
+        except Exception:
+            pass
+
+    # 3. Fallback: extract "name" and balanced "{...}" for "arguments" / "input" / "parameters"
+    name_match = re.search(r'"(?:name|tool|function)"\s*:\s*"([^"]+)"', clean)
+    if name_match:
+        func_name = name_match.group(1).strip()
+        key_match = re.search(r'"(?:arguments|input|parameters|args)"\s*:\s*', clean)
+        if key_match:
+            after_key = clean[key_match.end() :].lstrip()
+            if after_key.startswith("{"):
+                balanced = _extract_balanced_braces(after_key, 0)
+                target_str = balanced if balanced is not None else after_key
+                for cand in (target_str, _escape_control_chars_in_json_strings(target_str)):
+                    cand_clean = re.sub(r",\s*(\}|\])", r"\1", cand)
+                    try:
+                        args_obj, _ = decoder.raw_decode(cand_clean)
+                        if isinstance(args_obj, dict):
+                            return {"name": func_name, "arguments": _unwrap_autolinks_in_obj(args_obj)}
+                    except Exception:
+                        pass
+            elif after_key.startswith('"'):
                 try:
-                    args = json.loads(args)
+                    str_val, _ = decoder.raw_decode(after_key)
+                    if isinstance(str_val, str):
+                        args_obj = json.loads(_sanitize_json_string(str_val))
+                        if isinstance(args_obj, dict):
+                            return {"name": func_name, "arguments": _unwrap_autolinks_in_obj(args_obj)}
                 except Exception:
                     pass
-            return {"name": data["name"], "arguments": args}
-    except Exception as e:
-        log.debug("Direct JSON parse failed on tool payload (%s), trying regex: %s", e, clean[:80])
-
-    # Fallback regex extraction: "name": "...", "arguments": ...
-    name_match = re.search(r'"name"\s*:\s*"([^"]+)"', clean)
-    if name_match:
-        func_name = name_match.group(1)
-        # Find start of arguments object
-        args_match = re.search(r'"arguments"\s*:\s*(\{.*\}|\[.*\]|"[^"]*")', clean, re.DOTALL)
-        if args_match:
-            try:
-                args = json.loads(args_match.group(1))
-                return {"name": func_name, "arguments": args}
-            except Exception:
-                return {"name": func_name, "arguments": {}}
         return {"name": func_name, "arguments": {}}
 
     return None
@@ -150,6 +326,7 @@ class StreamEmulationProcessor:
 
         self.buffer = ""
         self.in_tool_tag = False
+        self.active_close_tag = CLOSE_TAG
         self.tool_accumulator = ""
         self.tool_calls_emitted: list[dict] = []
         self.tool_call_index = 0
@@ -249,10 +426,17 @@ class StreamEmulationProcessor:
 
         while self.buffer:
             if not self.in_tool_tag:
-                # Look for OPEN_TAG
-                open_idx = self.buffer.find(OPEN_TAG)
-                if open_idx != -1:
-                    # Emit everything before OPEN_TAG as normal content
+                # Look for earliest opening tool tag (<tool_call> or <invoke)
+                open_idx = -1
+                matched_open_tag = None
+                for candidate_tag in OPEN_TAGS:
+                    idx = self.buffer.find(candidate_tag)
+                    if idx != -1 and (open_idx == -1 or idx < open_idx):
+                        open_idx = idx
+                        matched_open_tag = candidate_tag
+
+                if open_idx != -1 and matched_open_tag is not None:
+                    # Emit everything before the open tag as normal content
                     pre_text = self.buffer[:open_idx]
                     pre_text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", pre_text)
                     if pre_text and pre_text.strip():
@@ -263,8 +447,13 @@ class StreamEmulationProcessor:
 
                     # Transition to in_tool_tag
                     self.in_tool_tag = True
-                    self.tool_accumulator = ""
-                    self.buffer = self.buffer[open_idx + len(OPEN_TAG):]
+                    if matched_open_tag == "<invoke":
+                        self.active_close_tag = "</invoke>"
+                        self.tool_accumulator = "<invoke"
+                    else:
+                        self.active_close_tag = CLOSE_TAG
+                        self.tool_accumulator = ""
+                    self.buffer = self.buffer[open_idx + len(matched_open_tag):]
                     continue
 
                 # Not found: check if buffer contains a GenUI component tag or incomplete GenUI tag
@@ -297,12 +486,14 @@ class StreamEmulationProcessor:
                         # Incomplete GenUI tag; wait for more stream chunks
                         break
 
-                # Check if buffer ends with a potential prefix of OPEN_TAG
+                # Check if buffer ends with a potential prefix of any open tag
                 match_prefix_len = 0
-                for length in range(min(len(OPEN_TAG) - 1, len(self.buffer)), 0, -1):
-                    if OPEN_TAG.startswith(self.buffer[-length:]):
-                        match_prefix_len = length
-                        break
+                for candidate_tag in OPEN_TAGS:
+                    for length in range(min(len(candidate_tag) - 1, len(self.buffer)), 0, -1):
+                        if candidate_tag.startswith(self.buffer[-length:]):
+                            if length > match_prefix_len:
+                                match_prefix_len = length
+                            break
 
                 if match_prefix_len > 0:
                     # Safe text to emit is before the prefix
@@ -325,11 +516,14 @@ class StreamEmulationProcessor:
                     break
 
             else:
-                # Inside tool tag: accumulate until CLOSE_TAG
-                close_idx = self.buffer.find(CLOSE_TAG)
+                # Inside tool tag: accumulate until active_close_tag
+                close_tag = self.active_close_tag
+                close_idx = self.buffer.find(close_tag)
                 if close_idx != -1:
                     self.tool_accumulator += self.buffer[:close_idx]
-                    self.buffer = self.buffer[close_idx + len(CLOSE_TAG):]
+                    if close_tag == "</invoke>":
+                        self.tool_accumulator += "</invoke>"
+                    self.buffer = self.buffer[close_idx + len(close_tag):]
                     self.in_tool_tag = False
 
                     # Emit complete tool call chunk
@@ -338,10 +532,10 @@ class StreamEmulationProcessor:
                     self.tool_accumulator = ""
                     continue
 
-                # Not closed yet: check for potential prefix of CLOSE_TAG
+                # Not closed yet: check for potential prefix of close_tag
                 match_prefix_len = 0
-                for length in range(min(len(CLOSE_TAG) - 1, len(self.buffer)), 0, -1):
-                    if CLOSE_TAG.startswith(self.buffer[-length:]):
+                for length in range(min(len(close_tag) - 1, len(self.buffer)), 0, -1):
+                    if close_tag.startswith(self.buffer[-length:]):
                         match_prefix_len = length
                         break
 
@@ -359,6 +553,7 @@ class StreamEmulationProcessor:
         """Emits standard OpenAI delta.content chunk after stop and max_tokens checks."""
         # Strip internal google card tokens if any leak through
         text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", text)
+        text = unwrap_markdown_autolinks(text)
         if not text:
             return
 
@@ -541,6 +736,7 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
 
     raw_content = raw_content.replace("<escape>", "").replace("</escape>", "")
     raw_content = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", raw_content)
+    raw_content = unwrap_markdown_autolinks(raw_content)
     raw_content = sanitize_genui_tags(raw_content)
 
     # 1. Enforce stop sequences
@@ -550,9 +746,13 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
                 raw_content = raw_content[: raw_content.find(s)]
                 choice["finish_reason"] = "stop"
 
-    # 2. Extract <tool_call> blocks
-    pattern = re.compile(rf"{re.escape(OPEN_TAG)}(.*?){re.escape(CLOSE_TAG)}", re.DOTALL)
-    matches = pattern.findall(raw_content)
+    # 2. Extract <tool_call> and <invoke> blocks
+    pattern = re.compile(
+        rf"(?:{re.escape(OPEN_TAG)}(.*?){re.escape(CLOSE_TAG)})|(<invoke\b.*?</invoke>)",
+        re.DOTALL,
+    )
+    raw_matches = pattern.findall(raw_content)
+    matches = [m[0] if m[0] else m[1] for m in raw_matches]
 
     if matches:
         tool_calls = []

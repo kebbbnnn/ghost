@@ -685,6 +685,28 @@ async def anthropic_messages(req: Request):
 
 
 
+@app.api_route("/api/hello", methods=["GET", "HEAD"])
+async def anthropic_hello():
+    return {"status": "ok"}
+
+
+@app.post("/v1/messages/count_tokens")
+@app.post("/messages/count_tokens")
+async def anthropic_count_tokens(req: Request):
+    try:
+        body = await req.json()
+        raw_str = json.dumps(body)
+        estimated = max(1, len(raw_str) // 4)
+    except Exception:
+        estimated = 100
+    return {"input_tokens": estimated}
+
+
+@app.post("/api/event_logging/batch")
+async def anthropic_event_logging_batch():
+    return {"status": "ok"}
+
+
 # ---------------------------------------------------------------------------
 # Health & Status check
 # ---------------------------------------------------------------------------

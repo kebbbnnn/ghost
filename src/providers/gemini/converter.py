@@ -19,6 +19,82 @@ import uuid
 
 log = logging.getLogger(__name__)
 
+AUTOLINK_URL_PATTERN = re.compile(
+    r"\[(https?://[^\s\[\]\(\)\"']+?)\]\(https?://[^\s\[\]\(\)\"']+?\)"
+)
+
+GEMINI_CANNED_REFUSALS = (
+    "i'm having a hard time fulfilling your request",
+    "i am having a hard time fulfilling your request",
+    "i can't use google drive because required gmail settings are off",
+    "i cannot use google drive because required gmail settings are off",
+    "i'm still learning how to answer this",
+    "i can't help with that right now",
+)
+
+
+def is_gemini_canned_refusal(text: str) -> bool:
+    """Detect Gemini platform post-generation filter refusals or Workspace extension errors."""
+    if not text:
+        return False
+    stripped = text.strip().lower()
+    if len(stripped) > 260:
+        return False
+    return any(pat in stripped for pat in GEMINI_CANNED_REFUSALS)
+
+
+def transpile_gemini_code_reference(content: str, prompt: str = "") -> str:
+    """
+    If Gemini invoked its internal server-side `data_analysis_tool` (emitting
+    ```python?code_reference&code_event_index=N blocks instead of <tool_call>/<invoke>),
+    transpile the generated Python script(s) into local Bash <tool_call> invocations
+    so the client coding harness executes them on the user's local filesystem.
+    """
+    if not content or "```python?code_reference" not in content:
+        return content
+
+    outside_fences = re.sub(r"```.*?```", "", content, flags=re.DOTALL)
+    if "<tool_call>" in outside_fences or "<invoke" in outside_fences:
+        return content
+
+    bash_tool_name = "Bash"
+    if prompt:
+        if '<tool name="Bash">' in prompt or '"name": "Bash"' in prompt:
+            bash_tool_name = "Bash"
+        elif '<tool name="bash">' in prompt or '"name": "bash"' in prompt:
+            bash_tool_name = "bash"
+        elif '<tool name="run_command">' in prompt or '"name": "run_command"' in prompt:
+            bash_tool_name = "run_command"
+        elif "CRITICAL MODE: TOOL_CALL_REQUIRED" not in prompt:
+            return content
+
+    blocks = re.findall(r"```python\?code_reference[^\n]*\n(.*?)```", content, flags=re.DOTALL)
+    if not blocks:
+        return content
+
+    file_writing_blocks = [
+        b for b in blocks
+        if any(w in b for w in ("open(", ".write(", ".write_text(", ".write_bytes("))
+    ]
+    selected = file_writing_blocks if file_writing_blocks else [blocks[0]]
+
+    tool_calls = []
+    for b in selected:
+        script = b.strip()
+        if not script:
+            continue
+        cmd = f"python3 - << 'GHOST_PYEOF'\n{script}\nGHOST_PYEOF"
+        payload = {
+            "name": bash_tool_name,
+            "arguments": {
+                "command": cmd,
+                "description": "Execute generated Python script locally",
+            },
+        }
+        tool_calls.append(f"<tool_call>{json.dumps(payload)}</tool_call>")
+
+    return "\n".join(tool_calls) if tool_calls else content
+
 
 # ---------------------------------------------------------------------------
 # Gemini batch-RPC → internal dict
@@ -31,7 +107,8 @@ def parse_gemini_response(raw_text: str) -> dict:
     IMPORTANT: Gemini returns multiple progressive JSON chunks in a single
     response body. Each chunk contains the full content generated so far
     (growing with each chunk). We iterate ALL chunks and return the
-    last/longest content.
+    last/longest valid content, ignoring post-generation canned refusal
+    overwrites when valid content has already been generated.
 
     Returns:
         {
@@ -48,6 +125,7 @@ def parse_gemini_response(raw_text: str) -> dict:
         lines = raw_text.split("\n")
 
         best_content = ""
+        fallback_refusal = ""
         conversation_id = ""
         response_id = ""
         choice_id = ""
@@ -78,8 +156,11 @@ def parse_gemini_response(raw_text: str) -> dict:
 
                 # Extract content at inner[4][0][1][0]
                 content = _extract_content(inner)
-                if content and len(content) >= len(best_content):
-                    best_content = content
+                if content:
+                    if is_gemini_canned_refusal(content):
+                        fallback_refusal = content
+                    elif len(content) >= len(best_content):
+                        best_content = content
 
                 # Extract conversation tracking IDs (take latest)
                 try:
@@ -97,11 +178,12 @@ def parse_gemini_response(raw_text: str) -> dict:
                 if cid:
                     choice_id = cid
 
-        if not best_content and not conversation_id:
+        final_content = best_content or fallback_refusal
+        if not final_content and not conversation_id:
             raise ValueError("No valid content found in any response chunk")
 
         return {
-            "content": best_content,
+            "content": final_content,
             "conversation_id": conversation_id,
             "response_id": response_id,
             "choice_id": choice_id,
@@ -160,6 +242,10 @@ def parse_streaming_chunks(raw_text: str):
             if not content:
                 continue
 
+            # Ignore post-generation canned refusal overwrite if valid content was already yielded
+            if prev_content and is_gemini_canned_refusal(content):
+                continue
+
             # Compute incremental delta
             delta = content[len(prev_content):] if content.startswith(prev_content) else content
 
@@ -202,6 +288,8 @@ def _extract_content(inner) -> str:
                 content = parts[0]
                 text = content if isinstance(content, str) else str(content)
                 text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", text)
+                if "[http" in text:
+                    text = AUTOLINK_URL_PATTERN.sub(r"\1", text)
                 return text
     except (IndexError, TypeError):
         pass

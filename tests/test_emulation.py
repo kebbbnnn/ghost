@@ -899,3 +899,170 @@ def test_genui_suppression_prompt_injection():
     assert "DESIRED RESPONSE FORMAT: Respond strictly in standard markdown text only" in sys_synth["content"]
     assert "Do NOT output GenUI components" in sys_synth["content"]
 
+
+# ============================================================================
+# 9. Coding Harness & Provider Override Regression Tests
+# ============================================================================
+
+def test_parse_tool_payload_stray_brackets_and_autolinks():
+    """Verify parse_tool_payload handles stray trailing brackets, raw newlines in strings, and Gemini auto-links."""
+    from src.core.emulation.stream_parser import parse_tool_payload
+
+    # 1. Stray trailing bracket `}]` (Trace #1012) + raw newline + Gemini markdown auto-link
+    raw_payload = (
+        '{"name": "write", "arguments": {"path": "index.html", '
+        '"content": "<script src=\\"[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)\\"></script>\n<div>Hello</div>"}}]'
+    )
+    parsed = parse_tool_payload(raw_payload)
+    assert parsed is not None
+    assert parsed["name"] == "write"
+    args = parsed["arguments"] if isinstance(parsed["arguments"], dict) else json.loads(parsed["arguments"])
+    assert args["path"] == "index.html"
+    assert 'src="https://cdn.tailwindcss.com"' in args["content"]
+    assert "[https://cdn.tailwindcss.com]" not in args["content"]
+    assert "<div>Hello</div>" in args["content"]
+
+
+def test_emulation_pipeline_discovery_to_action_tool_chaining():
+    """Verify EmulationPipeline stays in TOOL_CALL_REQUIRED after discovery-only tools when action tools exist."""
+    tools = [
+        {"type": "function", "function": {"name": "read", "description": "Read file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+        {"type": "function", "function": {"name": "write", "description": "Write file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
+        {"type": "function", "function": {"name": "bash", "description": "Run command"}},
+    ]
+    req = {
+        "messages": [
+            {"role": "user", "content": "Read index.html and update the header."},
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_read_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": '{"path": "index.html"}'}
+                }]
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_read_1",
+                "content": "<html><body><h1>Old</h1></body></html>"
+            }
+        ],
+        "tools": tools,
+    }
+    messages, ctx = EmulationPipeline.prepare_request(req)
+    assert ctx["is_synthesis_phase"] is False
+    sys_msg = next(m for m in messages if m["role"] == "system")
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" in sys_msg["content"]
+    assert "[GHOST KERNEL OVERRIDE — MANDATORY SYSTEM DIRECTIVE]" in sys_msg["content"]
+    assert "path: string [required]" in sys_msg["content"]
+
+
+def test_gemini_converter_ignores_post_generation_refusal_overwrite():
+    """Verify Gemini converter preserves valid streamed content when final chunk is a post-generation refusal."""
+    from src.providers.gemini.converter import parse_gemini_response, parse_streaming_chunks, is_gemini_canned_refusal
+
+    refusal_text = "I'm having a hard time fulfilling your request completely right now. How else can I help you?"
+    drive_error = "I can't use Google Drive because required Gmail settings are off."
+    assert is_gemini_canned_refusal(refusal_text) is True
+    assert is_gemini_canned_refusal(drive_error) is True
+    assert is_gemini_canned_refusal('<tool_call>{"name": "Write", "arguments": {}}</tool_call>') is False
+
+    # Construct two raw Bard frames: frame 1 has valid <tool_call>, frame 2 overwrites with canned refusal
+    valid_tool_call = '<tool_call>{"name": "write", "arguments": {"path": "app.js", "content": "console.log(1);"}}</tool_call>'
+    inner_1 = json.dumps([None, ["c_123", "r_456"], None, None, [["rc_789", [valid_tool_call], []]]])
+    inner_2 = json.dumps([None, ["c_123", "r_456"], None, None, [["rc_789", [refusal_text], []]]])
+    frame_1 = json.dumps([["wrb.fr", None, inner_1]])
+    frame_2 = json.dumps([["wrb.fr", None, inner_2]])
+    raw_body = f")'}}'\n100\n{frame_1}\n100\n{frame_2}\n"
+
+    # 1. Non-streaming parser preserves valid_tool_call
+    parsed = parse_gemini_response(raw_body)
+    assert parsed["content"] == valid_tool_call
+
+    # 2. Streaming parser preserves valid_tool_call and does not emit refusal delta
+    chunks = list(parse_streaming_chunks(raw_body))
+    streamed_text = "".join(c.get("content", "") for c in chunks)
+    assert streamed_text == valid_tool_call
+    assert "having a hard time" not in streamed_text
+
+
+def test_gemini_provider_retries_on_workspace_refusal_or_missing_tool_call():
+    """Verify GeminiProvider automatically retries statelessly when attempt 0 returns a Workspace refusal or dumps markdown instead of calling a required tool."""
+    import asyncio
+    from unittest.mock import patch, AsyncMock
+    from src.providers.gemini.session import GeminiProvider
+
+    provider = GeminiProvider()
+    messages = [
+        {
+            "role": "system",
+            "content": "[GHOST KERNEL OVERRIDE]\nCRITICAL MODE: TOOL_CALL_REQUIRED.\nAvailable external RPC tools:\n- write(path: string, content: string)"
+        },
+        {"role": "user", "content": "Create index.html with a hello world page."}
+    ]
+
+    # Attempt 0 returns a markdown code block (ignoring TOOL_CALL_REQUIRED); Attempt 1 returns a valid <tool_call>
+    bad_inner = json.dumps([None, ["c_1", "r_1"], None, None, [["rc_1", ["Here is the code:\n```html\n<h1>Hello</h1>\n```"], []]]])
+    good_tool = '<tool_call>{"name": "write", "arguments": {"path": "index.html", "content": "<h1>Hello</h1>"}}</tool_call>'
+    good_inner = json.dumps([None, ["c_2", "r_2"], None, None, [["rc_2", [good_tool], []]]])
+
+    bad_raw = f")'}}'\n100\n{json.dumps([['wrb.fr', None, bad_inner]])}\n"
+    good_raw = f")'}}'\n100\n{json.dumps([['wrb.fr', None, good_inner]])}\n"
+
+    call_count = 0
+
+    async def mock_send(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return bad_raw if call_count == 1 else good_raw
+
+    async def run():
+        with patch.object(provider, "ensure_ready", new=AsyncMock()), \
+             patch.object(provider, "_send_message", side_effect=mock_send):
+            resp = await provider.non_streaming_chat(messages, "gemini")
+            assert call_count == 2
+            content = resp["choices"][0]["message"]["content"]
+            assert "<tool_call>" in content
+            assert "index.html" in content
+
+    asyncio.run(run())
+
+
+def test_transpile_gemini_code_reference_and_unclosed_tool_detection():
+    """Verify transpile_gemini_code_reference converts python?code_reference blocks to Bash tool calls and _is_missing_required_tool_call catches unclosed <invoke> tags."""
+    from src.providers.gemini.converter import transpile_gemini_code_reference
+    from src.providers.gemini.session import GeminiProvider
+
+    raw_gemini_code_ref = (
+        "Let's create the files.\n"
+        "```python?code_reference&code_event_index=2\n"
+        "import os\n"
+        "os.makedirs('lsm_engine', exist_ok=True)\n"
+        "```\n"
+    )
+    prompt = "[SYSTEM]\nCRITICAL MODE: TOOL_CALL_REQUIRED\n<tool name=\"Bash\">"
+    transpiled = transpile_gemini_code_reference(raw_gemini_code_ref, prompt)
+    assert "<tool_call>" in transpiled
+    assert '"name": "Bash"' in transpiled
+    assert "GHOST_PYEOF" in transpiled
+    assert "os.makedirs('lsm_engine', exist_ok=True)" in transpiled
+
+    # Unclosed <invoke name="Write"> block must be flagged as missing/truncated required tool call
+    unclosed_invoke = (
+        '<invoke name="Write">\n'
+        '  <parameter name="file_path">compactor.py</parameter>\n'
+        '  <parameter name="content">import os\n# Wait, let us check'
+    )
+    assert GeminiProvider._is_missing_required_tool_call(prompt, unclosed_invoke) is True
+
+    # Closed <invoke name="Write"> block is valid
+    closed_invoke = (
+        '<invoke name="Write">\n'
+        '  <parameter name="file_path">compactor.py</parameter>\n'
+        '  <parameter name="content">import os\n</parameter>\n'
+        '</invoke>'
+    )
+    assert GeminiProvider._is_missing_required_tool_call(prompt, closed_invoke) is False
+
+
+
