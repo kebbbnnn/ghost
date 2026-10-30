@@ -9,6 +9,7 @@ Handles:
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -186,15 +187,21 @@ def _normalize_parsed_tool_dict(data: dict) -> dict | None:
     name = data.get("name") or data.get("tool") or data.get("function")
     if not isinstance(name, str) or not name.strip():
         return None
-    args = (
-        data.get("arguments")
-        if "arguments" in data
-        else (
-            data.get("input")
-            if "input" in data
-            else (data.get("parameters") if "parameters" in data else data.get("args", {}))
-        )
-    )
+    
+    if "arguments" in data:
+        args = data["arguments"]
+    elif "input" in data:
+        args = data["input"]
+    elif "parameters" in data:
+        args = data["parameters"]
+    elif "args" in data:
+        args = data["args"]
+    else:
+        # Support flat JSON parameter payloads: {"name": "Bash", "command": "..."}
+        reserved = {"name", "tool", "function", "id", "type"}
+        flat_args = {k: v for k, v in data.items() if k not in reserved}
+        args = flat_args if flat_args else {}
+
     if isinstance(args, str):
         args_clean = _sanitize_json_string(args)
         try:
@@ -207,6 +214,73 @@ def _normalize_parsed_tool_dict(data: dict) -> dict | None:
     if not isinstance(args, dict):
         args = {}
     return {"name": name.strip(), "arguments": _unwrap_autolinks_in_obj(args)}
+
+
+def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
+    """Robust fallback parameter extractor for LLM JSON outputs containing raw code, unescaped quotes, or newlines."""
+    fn_lower = func_name.lower()
+    args: dict = {}
+
+    if fn_lower in ("write", "write_file"):
+        fp_match = re.search(r'"(?:file_path|path)"\s*:\s*"([^"]+)"', raw_text)
+        if fp_match:
+            args["file_path"] = fp_match.group(1).strip()
+        c_match = re.search(r'"content"\s*:\s*', raw_text)
+        if c_match:
+            c_raw = raw_text[c_match.end() :].strip()
+            if c_raw.startswith('"'):
+                c_raw = c_raw[1:]
+            c_clean = re.sub(r'"?\s*\}*\s*$', "", c_raw)
+            c_clean = c_clean.replace(r'\"', '"')
+            args["content"] = c_clean
+
+    elif fn_lower in ("bash", "execute_command", "sh"):
+        cmd_match = re.search(r'"(?:command|cmd)"\s*:\s*"([^"]+)"', raw_text)
+        if cmd_match:
+            args["command"] = cmd_match.group(1).strip()
+        else:
+            c_match = re.search(r'"(?:command|cmd)"\s*:\s*', raw_text)
+            if c_match:
+                c_raw = raw_text[c_match.end() :].strip()
+                if c_raw.startswith('"'):
+                    c_raw = c_raw[1:]
+                c_clean = re.sub(r'"?\s*\}*\s*$', "", c_raw)
+                c_clean = c_clean.replace(r'\"', '"')
+                args["command"] = c_clean
+
+    elif fn_lower in ("edit", "edit_file"):
+        fp_match = re.search(r'"(?:file_path|path)"\s*:\s*"([^"]+)"', raw_text)
+        if fp_match:
+            args["file_path"] = fp_match.group(1).strip()
+        old_match = re.search(r'"old_string"\s*:\s*', raw_text)
+        new_match = re.search(r'"new_string"\s*:\s*', raw_text)
+        if old_match and new_match:
+            if old_match.start() < new_match.start():
+                old_raw = raw_text[old_match.end() : new_match.start()].strip()
+                old_clean = re.sub(r'[\s",]+$', "", old_raw.lstrip('"'))
+                new_raw = raw_text[new_match.end() :].strip()
+                new_clean = re.sub(r'"?\s*\}*\s*$', "", new_raw.lstrip('"'))
+                args["old_string"] = old_clean.replace(r'\"', '"')
+                args["new_string"] = new_clean.replace(r'\"', '"')
+        elif old_match:
+            old_raw = raw_text[old_match.end() :].strip()
+            old_clean = re.sub(r'"?\s*\}*\s*$', "", old_raw.lstrip('"'))
+            args["old_string"] = old_clean.replace(r'\"', '"')
+
+    elif fn_lower in ("read", "read_file"):
+        fp_match = re.search(r'"(?:file_path|path)"\s*:\s*"([^"]+)"', raw_text)
+        if fp_match:
+            args["file_path"] = fp_match.group(1).strip()
+
+    elif fn_lower in ("glob", "grep"):
+        pat_match = re.search(r'"pattern"\s*:\s*"([^"]+)"', raw_text)
+        if pat_match:
+            args["pattern"] = pat_match.group(1).strip()
+        path_match = re.search(r'"path"\s*:\s*"([^"]+)"', raw_text)
+        if path_match:
+            args["path"] = path_match.group(1).strip()
+
+    return args
 
 
 def parse_tool_payload(raw_payload: str) -> dict | None:
@@ -229,10 +303,14 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                 for match in param_matches:
                     p_name = match.group(1)
                     p_val_raw = unwrap_markdown_autolinks(match.group(2).strip())
+                    if "&" in p_val_raw:
+                        p_val_raw = html.unescape(p_val_raw)
                     try:
                         p_val = json.loads(p_val_raw)
                     except Exception:
                         p_val = p_val_raw
+                    if isinstance(p_val, str) and "&" in p_val:
+                        p_val = html.unescape(p_val)
                     params[p_name] = _unwrap_autolinks_in_obj(p_val)
                 return {"name": tool_name, "arguments": params}
             # Check for raw JSON inside <invoke ...>{...}</invoke>
@@ -302,6 +380,12 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                             return {"name": func_name, "arguments": _unwrap_autolinks_in_obj(args_obj)}
                 except Exception:
                     pass
+
+        # Robust parameter recovery for unescaped code / malformed JSON
+        fallback_args = _fallback_extract_arguments(func_name, clean)
+        if fallback_args:
+            return {"name": func_name, "arguments": _unwrap_autolinks_in_obj(fallback_args)}
+
         return {"name": func_name, "arguments": {}}
 
     return None

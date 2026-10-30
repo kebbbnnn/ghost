@@ -953,7 +953,7 @@ def test_emulation_pipeline_discovery_to_action_tool_chaining():
     assert ctx["is_synthesis_phase"] is False
     sys_msg = next(m for m in messages if m["role"] == "system")
     assert "CRITICAL MODE: TOOL_CALL_REQUIRED" in sys_msg["content"]
-    assert "[GHOST KERNEL OVERRIDE — MANDATORY SYSTEM DIRECTIVE]" in sys_msg["content"]
+    assert "[GHOST WORKSPACE DIRECTIVE]" in sys_msg["content"]
     assert "path: string [required]" in sys_msg["content"]
 
 
@@ -996,7 +996,7 @@ def test_gemini_provider_retries_on_workspace_refusal_or_missing_tool_call():
     messages = [
         {
             "role": "system",
-            "content": "[GHOST KERNEL OVERRIDE]\nCRITICAL MODE: TOOL_CALL_REQUIRED.\nAvailable external RPC tools:\n- write(path: string, content: string)"
+            "content": "[GHOST WORKSPACE DIRECTIVE]\nCRITICAL MODE: TOOL_CALL_REQUIRED.\nAvailable external RPC tools:\n- write(path: string, content: string)"
         },
         {"role": "user", "content": "Create index.html with a hello world page."}
     ]

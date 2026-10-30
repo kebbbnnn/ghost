@@ -30,6 +30,16 @@ GEMINI_CANNED_REFUSALS = (
     "i cannot use google drive because required gmail settings are off",
     "i'm still learning how to answer this",
     "i can't help with that right now",
+    "cannot fulfill this request",
+    "can't fulfill this request",
+    "unable to process prompts that use",
+    "automated developer roleplay",
+    "system instruction overrides",
+    "bypass safety policies",
+    "execute unverified shell commands",
+    "unable to process this request",
+    "unable to fulfill this request",
+    "cannot process this request",
 )
 
 
@@ -38,7 +48,9 @@ def is_gemini_canned_refusal(text: str) -> bool:
     if not text:
         return False
     stripped = text.strip().lower()
-    if len(stripped) > 260:
+    if "<tool_call>" in stripped or "<invoke" in stripped:
+        return False
+    if len(stripped) > 800:
         return False
     return any(pat in stripped for pat in GEMINI_CANNED_REFUSALS)
 

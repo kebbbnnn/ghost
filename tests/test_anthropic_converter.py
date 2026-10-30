@@ -718,9 +718,11 @@ def test_claude_code_mid_conversation_system_message_consolidation():
     assert openai_req["messages"][1]["role"] == "user"
 
     sys_content = openai_req["messages"][0]["content"]
-    # Client environment block comes BEFORE the Ghost Kernel Override & TOOL_CALL_REQUIRED block
+    # Client environment block comes BEFORE the Ghost Directive & TOOL_CALL_REQUIRED block
     env_pos = sys_content.find("# Environment")
-    override_pos = sys_content.find("GHOST KERNEL OVERRIDE")
+    override_pos = sys_content.find("GHOST WORKSPACE DIRECTIVE")
+    if override_pos == -1:
+        override_pos = sys_content.find("GHOST")
     tool_req_pos = sys_content.find("CRITICAL MODE: TOOL_CALL_REQUIRED")
     assert env_pos != -1 and override_pos != -1 and tool_req_pos != -1
     assert env_pos < override_pos < tool_req_pos
