@@ -80,6 +80,10 @@ CHATGPT_CAPABILITY_REFUSAL_PATTERNS = (
     "system instruction overrides",
     "bypass safety policies",
     "execute unverified shell commands",
+    "encountering an error",
+    "try something else for you",
+    "something went wrong",
+    "temporary issue. please try again",
 )
 
 

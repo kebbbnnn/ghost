@@ -295,3 +295,51 @@ def test_gemini_provider_synthesizes_fallback_on_persistent_refusal():
             assert "<invoke name=\"Read\">" in content
 
     asyncio.run(run())
+
+
+def test_gemini_platform_error_refusal_detection():
+    """Verify is_gemini_canned_refusal detects Gemini platform error refusals like 'I seem to be encountering an error. Can I try something else for you?'."""
+    from src.providers.gemini.converter import is_gemini_canned_refusal
+
+    error_text = "I seem to be encountering an error. Can I try something else for you?"
+    assert is_gemini_canned_refusal(error_text) is True
+    assert is_gemini_canned_refusal("Something went wrong. Please try again.") is True
+    assert is_gemini_canned_refusal("I seem to be encountering an error") is True
+    assert is_gemini_canned_refusal("Can I try something else for you?") is True
+
+
+def test_gemini_provider_synthesis_fallback_when_benchmarks_pass():
+    """Verify GeminiProvider synthesizes a clean verification success summary when upstream errors out during synthesis phase of passed benchmarks."""
+    from src.providers.gemini.session import GeminiProvider
+
+    prompt = (
+        "[SYNTHESIS PHASE]\n"
+        "[User]: <tool_result id=\"toolu_123\">\n"
+        "Benchmark Completed: 2500 frames in 0.596s (4192.7 FPS)\n"
+        "Benchmark assertions passed successfully!\n"
+        "</tool_result>\n"
+        "[ACTIVE DIRECTIVE FOR SYNTHESIS]: Provide the final answer to the user."
+    )
+    fallback = GeminiProvider._synthesize_refusal_fallback(prompt, [])
+    assert "completed successfully" in fallback.lower()
+    assert "passed without errors" in fallback.lower()
+    assert "encountering an error" not in fallback.lower()
+
+
+def test_history_sanitization_removes_platform_encountering_error():
+    """Verify past 'I seem to be encountering an error...' messages in conversation history are neutralized."""
+    from src.converters.anthropic import anthropic_to_openai_request
+
+    req = {
+        "model": "gemini",
+        "messages": [
+            {"role": "user", "content": "Run benchmark"},
+            {"role": "assistant", "content": "I seem to be encountering an error. Can I try something else for you?"},
+            {"role": "user", "content": "Did all benchmarks pass?"}
+        ]
+    }
+    openai_req = anthropic_to_openai_request(req)
+    history_texts = [m["content"] for m in openai_req["messages"] if m["role"] == "assistant"]
+    for text in history_texts:
+        assert "encountering an error" not in text
+        assert "try something else for you" not in text

@@ -40,6 +40,12 @@ GEMINI_CANNED_REFUSALS = (
     "unable to process this request",
     "unable to fulfill this request",
     "cannot process this request",
+    "i seem to be encountering an error",
+    "encountering an error",
+    "can i try something else for you",
+    "try something else for you",
+    "something went wrong",
+    "temporary issue. please try again",
 )
 
 
