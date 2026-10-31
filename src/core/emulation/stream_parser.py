@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 OPEN_TAG = "<tool_call>"
 CLOSE_TAG = "</tool_call>"
-OPEN_TAGS = ["<tool_call>", "<invoke"]
+OPEN_TAGS = ["<tool_call>", "<invoke", "<update", "<edit", "<write", "<bash"]
 
 AUTOLINK_URL_PATTERN = re.compile(
     r"\[(https?://[^\s\[\]\(\)\"']+?)\]\(https?://[^\s\[\]\(\)\"']+?\)"
@@ -182,6 +182,35 @@ def _sanitize_json_string(raw: str) -> str:
     return clean
 
 
+def normalize_tool_name(tool_name: str, params: dict | None = None) -> str:
+    """Normalize common LLM tool aliases to standard Claude Code tool names."""
+    if not tool_name:
+        return "unknown"
+    tn = str(tool_name).strip()
+    tn_lower = tn.lower()
+    params_dict = params if isinstance(params, dict) else {}
+
+    if tn_lower in ("update", "update_file"):
+        if "content" in params_dict and "old_string" not in params_dict:
+            return "Write"
+        return "Edit"
+    if tn_lower in ("edit_file", "str_replace_editor", "str_replace_edit", "replace"):
+        return "Edit"
+    if tn_lower in ("write_file", "create_file"):
+        return "Write"
+    if tn_lower in ("read_file", "view_file", "view"):
+        return "Read"
+    if tn_lower in ("execute_command", "run_command", "shell", "sh", "terminal"):
+        return "Bash"
+    if tn_lower in ("list_directory", "ls", "dir"):
+        return "LS"
+    if tn_lower in ("search_files", "find_files"):
+        return "Glob"
+    if tn_lower in ("grep_search",):
+        return "Grep"
+    return tn
+
+
 def _normalize_parsed_tool_dict(data: dict) -> dict | None:
     """Normalize a parsed tool dict with 'name'/'tool'/'function' and 'arguments'/'input'/'parameters'."""
     name = data.get("name") or data.get("tool") or data.get("function")
@@ -213,7 +242,9 @@ def _normalize_parsed_tool_dict(data: dict) -> dict | None:
                 pass
     if not isinstance(args, dict):
         args = {}
-    return {"name": name.strip(), "arguments": _unwrap_autolinks_in_obj(args)}
+
+    norm_name = normalize_tool_name(name.strip(), args)
+    return {"name": norm_name, "arguments": _unwrap_autolinks_in_obj(args)}
 
 
 def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
@@ -222,7 +253,7 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
     args: dict = {}
 
     if fn_lower in ("write", "write_file"):
-        fp_match = re.search(r'"(?:file_path|path)"\s*:\s*"([^"]+)"', raw_text)
+        fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"([^"]+)"', raw_text)
         if fp_match:
             args["file_path"] = fp_match.group(1).strip()
         c_match = re.search(r'"content"\s*:\s*', raw_text)
@@ -248,12 +279,12 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
                 c_clean = c_clean.replace(r'\"', '"')
                 args["command"] = c_clean
 
-    elif fn_lower in ("edit", "edit_file"):
-        fp_match = re.search(r'"(?:file_path|path)"\s*:\s*"([^"]+)"', raw_text)
+    elif fn_lower in ("edit", "edit_file", "update", "update_file"):
+        fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"([^"]+)"', raw_text)
         if fp_match:
             args["file_path"] = fp_match.group(1).strip()
-        old_match = re.search(r'"old_string"\s*:\s*', raw_text)
-        new_match = re.search(r'"new_string"\s*:\s*', raw_text)
+        old_match = re.search(r'"(?:old_string|old_str)"\s*:\s*', raw_text)
+        new_match = re.search(r'"(?:new_string|new_str)"\s*:\s*', raw_text)
         if old_match and new_match:
             if old_match.start() < new_match.start():
                 old_raw = raw_text[old_match.end() : new_match.start()].strip()
@@ -266,9 +297,17 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
             old_raw = raw_text[old_match.end() :].strip()
             old_clean = re.sub(r'"?\s*\}*\s*$', "", old_raw.lstrip('"'))
             args["old_string"] = old_clean.replace(r'\"', '"')
+        c_match = re.search(r'"content"\s*:\s*', raw_text)
+        if c_match and "old_string" not in args:
+            c_raw = raw_text[c_match.end() :].strip()
+            if c_raw.startswith('"'):
+                c_raw = c_raw[1:]
+            c_clean = re.sub(r'"?\s*\}*\s*$', "", c_raw)
+            c_clean = c_clean.replace(r'\"', '"')
+            args["content"] = c_clean
 
     elif fn_lower in ("read", "read_file"):
-        fp_match = re.search(r'"(?:file_path|path)"\s*:\s*"([^"]+)"', raw_text)
+        fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"([^"]+)"', raw_text)
         if fp_match:
             args["file_path"] = fp_match.group(1).strip()
 
@@ -276,7 +315,7 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
         pat_match = re.search(r'"pattern"\s*:\s*"([^"]+)"', raw_text)
         if pat_match:
             args["pattern"] = pat_match.group(1).strip()
-        path_match = re.search(r'"path"\s*:\s*"([^"]+)"', raw_text)
+        path_match = re.search(r'"(?:path|dir|directory)"\s*:\s*"([^"]+)"', raw_text)
         if path_match:
             args["path"] = path_match.group(1).strip()
 
@@ -284,18 +323,68 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
 
 
 def parse_tool_payload(raw_payload: str) -> dict | None:
-    """Safely parse a string payload (JSON or <invoke> XML) into a tool call dict with 'name' and 'arguments'."""
+    """Safely parse a string payload (JSON, <invoke> XML, or direct tool XML tags) into a tool call dict with 'name' and 'arguments'."""
     if not raw_payload or not raw_payload.strip():
         return None
 
     unwrapped = unwrap_markdown_autolinks(raw_payload).strip()
 
-    # 1. Support <invoke name="...">...</invoke> XML format if present
+    # 1. Support direct tool XML tags e.g. <update>...</update>, <edit>...</edit>, <write>...</write>, <bash>...</bash>
+    tag_m = re.match(r"^\s*<([a-zA-Z0-9_-]+)", unwrapped)
+    if tag_m and tag_m.group(1).lower() in ("update", "edit", "write", "bash", "read", "glob", "grep", "ls"):
+        cand_tag = tag_m.group(1).lower()
+        params: dict = {}
+        for dk in (
+            "file_path", "path", "file", "filename", "filepath",
+            "old_string", "new_string", "old_str", "new_str",
+            "content", "command", "cmd", "pattern", "replace_all"
+        ):
+            dk_match = re.search(rf'<{dk}\b[^>]*>(.*?)</{dk}>', unwrapped, re.DOTALL)
+            if dk_match:
+                val = dk_match.group(1)
+                if dk in ("content", "old_string", "new_string", "old_str", "new_str"):
+                    val = re.sub(r"^\r?\n|\r?\n$", "", val)
+                else:
+                    val = val.strip()
+                val = unwrap_markdown_autolinks(val)
+                if "&" in val:
+                    val = html.unescape(val)
+                params[dk] = val
+
+        open_tag_match = re.match(r"^\s*<[^>]+>", unwrapped)
+        if open_tag_match:
+            open_tag_str = open_tag_match.group(0)
+            for attr in ("file_path", "path", "file", "command"):
+                if attr not in params:
+                    m_attr = re.search(rf'\b{attr}=["\']([^"\']+)["\']', open_tag_str)
+                    if m_attr:
+                        params[attr] = m_attr.group(1).strip()
+
+        # Parameter name normalization
+        if "file_path" not in params:
+            for alt in ("path", "file", "filename", "filepath"):
+                if alt in params:
+                    params["file_path"] = params.pop(alt)
+                    break
+        if "old_string" not in params and "old_str" in params:
+            params["old_string"] = params.pop("old_str")
+        if "new_string" not in params and "new_str" in params:
+            params["new_string"] = params.pop("new_str")
+        if "command" not in params:
+            for alt in ("cmd", "code", "script"):
+                if alt in params:
+                    params["command"] = params.pop(alt)
+                    break
+
+        norm_name = normalize_tool_name(cand_tag, params)
+        return {"name": norm_name, "arguments": _unwrap_autolinks_in_obj(params)}
+
+    # 2. Support <invoke name="...">...</invoke> XML format if present
     if "<parameter" in unwrapped or unwrapped.startswith("<invoke") or 'name="' in unwrapped[:60] or "name='" in unwrapped[:60]:
         m_name = re.search(r'name=["\']([^"\']+)["\']', unwrapped)
         if m_name and ("<parameter" in unwrapped or "</invoke>" in unwrapped or unwrapped.startswith("<invoke")):
             tool_name = m_name.group(1).strip()
-            params: dict = {}
+            params = {}
             param_matches = list(
                 re.finditer(r'<parameter\s+name=["\']([^"\']+)["\']\s*>(.*?)</parameter>', unwrapped, re.DOTALL)
             )
@@ -312,7 +401,8 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                     if isinstance(p_val, str) and "&" in p_val:
                         p_val = html.unescape(p_val)
                     params[p_name] = _unwrap_autolinks_in_obj(p_val)
-                return {"name": tool_name, "arguments": params}
+                norm_name = normalize_tool_name(tool_name, params)
+                return {"name": norm_name, "arguments": params}
             # Check for raw JSON inside <invoke ...>{...}</invoke>
             brace_idx = unwrapped.find("{")
             if brace_idx != -1:
@@ -322,10 +412,12 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                         try:
                             parsed_inner = json.loads(re.sub(r",\s*(\}|\])", r"\1", candidate))
                             if isinstance(parsed_inner, dict):
-                                return {"name": tool_name, "arguments": _unwrap_autolinks_in_obj(parsed_inner)}
+                                norm_name = normalize_tool_name(tool_name, parsed_inner)
+                                return {"name": norm_name, "arguments": _unwrap_autolinks_in_obj(parsed_inner)}
                         except Exception:
                             pass
-            return {"name": tool_name, "arguments": params}
+            norm_name = normalize_tool_name(tool_name, params)
+            return {"name": norm_name, "arguments": params}
 
     clean = _sanitize_json_string(unwrapped)
     decoder = json.JSONDecoder()
@@ -534,6 +626,18 @@ class StreamEmulationProcessor:
                     if matched_open_tag == "<invoke":
                         self.active_close_tag = "</invoke>"
                         self.tool_accumulator = "<invoke"
+                    elif matched_open_tag == "<update":
+                        self.active_close_tag = "</update>"
+                        self.tool_accumulator = "<update"
+                    elif matched_open_tag == "<edit":
+                        self.active_close_tag = "</edit>"
+                        self.tool_accumulator = "<edit"
+                    elif matched_open_tag == "<write":
+                        self.active_close_tag = "</write>"
+                        self.tool_accumulator = "<write"
+                    elif matched_open_tag == "<bash":
+                        self.active_close_tag = "</bash>"
+                        self.tool_accumulator = "<bash"
                     else:
                         self.active_close_tag = CLOSE_TAG
                         self.tool_accumulator = ""
@@ -605,8 +709,8 @@ class StreamEmulationProcessor:
                 close_idx = self.buffer.find(close_tag)
                 if close_idx != -1:
                     self.tool_accumulator += self.buffer[:close_idx]
-                    if close_tag == "</invoke>":
-                        self.tool_accumulator += "</invoke>"
+                    if close_tag in ("</invoke>", "</update>", "</edit>", "</write>", "</bash>"):
+                        self.tool_accumulator += close_tag
                     self.buffer = self.buffer[close_idx + len(close_tag):]
                     self.in_tool_tag = False
 
@@ -690,7 +794,7 @@ class StreamEmulationProcessor:
             return
 
         call_id = f"call_{uuid.uuid4().hex[:12]}"
-        func_name = parsed["name"]
+        func_name = normalize_tool_name(parsed["name"], parsed["arguments"])
         arguments_str = (
             json.dumps(parsed["arguments"])
             if not isinstance(parsed["arguments"], str)

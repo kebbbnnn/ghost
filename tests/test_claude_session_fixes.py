@@ -343,3 +343,246 @@ def test_history_sanitization_removes_platform_encountering_error():
     for text in history_texts:
         assert "encountering an error" not in text
         assert "try something else for you" not in text
+
+
+def test_tool_name_normalization_and_parameter_aliasing():
+    """Verify tool aliases (Update -> Edit/Write) and parameter aliases (path -> file_path) are cleanly normalized."""
+    from src.core.emulation.stream_parser import normalize_tool_name
+    from src.converters.anthropic import _normalize_code_tool_params
+
+    # Update with old_string/new_string -> Edit
+    assert normalize_tool_name("Update", {"file_path": "index.html", "old_string": "a", "new_string": "b"}) == "Edit"
+    assert normalize_tool_name("update_file", {"path": "index.html", "old_string": "a"}) == "Edit"
+
+    # Update with content only -> Write
+    assert normalize_tool_name("Update", {"file_path": "index.html", "content": "hello"}) == "Write"
+
+    # Other common aliases
+    assert normalize_tool_name("edit_file") == "Edit"
+    assert normalize_tool_name("str_replace_editor") == "Edit"
+    assert normalize_tool_name("write_file") == "Write"
+    assert normalize_tool_name("run_command") == "Bash"
+    assert normalize_tool_name("list_directory") == "LS"
+
+    # Parameter aliases
+    p1 = {"path": "index.html", "old_str": "foo", "new_str": "bar"}
+    norm1 = _normalize_code_tool_params("Edit", p1)
+    assert norm1["file_path"] == "index.html"
+    assert "path" not in norm1
+    assert norm1["old_string"] == "foo"
+    assert norm1["new_string"] == "bar"
+
+    p2 = {"cmd": "pytest"}
+    norm2 = _normalize_code_tool_params("Bash", p2)
+    assert norm2["command"] == "pytest"
+    assert "cmd" not in norm2
+
+
+def test_direct_update_tag_parsing_in_invoke_xml():
+    """Verify direct <update>...</update> XML tags with <new_string> are parsed cleanly into Edit tool call."""
+    xml_block = (
+        "<update>\n"
+        "<file_path>index.html</file_path>\n"
+        "<old_string>playerMesh.rotation.y = 0;</old_string>\n"
+        "<new_string>playerMesh.rotation.y = moveAngle;\n"
+        "} else {\n"
+        "playerBody.velocity.x *= 0.6;\n"
+        "playerBody.velocity.z *= 0.6;\n"
+        "}</new_string>\n"
+        "</update>"
+    )
+    tool_name, params = _parse_invoke_xml(xml_block)
+    assert tool_name == "Edit"
+    assert params["file_path"] == "index.html"
+    assert "playerMesh.rotation.y = 0;" in params["old_string"]
+    assert "playerBody.velocity.x *= 0.6;" in params["new_string"]
+
+
+def test_streaming_direct_update_tag_interception():
+    """Verify streaming processor intercepts <update> tags without leaking closing tags as plain text."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    async def run():
+        async def mock_stream():
+            yield 'data: {"choices": [{"delta": {"content": "Updating the file now.\\n<update>\\n<file_path>index.html</file_path>\\n<old_string>foo</old_string>\\n<new_string>bar</new_string>\\n</update>"}}]}\n\n'
+            yield 'data: [DONE]\n\n'
+
+        events = []
+        async for sse in openai_to_anthropic_stream(mock_stream(), model="auto"):
+            for line in sse.split("\n"):
+                if line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+
+        # Verify text does not leak raw <update> or </update> tags
+        text_chunks = [e["delta"]["text"] for e in events if e.get("type") == "content_block_delta" and e.get("delta", {}).get("type") == "text_delta"]
+        full_text = "".join(text_chunks)
+        assert "<update>" not in full_text
+        assert "</update>" not in full_text
+        assert "Updating the file now." in full_text
+
+        # Verify tool_use block was emitted with name="Edit"
+        tool_starts = [e for e in events if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"]
+        assert len(tool_starts) == 1
+        assert tool_starts[0]["content_block"]["name"] == "Edit"
+
+    asyncio.run(run())
+
+
+def test_safeguard_results_in_non_streaming_response():
+    """Verify safeguard_results are returned in non-streaming responses when requested."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_json
+
+    async def run():
+        openai_resp = {
+            "model": "claude-3-5-sonnet",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": '<invoke name="Edit"><parameter name="file_path">app.js</parameter><parameter name="old_string">1</parameter><parameter name="new_string">2</parameter></invoke>'
+                    }
+                }
+            ]
+        }
+        resp = await openai_to_anthropic_json(
+            openai_resp,
+            model="claude-3-5-sonnet",
+            safeguards=[{"type": "dangerous_tool_use"}],
+            needs_safeguards=True,
+        )
+        assert "safeguard_results" in resp
+        assert len(resp["safeguard_results"]) == 1
+        sr = resp["safeguard_results"][0]
+        assert sr["type"] == "dangerous_tool_use"
+        assert sr["status"]["type"] == "available"
+        # The tool use should be evaluated as not_flagged
+        tool_uses = sr["status"]["tool_uses"]
+        assert len(tool_uses) == 1
+        tu_id = next(iter(tool_uses))
+        assert tool_uses[tu_id] == {"type": "evaluated", "outcome": "not_flagged"}
+
+    asyncio.run(run())
+
+
+def test_safeguard_results_in_streaming_message_delta():
+    """Verify safeguards in message_start and safeguard_results in message_delta for streaming requests."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    async def run():
+        async def mock_stream():
+            yield 'data: {"choices": [{"delta": {"content": "<tool_call>{\\"name\\": \\"Write\\", \\"arguments\\": {\\"file_path\\": \\"t.txt\\", \\"content\\": \\"ok\\"}}</tool_call>"}}]}\n\n'
+            yield 'data: [DONE]\n\n'
+
+        events = []
+        async for sse in openai_to_anthropic_stream(
+            mock_stream(),
+            model="auto",
+            safeguards=[{"type": "dangerous_tool_use"}],
+            needs_safeguards=True,
+        ):
+            for line in sse.split("\n"):
+                if line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+
+        # Check message_start
+        m_starts = [e for e in events if e.get("type") == "message_start"]
+        assert len(m_starts) == 1
+        assert "safeguards" in m_starts[0]["message"]
+        assert m_starts[0]["message"]["safeguards"] == [{"type": "dangerous_tool_use"}]
+
+        # Check message_delta
+        m_deltas = [e for e in events if e.get("type") == "message_delta"]
+        assert len(m_deltas) == 1
+        delta = m_deltas[0]["delta"]
+        assert "safeguard_results" in delta
+        sr = delta["safeguard_results"][0]
+        assert sr["type"] == "dangerous_tool_use"
+        assert sr["status"]["type"] == "available"
+        tool_uses = sr["status"]["tool_uses"]
+        assert len(tool_uses) == 1
+        tu_id = next(iter(tool_uses))
+        assert tool_uses[tu_id]["outcome"] == "not_flagged"
+
+    asyncio.run(run())
+
+
+def test_server_safeguards_passthrough_non_streaming(monkeypatch):
+    """Verify live FastAPI /v1/messages endpoint returns safeguard_results and anthropic-beta header."""
+    from starlette.testclient import TestClient
+    from src.server import app
+    from src.providers import PROVIDERS
+
+    mock_provider = PROVIDERS[0]
+    async def mock_non_streaming_chat(messages, model, conversation_id=None, parent_message_id=None):
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "I am ready."}}],
+        }
+    monkeypatch.setattr(mock_provider, "non_streaming_chat", mock_non_streaming_chat)
+
+    client = TestClient(app)
+    req_body = {
+        "model": "auto",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "safeguards": [{"type": "dangerous_tool_use"}],
+        "stream": False,
+    }
+    resp = client.post(
+        "/v1/messages",
+        json=req_body,
+        headers={"anthropic-beta": "dangerous-tool-use-2026-09-03"}
+    )
+    assert resp.status_code == 200
+    assert "dangerous-tool-use-2026-09-03" in resp.headers.get("anthropic-beta", "")
+    data = resp.json()
+    assert "safeguard_results" in data
+    assert len(data["safeguard_results"]) == 1
+    assert data["safeguard_results"][0]["type"] == "dangerous_tool_use"
+    assert data["safeguard_results"][0]["status"]["type"] == "available"
+
+
+def test_server_safeguards_passthrough_streaming(monkeypatch):
+    """Verify live FastAPI /v1/messages endpoint streaming yields safeguard_results in message_delta."""
+    from starlette.testclient import TestClient
+    from src.server import app
+    from src.providers import PROVIDERS
+    import json
+
+    mock_provider = PROVIDERS[0]
+    async def mock_stream_chat(messages, model, conversation_id=None, parent_message_id=None):
+        yield 'data: {"choices": [{"delta": {"content": "Hello world"}}]}\n\n'
+        yield 'data: [DONE]\n\n'
+    monkeypatch.setattr(mock_provider, "stream_chat", mock_stream_chat)
+
+    client = TestClient(app)
+    req_body = {
+        "model": "auto",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "safeguards": [{"type": "dangerous_tool_use"}],
+        "stream": True,
+    }
+    resp = client.post(
+        "/v1/messages",
+        json=req_body,
+        headers={"anthropic-beta": "dangerous-tool-use-2026-09-03"}
+    )
+    assert resp.status_code == 200
+    assert "dangerous-tool-use-2026-09-03" in resp.headers.get("anthropic-beta", "")
+
+    events = []
+    for line in resp.text.split("\n"):
+        if line.startswith("data: "):
+            events.append(json.loads(line[6:]))
+
+    # Verify message_start contains safeguards
+    m_starts = [e for e in events if e.get("type") == "message_start"]
+    assert len(m_starts) == 1
+    assert "safeguards" in m_starts[0]["message"]
+
+    # Verify message_delta contains safeguard_results
+    m_deltas = [e for e in events if e.get("type") == "message_delta"]
+    assert len(m_deltas) == 1
+    assert "safeguard_results" in m_deltas[0]["delta"]
+    assert m_deltas[0]["delta"]["safeguard_results"][0]["status"]["type"] == "available"

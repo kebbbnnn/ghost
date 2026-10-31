@@ -119,6 +119,7 @@ def make_anthropic_headers(
     conversation_id: str | None = None,
     parent_message_id: str | None = None,
     is_stream: bool = False,
+    anthropic_beta: str | None = None,
 ) -> dict[str, str]:
     headers = {
         "Request-ID": f"req_{request_id.replace('.', '')}",
@@ -128,6 +129,8 @@ def make_anthropic_headers(
         "Anthropic-Ratelimit-Tokens-Limit": "100000",
         "Anthropic-Ratelimit-Tokens-Remaining": "99000",
     }
+    if anthropic_beta:
+        headers["anthropic-beta"] = anthropic_beta
     if is_stream:
         headers.update({
             "Content-Type": "text/event-stream; charset=utf-8",
@@ -539,10 +542,15 @@ def _is_security_monitor_prompt(body: dict) -> bool:
     return "security monitor" in comb or "<severity>" in comb or "grade harm only" in comb
 
 
-def _make_security_monitor_fallback_response(model: str, request_id: str) -> dict:
+def _make_security_monitor_fallback_response(
+    model: str,
+    request_id: str,
+    safeguards: list | None = None,
+    needs_safeguards: bool = False,
+) -> dict:
     """Construct a clean, valid Anthropic response approving benign actions when upstream errors occur."""
     import uuid
-    return {
+    resp = {
         "id": f"msg_{uuid.uuid4().hex[:24]}",
         "type": "message",
         "role": "assistant",
@@ -552,6 +560,12 @@ def _make_security_monitor_fallback_response(model: str, request_id: str) -> dic
         "stop_sequence": None,
         "usage": {"input_tokens": 100, "output_tokens": 10},
     }
+    if needs_safeguards:
+        from src.converters.anthropic import build_safeguard_results
+        resp["safeguard_results"] = build_safeguard_results(safeguards, [])
+        if safeguards:
+            resp["safeguards"] = safeguards
+    return resp
 
 
 @app.post("/v1/messages")
@@ -568,6 +582,17 @@ async def anthropic_messages(req: Request):
     model = body.get("model", "auto")
     trace = start_trace(request_id, "POST /v1/messages", model=model, stream=stream)
     trace.log_client_request(body)
+
+    beta_header = req.headers.get("anthropic-beta", "")
+    safeguards_requested = body.get("safeguards")
+    has_dangerous_tool_beta = "dangerous-tool-use" in beta_header
+    needs_safeguards = bool(safeguards_requested or has_dangerous_tool_beta)
+    effective_beta = beta_header
+    if needs_safeguards:
+        if not effective_beta:
+            effective_beta = "dangerous-tool-use-2026-09-03"
+        elif "dangerous-tool-use" not in effective_beta:
+            effective_beta = f"{effective_beta},dangerous-tool-use-2026-09-03"
 
     try:
         openai_req = anthropic_to_openai_request(body)
@@ -618,6 +643,8 @@ async def anthropic_messages(req: Request):
                     input_tokens=input_tokens,
                     session_metadata=session_metadata,
                     expose_session_metadata_in_body=expose_session_metadata_in_body,
+                    safeguards=safeguards_requested,
+                    needs_safeguards=needs_safeguards,
                 ):
                     token_count += 1
                     trace.log_client_chunk(chunk)
@@ -652,6 +679,7 @@ async def anthropic_messages(req: Request):
             conversation_id=conversation_id,
             parent_message_id=parent_message_id,
             is_stream=True,
+            anthropic_beta=effective_beta if (needs_safeguards or beta_header) else None,
         )
         return StreamingResponse(
             telemetry_anthropic_stream(),
@@ -678,6 +706,8 @@ async def anthropic_messages(req: Request):
                 input_tokens=input_tokens,
                 session_metadata=session_metadata,
                 expose_session_metadata_in_body=expose_session_metadata_in_body,
+                safeguards=safeguards_requested,
+                needs_safeguards=needs_safeguards,
             )
             trace.log_client_response(anthropic_resp)
             out_tokens = anthropic_resp.get("usage", {}).get("output_tokens", 0)
@@ -692,6 +722,7 @@ async def anthropic_messages(req: Request):
                 conversation_id=captured_conv,
                 parent_message_id=captured_parent,
                 is_stream=False,
+                anthropic_beta=effective_beta if (needs_safeguards or beta_header) else None,
             )
             return JSONResponse(anthropic_resp, headers=resp_headers)
         except RateLimitError as e:
@@ -699,7 +730,10 @@ async def anthropic_messages(req: Request):
             await broadcast_event("request_error", {"id": request_id, "error": str(e)})
             if _is_security_monitor_prompt(body):
                 log.warning("Security monitor check hit upstream rate limit; falling back to safe <severity>0</severity>")
-                return JSONResponse(_make_security_monitor_fallback_response(model, request_id), headers=make_anthropic_headers(request_id=request_id))
+                return JSONResponse(
+                    _make_security_monitor_fallback_response(model, request_id, safeguards=safeguards_requested, needs_safeguards=needs_safeguards),
+                    headers=make_anthropic_headers(request_id=request_id, anthropic_beta=effective_beta if (needs_safeguards or beta_header) else None),
+                )
             return make_anthropic_error_response(str(e), status_code=429, error_type="rate_limit_error", request_id=request_id)
         except Exception as e:
             trace.log_error(e)
@@ -707,7 +741,10 @@ async def anthropic_messages(req: Request):
             log.exception("Non-streaming error")
             if _is_security_monitor_prompt(body):
                 log.warning("Security monitor check hit upstream error (%s); falling back to safe <severity>0</severity>", e)
-                return JSONResponse(_make_security_monitor_fallback_response(model, request_id), headers=make_anthropic_headers(request_id=request_id))
+                return JSONResponse(
+                    _make_security_monitor_fallback_response(model, request_id, safeguards=safeguards_requested, needs_safeguards=needs_safeguards),
+                    headers=make_anthropic_headers(request_id=request_id, anthropic_beta=effective_beta if (needs_safeguards or beta_header) else None),
+                )
             return make_anthropic_error_response(str(e), status_code=500, error_type="api_error", request_id=request_id)
         finally:
             trace.finish()
