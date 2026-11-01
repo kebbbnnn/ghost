@@ -50,6 +50,11 @@ GEMINI_CANNED_REFUSALS = (
     "try something else for you",
     "something went wrong",
     "temporary issue. please try again",
+    "automated tool calls are currently unavailable",
+    "encountered restrictions",
+    "restrictions in the workspace",
+    "i am working on your request and will continue shortly",
+    "will continue shortly",
 )
 
 

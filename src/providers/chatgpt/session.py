@@ -128,10 +128,35 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
         return False
     if is_chatgpt_capability_refusal(response_text):
         return True
+    lower_r = response_text.lower()
+    if any(
+        phrase in lower_r
+        for phrase in (
+            "i am working on",
+            "i'm working on",
+            "i am currently checking",
+            "i'm checking",
+            "preparing to run",
+            "will continue shortly",
+            "working on your request",
+            "automated tool calls are currently unavailable",
+            "encountered restrictions",
+        )
+    ):
+        return True
+    all_msgs_text = " ".join(
+        str(m.get("content", "")) for m in messages
+    )
     if (
         "IMPORTANT: You MUST call" in sys_text
         or "ACTION REQUIRED — TASK INCOMPLETE" in sys_text
         or "[MULTI-FILE CREATION PLAN]:" in sys_text
+        or "MANDATORY: Emit fresh <tool_call>" in all_msgs_text
+        or "Emit fresh <tool_call> tags" in all_msgs_text
+        or 'is_error="true"' in all_msgs_text
+        or "requires approval" in all_msgs_text
+        or "haven't granted it yet" in all_msgs_text
+        or any(kw in all_msgs_text for kw in ("FAILED", "Traceback", "NameError", "SyntaxError", "ImportError", "AssertionError"))
         or "```" in response_text
     ):
         return True

@@ -1618,6 +1618,58 @@ def test_synthesize_workflow_recovery_tool_call_missing_files_and_synthesis():
     assert "<invoke" not in call_passed
 
 
+def test_gemini_missing_tool_call_canned_reassurance_detection():
+    """Verify Gemini missing tool call flags canned reassurance without tool call as missing tool call."""
+    from src.providers.gemini.session import GeminiProvider
+
+    prompt = """
+[SYSTEM: HEADLESS API GATEWAY]
+[GHOST WORKSPACE DIRECTIVE]
+CRITICAL MODE: TOOL_CALL_REQUIRED.
+Traceback (most recent call last):
+  File "vm/lexer.py", line 10, in <module>
+    class TokenType(Enum):
+NameError: name 'Enum' is not defined
+[ACTIVE DIRECTIVE FOR CURRENT TURN]:
+MANDATORY: Emit fresh <tool_call> tags (or <invoke> blocks) for the current query above.
+"""
+    canned_reassurance = "I am working on fixing the remaining test failures and ensuring the VM runs smoothly."
+    assert GeminiProvider._is_missing_required_tool_call(prompt, canned_reassurance)
+
+    # Valid response with tool call should NOT be flagged
+    valid_with_tool = """
+I will inspect the file.
+<invoke name="Read">
+  <parameter name="file_path">vm/lexer.py</parameter>
+</invoke>
+"""
+    assert not GeminiProvider._is_missing_required_tool_call(prompt, valid_with_tool)
+
+
+def test_synthesize_workflow_recovery_permission_and_approval():
+    """Verify recovery tool call handles permission denial and approval errors."""
+    from src.core.emulation.stream_parser import synthesize_workflow_recovery_tool_call
+
+    prompt_perm = """
+[User]: <tool_result id="toolu_123" is_error="true">
+Claude requested permissions to write to /private/tmp/claude_bytecode_vm/vm/compiler.py, but you haven't granted it yet.
+</tool_result>
+"""
+    call = synthesize_workflow_recovery_tool_call(prompt_perm)
+    assert '<invoke name="Read">' in call
+    assert "/private/tmp/claude_bytecode_vm/vm/compiler.py" in call
+
+    prompt_appr = """
+[User]: <tool_result id="toolu_456" is_error="true">
+This command requires approval
+</tool_result>
+"""
+    call_appr = synthesize_workflow_recovery_tool_call(prompt_appr)
+    assert '<invoke name="Bash">' in call_appr
+    assert "pytest" in call_appr
+
+
+
 
 
 

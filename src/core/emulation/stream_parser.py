@@ -90,7 +90,16 @@ def synthesize_workflow_recovery_tool_call(prompt: str, messages: list[dict] | N
             return f'<invoke name="Read">\n  <parameter name="file_path">{failed_file}</parameter>\n</invoke>'
         return '<invoke name="Bash">\n  <parameter name="command">pytest</parameter>\n</invoke>'
 
-    # 2. If missing files are explicitly tracked:
+    # 2. If permission error or approval requirement was returned for a file or command:
+    m_perm = re.search(r"permissions to (?:write to|read|edit) ([^\s,]+)", search_text)
+    if m_perm:
+        perm_file = m_perm.group(1).strip().rstrip(".,")
+        return f'<invoke name="Read">\n  <parameter name="file_path">{perm_file}</parameter>\n</invoke>'
+
+    if "command requires approval" in search_text.lower():
+        return '<invoke name="Bash">\n  <parameter name="command">pytest</parameter>\n</invoke>'
+
+    # 3. If missing files are explicitly tracked:
     m_missing = re.search(r'Remaining files still NOT created/modified.*?: ([a-zA-Z0-9_\-\./]+)', search_text)
     if m_missing:
         missing_file = m_missing.group(1).split(",")[0].strip()

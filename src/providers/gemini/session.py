@@ -676,20 +676,9 @@ class GeminiProvider(BaseProvider):
             return True
         if has_closed_tool_call:
             return False
-        # 1. Explicit tool_choice ('required' / 'any' / 'tool') or incomplete coding workflow tracker was active
-        if (
-            "MANDATORY REQUIREMENT: You MUST invoke" in prompt
-            or "IMPORTANT: You MUST call" in prompt
-            or "ACTION REQUIRED — TASK INCOMPLETE" in prompt
-            or "[MULTI-FILE CREATION PLAN]:" in prompt
-        ):
-            return True
-        # 2. Model dumped a fenced markdown code block instead of calling Write / Edit / Bash
-        if "```" in content:
-            return True
-        # 3. Model claimed it cannot save files locally, mentioned Google Drive, or hallucinated a tool-call limit
+        # 1. Refusal, capability refusal, or canned reassurance without tool execution
         lower_c = content.lower()
-        if any(
+        if is_gemini_canned_refusal(content) or any(
             phrase in lower_c
             for phrase in (
                 "google drive",
@@ -700,8 +689,35 @@ class GeminiProvider(BaseProvider):
                 "reached their maximum limit",
                 "tool call limit",
                 "maximum tool call",
+                "i am working on",
+                "i'm working on",
+                "i am currently checking",
+                "i'm checking the codebase",
+                "i am checking",
+                "preparing to run",
+                "will continue shortly",
+                "working on your request",
+                "automated tool calls are currently unavailable",
+                "encountered restrictions",
             )
         ):
+            return True
+        # 2. Explicit tool requirement in prompt or error recovery turn
+        if (
+            "MANDATORY REQUIREMENT: You MUST invoke" in prompt
+            or "IMPORTANT: You MUST call" in prompt
+            or "ACTION REQUIRED — TASK INCOMPLETE" in prompt
+            or "[MULTI-FILE CREATION PLAN]:" in prompt
+            or "MANDATORY: Emit fresh <tool_call>" in prompt
+            or "Emit fresh <tool_call> tags" in prompt
+            or 'is_error="true"' in prompt
+            or "requires approval" in prompt
+            or "haven't granted it yet" in prompt
+            or any(kw in prompt for kw in ("FAILED", "Traceback", "NameError", "SyntaxError", "ImportError", "AssertionError"))
+        ):
+            return True
+        # 3. Model dumped a fenced markdown code block instead of calling Write / Edit / Bash
+        if "```" in content:
             return True
         return False
 
