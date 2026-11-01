@@ -1030,6 +1030,9 @@ class ChatGPTProvider(BaseProvider):
 # Message format conversion
 # ------------------------------------------------------------------
 
+MAX_CHATGPT_PROMPT_CHARS = 160_000
+
+
 def _convert_messages(messages: list[dict], retry_sanitized: bool = False) -> list[dict]:
     """
     Convert OpenAI Chat Completions messages to ChatGPT guest format.
@@ -1070,10 +1073,34 @@ def _convert_messages(messages: list[dict], retry_sanitized: bool = False) -> li
             "content": {"content_type": "text", "parts": [f"[System Instructions]:\n{system_prefix}"]},
         }]
 
-    # Identify the active user turn (the last user message in the thread)
+    def _msg_char_len(m: dict) -> int:
+        c = m.get("content", "")
+        if isinstance(c, str):
+            return len(c)
+        if isinstance(c, list):
+            return sum(len(str(p.get("text", ""))) for p in c if isinstance(p, dict))
+        return len(str(c))
+
+    # Compact older middle turns if total payload length exceeds MAX_CHATGPT_PROMPT_CHARS
+    total_len = len(system_prefix) + sum(_msg_char_len(m) for m in other_messages)
+    if total_len > MAX_CHATGPT_PROMPT_CHARS and len(other_messages) > 2:
+        compacted = [other_messages[0]]
+        for idx in range(1, len(other_messages) - 2):
+            m = dict(other_messages[idx])
+            c = m.get("content", "")
+            if isinstance(c, str) and len(c) > 4000:
+                m["content"] = c[:4000] + "\n...[prior turn truncated for context window]..."
+            compacted.append(m)
+        compacted.extend(other_messages[-2:])
+        other_messages = compacted
+
+        while len(other_messages) > 3 and (len(system_prefix) + sum(_msg_char_len(m) for m in other_messages)) > MAX_CHATGPT_PROMPT_CHARS:
+            other_messages.pop(1)
+
+    # Identify the active user turn (the last message representing user input or tool output)
     last_user_idx = -1
     for i in range(len(other_messages) - 1, -1, -1):
-        if other_messages[i].get("role") == "user":
+        if other_messages[i].get("role") in ("user", "tool"):
             last_user_idx = i
             break
 
@@ -1082,8 +1109,15 @@ def _convert_messages(messages: list[dict], retry_sanitized: bool = False) -> li
         role = msg.get("role", "user")
         content = msg.get("content", "")
 
-        if role == "user":
-            parts = _parse_content(content)
+        if role in ("user", "tool"):
+            if role == "tool":
+                call_id = msg.get("tool_call_id") or "call"
+                raw_c = msg.get("content", "")
+                c_str = raw_c if isinstance(raw_c, str) else json.dumps(raw_c)
+                parts = [f'<tool_result id="{call_id}">\n{c_str.strip()}\n</tool_result>']
+            else:
+                parts = _parse_content(content)
+
             # Inject system instructions into the active user turn.
             if idx == last_user_idx:
                 is_tool_required = bool(system_prefix and "TOOL_CALL_REQUIRED" in system_prefix)
@@ -1184,21 +1218,6 @@ def _convert_messages(messages: list[dict], retry_sanitized: bool = False) -> li
                 "content": {
                     "content_type": "text",
                     "parts": [text],
-                },
-            })
-
-        elif role == "tool":
-            call_id = msg.get("tool_call_id") or "call"
-            raw_c = msg.get("content", "")
-            c_str = raw_c if isinstance(raw_c, str) else json.dumps(raw_c)
-            tool_repr = f'<tool_result id="{call_id}">\n{c_str.strip()}\n</tool_result>'
-            out.append({
-                "id": str(uuid.uuid4()),
-                "author": {"role": "user"},
-                "create_time": time.time(),
-                "content": {
-                    "content_type": "text",
-                    "parts": [tool_repr],
                 },
             })
 

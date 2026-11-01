@@ -2010,6 +2010,53 @@ async def test_streaming_unclosed_coding_tool_alias_detection():
     assert any("content_block_start" in ev and "text" in ev for ev in events)
 
 
+def test_chatgpt_convert_messages_active_tool_role():
+    """Verify _convert_messages recognizes role=='tool' as active turn and injects directives."""
+    from src.providers.chatgpt.session import _convert_messages
+
+    msgs = [
+        {"role": "system", "content": "CRITICAL MODE: TOOL_CALL_REQUIRED\n[SYSTEM: HEADLESS API GATEWAY]"},
+        {"role": "user", "content": "Please run the tests"},
+        {"role": "assistant", "content": '<tool_call>{"name": "Bash", "arguments": {"command": "pytest"}}</tool_call>'},
+        {"role": "tool", "tool_call_id": "call_123", "content": "1 failed, 5 passed"},
+    ]
+
+    out = _convert_messages(msgs)
+    assert len(out) == 3
+    # Turn 0: initial user prompt
+    assert out[0]["author"]["role"] == "user"
+    assert "Please run the tests" in out[0]["content"]["parts"][0]
+    # Turn 1: assistant tool call
+    assert out[1]["author"]["role"] == "assistant"
+    # Turn 2: active tool result turn with injected directives
+    assert out[2]["author"]["role"] == "user"
+    active_part = out[2]["content"]["parts"][0]
+    assert '<tool_result id="call_123">' in active_part
+    assert "1 failed, 5 passed" in active_part
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" in active_part
+    assert "[ACTIVE DIRECTIVE FOR CURRENT TURN" in active_part
+
+
+def test_chatgpt_oversized_history_compaction():
+    """Verify _convert_messages compacts massive conversations without dropping original user task."""
+    from src.providers.chatgpt.session import _convert_messages, MAX_CHATGPT_PROMPT_CHARS
+
+    msgs = [{"role": "system", "content": "You are a coding assistant."}]
+    msgs.append({"role": "user", "content": "INITIAL TASK: Build a web server with routing."})
+    for i in range(30):
+        msgs.append({"role": "assistant", "content": f'<tool_call>{{"name": "step_{i}"}}</tool_call>' + ("x" * 6000)})
+        msgs.append({"role": "tool", "tool_call_id": f"call_{i}", "content": f"result {i} " + ("y" * 1000)})
+    msgs.append({"role": "assistant", "content": "Final step"})
+    msgs.append({"role": "user", "content": "continue"})
+
+    out = _convert_messages(msgs)
+    total_chars = sum(len(p) for m in out for p in m["content"]["parts"] if isinstance(p, str))
+    assert total_chars <= MAX_CHATGPT_PROMPT_CHARS
+    assert "INITIAL TASK: Build a web server with routing." in out[0]["content"]["parts"][0]
+    assert "continue" in out[-1]["content"]["parts"][0]
+
+
+
 
 
 
