@@ -7,6 +7,8 @@ from typing import AsyncGenerator
 from src.core.emulation.stream_parser import (
     _unwrap_autolinks_in_obj,
     normalize_tool_name,
+    normalize_tool_parameters,
+    parse_parameter_xml_value,
     parse_tool_payload,
     unwrap_markdown_autolinks,
 )
@@ -218,54 +220,8 @@ def _build_tools_xml(tools: list) -> str:
 
 
 def _normalize_code_tool_params(tool_name: str, params: dict) -> dict:
-    """Strip trailing horizontal whitespace on lines inside Write/Edit code parameters, map parameter aliases, and unescape XML entities in Bash commands."""
-    if not isinstance(params, dict):
-        return {}
-    tl = str(tool_name or "").strip().lower()
-
-    # Map parameter name aliases
-    if tl in ("edit", "write", "read", "update", "update_file"):
-        if "file_path" not in params:
-            for alt in ("path", "file", "filename", "filepath"):
-                if alt in params:
-                    params["file_path"] = params.pop(alt)
-                    break
-    if tl in ("edit", "update"):
-        if "old_string" not in params and "old_str" in params:
-            params["old_string"] = params.pop("old_str")
-        if "new_string" not in params and "new_str" in params:
-            params["new_string"] = params.pop("new_str")
-    if tl in ("bash", "sh"):
-        if "command" not in params:
-            for alt in ("cmd", "code", "script"):
-                if alt in params:
-                    params["command"] = params.pop(alt)
-                    break
-    if tl in ("glob", "grep", "ls"):
-        if "path" not in params:
-            for alt in ("dir", "directory", "folder", "file_path"):
-                if alt in params:
-                    params["path"] = params.pop(alt)
-                    break
-
-    if tl in ("write", "update"):
-        if isinstance(params.get("content"), str):
-            params["content"] = re.sub(r"[ \t]+(?=\r?\n)", "", params["content"])
-    elif tl in ("edit", "update"):
-        for key in ("old_string", "new_string"):
-            if isinstance(params.get(key), str):
-                params[key] = re.sub(r"[ \t]+(?=\r?\n)", "", params[key])
-    elif tl == "multiedit" and isinstance(params.get("edits"), list):
-        for edit_item in params["edits"]:
-            if isinstance(edit_item, dict):
-                for key in ("old_string", "new_string"):
-                    if isinstance(edit_item.get(key), str):
-                        edit_item[key] = re.sub(r"[ \t]+(?=\r?\n)", "", edit_item[key])
-    elif tl in ("bash", "sh"):
-        cmd = params.get("command")
-        if isinstance(cmd, str) and "&amp;" in cmd:
-            params["command"] = html.unescape(cmd)
-    return params
+    """Normalize code tool parameters, alias names, enforce types, and strip whitespace."""
+    return normalize_tool_parameters(tool_name, params)
 
 
 def build_safeguard_results(
@@ -336,21 +292,7 @@ def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
     if param_matches:
         for match in param_matches:
             p_name = match.group(1)
-            raw_inner = match.group(2)
-            if p_name in ("content", "old_string", "new_string"):
-                trimmed_inner = re.sub(r"^\r?\n|\r?\n$", "", raw_inner)
-            else:
-                trimmed_inner = raw_inner.strip()
-            p_val_raw = unwrap_markdown_autolinks(trimmed_inner)
-            if "&" in p_val_raw:
-                p_val_raw = html.unescape(p_val_raw)
-            try:
-                p_val = json.loads(p_val_raw)
-            except Exception:
-                p_val = p_val_raw
-            if isinstance(p_val, str) and "&" in p_val:
-                p_val = html.unescape(p_val)
-            params[p_name] = _unwrap_autolinks_in_obj(p_val)
+            params[p_name] = parse_parameter_xml_value(p_name, match.group(2))
     else:
         # Also look for direct child tags <file_path>, <path>, <old_string>, <new_string>, <content>, etc.
         for dk in (
@@ -360,15 +302,7 @@ def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
         ):
             dk_match = re.search(rf'<{dk}\b[^>]*>(.*?)</{dk}>', xml_block, re.DOTALL)
             if dk_match:
-                val = dk_match.group(1)
-                if dk in ("content", "old_string", "new_string", "old_str", "new_str"):
-                    val = re.sub(r"^\r?\n|\r?\n$", "", val)
-                else:
-                    val = val.strip()
-                val = unwrap_markdown_autolinks(val)
-                if "&" in val:
-                    val = html.unescape(val)
-                params[dk] = val
+                params[dk] = parse_parameter_xml_value(dk, dk_match.group(1))
 
         # Look for attributes on opening root tag e.g. <update path="index.html">
         open_tag_match = re.match(r"^\s*<[^>]+>", xml_block)

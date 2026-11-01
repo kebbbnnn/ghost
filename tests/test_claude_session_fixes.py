@@ -631,3 +631,129 @@ def test_extract_clean_user_task_text_strips_system_reminders():
     assert state["is_incomplete"] is False
     assert state["progress_directive"] == ""
 
+
+def test_parameter_type_preservation_in_invoke_xml():
+    """Verify parameters expecting strings (old_string, new_string, content) are not coerced to bool/int/list in XML."""
+    from src.converters.anthropic import _parse_invoke_xml
+    from src.core.emulation.stream_parser import parse_tool_payload
+
+    # 1. Edit boolean literal replacements in XML
+    xml_bool = (
+        '<invoke name="Edit">\n'
+        '<parameter name="file_path">config.py</parameter>\n'
+        '<parameter name="old_string">true</parameter>\n'
+        '<parameter name="new_string">false</parameter>\n'
+        '</invoke>'
+    )
+    name, params = _parse_invoke_xml(xml_bool)
+    assert name == "Edit"
+    assert params["old_string"] == "true"
+    assert isinstance(params["old_string"], str)
+    assert params["new_string"] == "false"
+    assert isinstance(params["new_string"], str)
+
+    # 2. Edit integer literal replacement in XML
+    xml_int = (
+        '<invoke name="Edit">\n'
+        '<parameter name="file_path">counter.py</parameter>\n'
+        '<parameter name="old_string">123</parameter>\n'
+        '<parameter name="new_string">456</parameter>\n'
+        '</invoke>'
+    )
+    name, params = _parse_invoke_xml(xml_int)
+    assert params["old_string"] == "123"
+    assert isinstance(params["old_string"], str)
+    assert params["new_string"] == "456"
+    assert isinstance(params["new_string"], str)
+
+    # 3. Write JSON array or object in XML should remain a string
+    xml_json_array = (
+        '<invoke name="Write">\n'
+        '<parameter name="file_path">package.json</parameter>\n'
+        '<parameter name="content">[1, 2, 3]</parameter>\n'
+        '</invoke>'
+    )
+    name, params = _parse_invoke_xml(xml_json_array)
+    assert name == "Write"
+    assert params["content"] == "[1, 2, 3]"
+    assert isinstance(params["content"], str)
+
+    # 4. Quoted string unwrapping
+    xml_quoted = (
+        '<invoke name="Read">\n'
+        '<parameter name="file_path">"src/main.py"</parameter>\n'
+        '<parameter name="offset">10</parameter>\n'
+        '</invoke>'
+    )
+    name, params = _parse_invoke_xml(xml_quoted)
+    assert name == "Read"
+    assert params["file_path"] == "src/main.py"
+    assert params["offset"] == 10
+    assert isinstance(params["offset"], int)
+
+    # 5. Non-string params parsed cleanly
+    xml_replace_all = (
+        '<invoke name="Edit">\n'
+        '<parameter name="file_path">app.py</parameter>\n'
+        '<parameter name="old_string">foo</parameter>\n'
+        '<parameter name="new_string">bar</parameter>\n'
+        '<parameter name="replace_all">true</parameter>\n'
+        '</invoke>'
+    )
+    name, params = _parse_invoke_xml(xml_replace_all)
+    assert params["replace_all"] is True
+
+    # 6. Verify same guarantees in parse_tool_payload
+    parsed_xml = parse_tool_payload(xml_bool)
+    assert parsed_xml is not None
+    assert parsed_xml["name"] == "Edit"
+    assert parsed_xml["arguments"]["old_string"] == "true"
+    assert isinstance(parsed_xml["arguments"]["old_string"], str)
+
+
+def test_json_tool_call_alias_normalization_and_serialization():
+    """Verify JSON <tool_call> blocks properly normalize parameter aliases and coerce types for Claude Code."""
+    from src.core.emulation.stream_parser import parse_tool_payload
+
+    # 1. Edit with aliases path, old_str, new_str in JSON
+    json_call = (
+        '<tool_call>\n'
+        '{"name": "Edit", "arguments": {"path": "src/utils.py", "old_str": true, "new_str": false}}\n'
+        '</tool_call>'
+    )
+    parsed = parse_tool_payload(json_call)
+    assert parsed is not None
+    assert parsed["name"] == "Edit"
+    assert parsed["arguments"]["file_path"] == "src/utils.py"
+    assert "path" not in parsed["arguments"]
+    assert parsed["arguments"]["old_string"] == "true"
+    assert parsed["arguments"]["new_string"] == "false"
+    assert isinstance(parsed["arguments"]["old_string"], str)
+    assert isinstance(parsed["arguments"]["new_string"], str)
+
+    # 2. Write with content passed as a JSON dict/array coerced to string
+    json_write = (
+        '<tool_call>\n'
+        '{"name": "write_file", "arguments": {"file": "settings.json", "content": {"debug": true}}}\n'
+        '</tool_call>'
+    )
+    parsed = parse_tool_payload(json_write)
+    assert parsed is not None
+    assert parsed["name"] == "Write"
+    assert parsed["arguments"]["file_path"] == "settings.json"
+    assert isinstance(parsed["arguments"]["content"], str)
+    assert '"debug": true' in parsed["arguments"]["content"]
+
+    # 3. Bash with cmd alias and XML entities
+    json_bash = (
+        '<tool_call>\n'
+        '{"name": "run_command", "arguments": {"cmd": "pytest &amp;&amp; echo done"}}\n'
+        '</tool_call>'
+    )
+    parsed = parse_tool_payload(json_bash)
+    assert parsed is not None
+    assert parsed["name"] == "Bash"
+    assert parsed["arguments"]["command"] == "pytest && echo done"
+    assert "cmd" not in parsed["arguments"]
+
+

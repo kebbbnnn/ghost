@@ -211,6 +211,163 @@ def normalize_tool_name(tool_name: str, params: dict | None = None) -> str:
     return tn
 
 
+STRING_PARAM_NAMES: set[str] = {
+    "file_path", "path", "file", "filename", "filepath",
+    "content", "old_string", "new_string", "old_str", "new_str",
+    "command", "cmd", "code", "script",
+    "pattern", "regex", "search", "query",
+    "description", "prompt", "explanation", "url", "dir", "directory", "folder",
+}
+
+
+def normalize_tool_parameters(tool_name: str, params: dict) -> dict:
+    """Normalize parameter aliases, enforce strict schemas for code tools, unescape commands, and strip trailing whitespace on code lines."""
+    if not isinstance(params, dict):
+        return {}
+
+    tl = str(tool_name or "").strip().lower()
+
+    # 1. Map parameter aliases
+    if tl in ("edit", "update", "update_file", "edit_file", "write_file", "create_file", "read_file", "view_file") or tool_name in ("Edit", "Write", "Read"):
+        if "file_path" not in params:
+            for alt in ("path", "file", "filename", "filepath"):
+                if alt in params:
+                    params["file_path"] = params.pop(alt)
+                    break
+
+    if tl in ("edit", "update", "update_file", "edit_file"):
+        if "old_string" not in params and "old_str" in params:
+            params["old_string"] = params.pop("old_str")
+        if "new_string" not in params and "new_str" in params:
+            params["new_string"] = params.pop("new_str")
+
+    if tl in ("bash", "sh", "execute_command", "run_command", "command"):
+        if "command" not in params:
+            for alt in ("cmd", "code", "script"):
+                if alt in params:
+                    params["command"] = params.pop(alt)
+                    break
+
+    if tl in ("glob", "grep", "ls", "list_dir", "list_directory"):
+        if "path" not in params:
+            for alt in ("dir", "directory", "folder", "file_path"):
+                if alt in params:
+                    params["path"] = params.pop(alt)
+                    break
+
+    if tl in ("grep", "search"):
+        if "pattern" not in params:
+            for alt in ("query", "regex", "search"):
+                if alt in params:
+                    params["pattern"] = params.pop(alt)
+                    break
+
+    # 2. Enforce strict parameter types and clean line whitespace
+    if "content" in params:
+        val = params["content"]
+        if isinstance(val, (dict, list)):
+            params["content"] = json.dumps(val, indent=2)
+        elif not isinstance(val, str):
+            params["content"] = "" if val is None else str(val)
+        params["content"] = re.sub(r"[ \t]+(?=\r?\n)", "", params["content"])
+
+    for key in ("old_string", "new_string"):
+        if key in params:
+            val = params[key]
+            if isinstance(val, bool):
+                params[key] = "true" if val else "false"
+            elif isinstance(val, (int, float)):
+                params[key] = str(val)
+            elif isinstance(val, (dict, list)):
+                params[key] = json.dumps(val, indent=2)
+            elif not isinstance(val, str):
+                params[key] = "" if val is None else str(val)
+            params[key] = re.sub(r"[ \t]+(?=\r?\n)", "", params[key])
+
+    if tl == "multiedit" and isinstance(params.get("edits"), list):
+        for edit_item in params["edits"]:
+            if isinstance(edit_item, dict):
+                for key in ("old_string", "new_string"):
+                    if key in edit_item:
+                        val = edit_item[key]
+                        if isinstance(val, bool):
+                            edit_item[key] = "true" if val else "false"
+                        elif isinstance(val, (int, float)):
+                            edit_item[key] = str(val)
+                        elif isinstance(val, (dict, list)):
+                            edit_item[key] = json.dumps(val, indent=2)
+                        elif not isinstance(val, str):
+                            edit_item[key] = "" if val is None else str(val)
+                        edit_item[key] = re.sub(r"[ \t]+(?=\r?\n)", "", edit_item[key])
+
+    if "file_path" in params and not isinstance(params["file_path"], str):
+        params["file_path"] = str(params["file_path"])
+
+    if "path" in params and not isinstance(params["path"], str):
+        params["path"] = str(params["path"])
+
+    if "pattern" in params and not isinstance(params["pattern"], str):
+        params["pattern"] = str(params["pattern"])
+
+    if "command" in params:
+        if not isinstance(params["command"], str):
+            params["command"] = str(params["command"])
+        if "&" in params["command"]:
+            params["command"] = html.unescape(params["command"])
+
+    if "replace_all" in params:
+        val = params["replace_all"]
+        if isinstance(val, str):
+            params["replace_all"] = val.strip().lower() in ("true", "1", "yes")
+        elif not isinstance(val, bool):
+            params["replace_all"] = bool(val)
+
+    for int_key in ("offset", "limit", "timeout"):
+        if int_key in params and not isinstance(params[int_key], int):
+            try:
+                params[int_key] = int(params[int_key])
+            except (ValueError, TypeError):
+                pass
+
+    return params
+
+
+def parse_parameter_xml_value(p_name: str, raw_val: str) -> Any:
+    """Parse parameter text from XML, respecting string vs JSON/primitive data types."""
+    if p_name in ("content", "old_string", "new_string", "old_str", "new_str"):
+        trimmed = re.sub(r"^\r?\n|\r?\n$", "", raw_val)
+    else:
+        trimmed = raw_val.strip()
+
+    unwrapped = unwrap_markdown_autolinks(trimmed)
+    if "&" in unwrapped:
+        unwrapped = html.unescape(unwrapped)
+
+    p_name_lower = p_name.lower()
+    if p_name_lower in STRING_PARAM_NAMES:
+        # Expected to be a string parameter. Only unwrap explicit outer JSON quotes if present.
+        if len(unwrapped) >= 2 and unwrapped.startswith('"') and unwrapped.endswith('"'):
+            try:
+                parsed = json.loads(unwrapped)
+                val = parsed if isinstance(parsed, str) else unwrapped
+            except Exception:
+                val = unwrapped[1:-1]
+        elif len(unwrapped) >= 2 and unwrapped.startswith("'") and unwrapped.endswith("'"):
+            val = unwrapped[1:-1]
+        else:
+            val = unwrapped
+    else:
+        try:
+            val = json.loads(unwrapped)
+        except Exception:
+            val = unwrapped
+
+    if isinstance(val, str) and "&" in val:
+        val = html.unescape(val)
+
+    return _unwrap_autolinks_in_obj(val)
+
+
 def _normalize_parsed_tool_dict(data: dict) -> dict | None:
     """Normalize a parsed tool dict with 'name'/'tool'/'function' and 'arguments'/'input'/'parameters'."""
     name = data.get("name") or data.get("tool") or data.get("function")
@@ -244,7 +401,8 @@ def _normalize_parsed_tool_dict(data: dict) -> dict | None:
         args = {}
 
     norm_name = normalize_tool_name(name.strip(), args)
-    return {"name": norm_name, "arguments": _unwrap_autolinks_in_obj(args)}
+    cleaned_args = normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(args))
+    return {"name": norm_name, "arguments": cleaned_args}
 
 
 def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
@@ -377,7 +535,7 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                     break
 
         norm_name = normalize_tool_name(cand_tag, params)
-        return {"name": norm_name, "arguments": _unwrap_autolinks_in_obj(params)}
+        return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(params))}
 
     # 2. Support <invoke name="...">...</invoke> XML format if present
     if "<parameter" in unwrapped or unwrapped.startswith("<invoke") or 'name="' in unwrapped[:60] or "name='" in unwrapped[:60]:
@@ -391,18 +549,9 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
             if param_matches:
                 for match in param_matches:
                     p_name = match.group(1)
-                    p_val_raw = unwrap_markdown_autolinks(match.group(2).strip())
-                    if "&" in p_val_raw:
-                        p_val_raw = html.unescape(p_val_raw)
-                    try:
-                        p_val = json.loads(p_val_raw)
-                    except Exception:
-                        p_val = p_val_raw
-                    if isinstance(p_val, str) and "&" in p_val:
-                        p_val = html.unescape(p_val)
-                    params[p_name] = _unwrap_autolinks_in_obj(p_val)
+                    params[p_name] = parse_parameter_xml_value(p_name, match.group(2))
                 norm_name = normalize_tool_name(tool_name, params)
-                return {"name": norm_name, "arguments": params}
+                return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, params)}
             # Check for raw JSON inside <invoke ...>{...}</invoke>
             brace_idx = unwrapped.find("{")
             if brace_idx != -1:
@@ -413,11 +562,11 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                             parsed_inner = json.loads(re.sub(r",\s*(\}|\])", r"\1", candidate))
                             if isinstance(parsed_inner, dict):
                                 norm_name = normalize_tool_name(tool_name, parsed_inner)
-                                return {"name": norm_name, "arguments": _unwrap_autolinks_in_obj(parsed_inner)}
+                                return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(parsed_inner))}
                         except Exception:
                             pass
             norm_name = normalize_tool_name(tool_name, params)
-            return {"name": norm_name, "arguments": params}
+            return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, params)}
 
     clean = _sanitize_json_string(unwrapped)
     decoder = json.JSONDecoder()
@@ -460,7 +609,8 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                     try:
                         args_obj, _ = decoder.raw_decode(cand_clean)
                         if isinstance(args_obj, dict):
-                            return {"name": func_name, "arguments": _unwrap_autolinks_in_obj(args_obj)}
+                            norm_name = normalize_tool_name(func_name, args_obj)
+                            return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(args_obj))}
                     except Exception:
                         pass
             elif after_key.startswith('"'):
@@ -469,16 +619,19 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                     if isinstance(str_val, str):
                         args_obj = json.loads(_sanitize_json_string(str_val))
                         if isinstance(args_obj, dict):
-                            return {"name": func_name, "arguments": _unwrap_autolinks_in_obj(args_obj)}
+                            norm_name = normalize_tool_name(func_name, args_obj)
+                            return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(args_obj))}
                 except Exception:
                     pass
 
         # Robust parameter recovery for unescaped code / malformed JSON
         fallback_args = _fallback_extract_arguments(func_name, clean)
         if fallback_args:
-            return {"name": func_name, "arguments": _unwrap_autolinks_in_obj(fallback_args)}
+            norm_name = normalize_tool_name(func_name, fallback_args)
+            return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(fallback_args))}
 
-        return {"name": func_name, "arguments": {}}
+        norm_name = normalize_tool_name(func_name)
+        return {"name": norm_name, "arguments": {}}
 
     return None
 
