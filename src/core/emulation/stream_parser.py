@@ -21,10 +21,46 @@ log = logging.getLogger(__name__)
 
 OPEN_TAG = "<tool_call>"
 CLOSE_TAG = "</tool_call>"
-DIRECT_TOOL_TAGS = ("update", "edit", "write", "bash", "read", "glob", "grep", "ls")
-ALL_TOOL_TAGS = ("tool_call", "invoke", "update", "edit", "write", "bash", "read", "glob", "grep", "ls")
+DIRECT_TOOL_TAGS = (
+    "update",
+    "update_file",
+    "edit",
+    "edit_file",
+    "write",
+    "write_file",
+    "create_file",
+    "bash",
+    "sh",
+    "cmd",
+    "terminal",
+    "execute_command",
+    "run_command",
+    "read",
+    "read_file",
+    "view",
+    "view_file",
+    "glob",
+    "grep",
+    "ls",
+    "dir",
+    "list_dir",
+    "list_directory",
+)
+WRAPPER_TOOL_TAGS = ("tool_call", "invoke", "tool", "function_call", "function_calls")
+ALL_TOOL_TAGS = WRAPPER_TOOL_TAGS + DIRECT_TOOL_TAGS
 OPEN_TAGS = [f"<{t}" for t in ALL_TOOL_TAGS]
 TOOL_OPEN_TAG_RE = re.compile(rf"<(?P<tag>{'|'.join(ALL_TOOL_TAGS)})\b", re.IGNORECASE)
+
+DIRECT_TAGS_PATTERN = "|".join(DIRECT_TOOL_TAGS)
+CLOSED_TOOL_CALL_PATTERN = (
+    r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
+    r"(<invoke\b.*?</invoke>)|"
+    r"(<tool\b[^>]*>.*?</tool>)|"
+    r"(<function_call\b[^>]*>.*?</function_call>)|"
+    rf"(<(?P<dtag>{DIRECT_TAGS_PATTERN})\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))|"
+    r"(```(?:json|tool_call)?\s*\{\s*\"name\"\s*:\s*\"[^\"]+\"[\s\S]*?\}\s*```)"
+)
+CLOSED_TOOL_CALL_RE = re.compile(CLOSED_TOOL_CALL_PATTERN, re.DOTALL | re.IGNORECASE)
 
 
 def find_opening_tool_tag(text: str, start_pos: int = 0) -> re.Match | None:
@@ -301,9 +337,9 @@ def normalize_tool_name(tool_name: str, params: dict | None = None) -> str:
         return "Write"
     if tn_lower in ("read_file", "view_file", "view"):
         return "Read"
-    if tn_lower in ("execute_command", "run_command", "shell", "sh", "terminal"):
+    if tn_lower in ("execute_command", "run_command", "shell", "sh", "cmd", "terminal"):
         return "Bash"
-    if tn_lower in ("list_directory", "ls", "dir"):
+    if tn_lower in ("list_directory", "ls", "dir", "list_dir"):
         return "LS"
     if tn_lower in ("search_files", "find_files"):
         return "Glob"
@@ -328,15 +364,25 @@ def normalize_tool_parameters(tool_name: str, params: dict) -> dict:
 
     tl = str(tool_name or "").strip().lower()
 
-    # 1. Map parameter aliases
-    if tl in ("edit", "update", "update_file", "edit_file", "write_file", "create_file", "read_file", "view_file") or tool_name in ("Edit", "Write", "Read"):
+    # 1. Map parameter aliases for Anthropic code tools
+    if (
+        tl in (
+            "edit_file",
+            "write_file",
+            "create_file",
+            "read_file",
+            "view_file",
+            "update_file",
+        )
+        or tool_name in ("Edit", "Write", "Read")
+    ):
         if "file_path" not in params:
             for alt in ("path", "file", "filename", "filepath"):
                 if alt in params:
                     params["file_path"] = params.pop(alt)
                     break
 
-    if tl in ("edit", "update", "update_file", "edit_file"):
+    if tl in ("edit", "update", "update_file", "edit_file", "replace"):
         if "old_string" not in params and "old_str" in params:
             params["old_string"] = params.pop("old_str")
         if "new_string" not in params and "new_str" in params:
@@ -440,25 +486,26 @@ def is_valid_tool_call(tool_name: str, params: dict | None) -> bool:
     tn = tool_name.strip().lower()
     p = params if isinstance(params, dict) else {}
 
-    if tn in ("write", "write_file"):
+    if tn in ("write", "write_file", "create_file"):
         fp = p.get("file_path") or p.get("path") or p.get("file")
         return bool(fp and str(fp).strip())
 
-    if tn in ("edit", "edit_file", "update", "update_file"):
+    if tn in ("edit", "edit_file", "update", "update_file", "replace"):
         fp = p.get("file_path") or p.get("path") or p.get("file")
         has_fp = bool(fp and str(fp).strip())
+        # Edit requires either replacement content/edits or BOTH old_string and new_string
         has_change = (
-            p.get("old_string") is not None
-            or p.get("content") is not None
+            p.get("content") is not None
             or p.get("edits") is not None
+            or (("old_string" in p or "old_str" in p) and ("new_string" in p or "new_str" in p))
         )
         return has_fp and has_change
 
-    if tn in ("read", "read_file"):
+    if tn in ("read", "read_file", "view", "view_file"):
         fp = p.get("file_path") or p.get("path") or p.get("file")
         return bool(fp and str(fp).strip())
 
-    if tn in ("bash", "sh", "execute_command", "run_command", "command"):
+    if tn in ("bash", "sh", "cmd", "terminal", "execute_command", "run_command", "command"):
         cmd = p.get("command") or p.get("cmd") or p.get("code") or p.get("script")
         if not cmd or not str(cmd).strip():
             return False
@@ -467,7 +514,7 @@ def is_valid_tool_call(tool_name: str, params: dict | None) -> bool:
             return False
         return True
 
-    if tn in ("glob", "grep"):
+    if tn in ("glob", "grep", "search_files", "grep_search"):
         pat = p.get("pattern") or p.get("query") or p.get("search")
         path = p.get("path") or p.get("dir") or p.get("directory")
         return bool(pat and str(pat).strip()) or bool(path and str(path).strip())
@@ -737,19 +784,20 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
             close_m = re.search(rf"</{cand_tag}>\s*$", unwrapped, re.IGNORECASE)
             inner_body = unwrapped[open_tag_match.end() : close_m.start() if close_m else len(unwrapped)]
 
-            if cand_tag in ("write", "update") and "content" not in params:
-                clean_body = re.sub(r"^\r?\n|\r?\n$", "", inner_body)
-                if clean_body:
-                    params["content"] = clean_body
-            elif cand_tag in ("bash", "cmd", "sh", "terminal") and "command" not in params:
+            if cand_tag in ("write", "update", "write_file", "create_file") and "content" not in params:
+                if not re.search(r"<(?:file_path|path|file|filename)\b", inner_body, re.IGNORECASE):
+                    clean_body = re.sub(r"^\r?\n|\r?\n$", "", inner_body)
+                    if clean_body:
+                        params["content"] = clean_body
+            elif cand_tag in ("bash", "cmd", "sh", "terminal", "execute_command", "run_command") and "command" not in params:
                 clean_body = inner_body.strip()
                 if clean_body:
                     params["command"] = clean_body
-            elif cand_tag in ("read",) and "file_path" not in params and "path" not in params:
+            elif cand_tag in ("read", "read_file", "view", "view_file") and "file_path" not in params and "path" not in params:
                 clean_body = inner_body.strip()
                 if clean_body:
                     params["file_path"] = clean_body
-            elif cand_tag in ("glob", "grep") and "pattern" not in params:
+            elif cand_tag in ("glob", "grep", "search_files", "grep_search") and "pattern" not in params:
                 clean_body = inner_body.strip()
                 if clean_body:
                     params["pattern"] = clean_body
@@ -758,8 +806,10 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
         if "file_path" not in params:
             for alt in ("path", "file", "filename", "filepath"):
                 if alt in params:
-                    params["file_path"] = params.pop(alt)
+                    params["file_path"] = params[alt]
                     break
+        if "path" not in params and "file_path" in params:
+            params["path"] = params["file_path"]
         if "old_string" not in params and "old_str" in params:
             params["old_string"] = params.pop("old_str")
         if "new_string" not in params and "new_str" in params:
@@ -776,10 +826,19 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
             return None
         return {"name": norm_name, "arguments": cleaned_params}
 
-    # 2. Support <invoke name="...">...</invoke> XML format if present
-    if "<parameter" in unwrapped or unwrapped.startswith("<invoke") or 'name="' in unwrapped[:60] or "name='" in unwrapped[:60]:
+    # 2. Support <invoke name="...">...</invoke>, <tool name="...">, <function_call name="..."> XML format
+    if (
+        "<parameter" in unwrapped
+        or any(unwrapped.startswith(pfx) for pfx in ("<invoke", "<tool", "<function_call"))
+        or 'name="' in unwrapped[:60]
+        or "name='" in unwrapped[:60]
+    ):
         m_name = re.search(r'name=["\']([^"\']+)["\']', unwrapped)
-        if m_name and ("<parameter" in unwrapped or "</invoke>" in unwrapped or unwrapped.startswith("<invoke")):
+        if m_name and (
+            "<parameter" in unwrapped
+            or any(tag in unwrapped for tag in ("</invoke>", "</tool>", "</function_call>"))
+            or any(unwrapped.startswith(pfx) for pfx in ("<invoke", "<tool", "<function_call"))
+        ):
             tool_name = m_name.group(1).strip()
             params = {}
             param_matches = list(
@@ -789,6 +848,17 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                 for match in param_matches:
                     p_name = match.group(1)
                     params[p_name] = parse_parameter_xml_value(p_name, match.group(2))
+            else:
+                for dk in (
+                    "file_path", "path", "file", "filename", "filepath",
+                    "old_string", "new_string", "old_str", "new_str",
+                    "content", "command", "cmd", "pattern", "replace_all"
+                ):
+                    dk_match = re.search(rf'<{dk}\b[^>]*>(.*?)</{dk}>', unwrapped, re.DOTALL)
+                    if dk_match:
+                        params[dk] = parse_parameter_xml_value(dk, dk_match.group(1))
+
+            if params:
                 norm_name = normalize_tool_name(tool_name, params)
                 cleaned_params = normalize_tool_parameters(norm_name, params)
                 if not is_valid_tool_call(norm_name, cleaned_params):
@@ -1431,13 +1501,7 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
                 choice["finish_reason"] = "stop"
 
     # 2. Extract <tool_call>, <invoke>, and direct tool XML blocks
-    pattern = re.compile(
-        r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
-        r"(<invoke\b.*?</invoke>)|"
-        r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
-        re.DOTALL | re.IGNORECASE,
-    )
-    matches = [m.group(0) for m in pattern.finditer(raw_content)]
+    matches = [m.group(0) for m in CLOSED_TOOL_CALL_RE.finditer(raw_content)]
 
     if matches:
         tool_calls = []
@@ -1463,7 +1527,7 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
                 })
 
         if tool_calls:
-            clean_content = pattern.sub("", raw_content).strip()
+            clean_content = CLOSED_TOOL_CALL_RE.sub("", raw_content).strip()
             message["content"] = clean_content if clean_content else None
             message["tool_calls"] = tool_calls
             choice["finish_reason"] = "tool_calls"
@@ -1471,7 +1535,7 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
         elif is_synthesis_phase and any(
             (p := parse_tool_payload(m)) and p["name"] in executed_tools for m in matches
         ):
-            clean_content = pattern.sub("", raw_content).strip()
+            clean_content = CLOSED_TOOL_CALL_RE.sub("", raw_content).strip()
             if clean_content:
                 message["content"] = clean_content
                 message.pop("tool_calls", None)

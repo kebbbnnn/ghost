@@ -25,6 +25,7 @@ from src.core.provider import BaseProvider
 from src.core.exceptions import RateLimitError, TokenExpiredError
 from src.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
+    CLOSED_TOOL_CALL_RE,
     TOOL_OPEN_TAG_RE,
     synthesize_workflow_recovery_tool_call,
     transpile_fenced_json_tool_calls,
@@ -112,13 +113,7 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
         return False
     if not response_text or not response_text.strip():
         return True
-    closed_pattern = re.compile(
-        r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
-        r"(<invoke\b.*?</invoke>)|"
-        r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))|"
-        r"(```(?:json|tool_call)?\s*\{\s*\"name\"\s*:\s*\"[^\"]+\"[\s\S]*?\}\s*```)",
-        re.DOTALL | re.IGNORECASE,
-    )
+    closed_pattern = CLOSED_TOOL_CALL_RE
     # Strip inline single-backtick code spans so code/prose mentioning `<write>`, `<bash>`, etc. cannot trigger false unclosed tag matches
     clean_response = re.sub(r"(?<!`)`[^`\n]+`(?!`)", "", response_text)
     has_closed_tool_call = bool(closed_pattern.search(clean_response))

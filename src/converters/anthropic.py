@@ -6,6 +6,8 @@ from typing import AsyncGenerator
 
 from src.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
+    CLOSED_TOOL_CALL_PATTERN,
+    CLOSED_TOOL_CALL_RE,
     DEFAULT_ROLE_STOP_SEQUENCES,
     DIRECT_TOOL_TAGS,
     TOOL_OPEN_TAG_RE,
@@ -271,9 +273,9 @@ def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
     """Parse an XML <invoke name="...">...</invoke>, <tool_call>...</tool_call>, or direct tag (<update>...</update>) block into (tool_name, parameters)."""
     xml_block = unwrap_markdown_autolinks(xml_block)
 
-    # 1. Handle <tool_call>{"name": "...", "arguments": {...}}</tool_call> format
-    if "<tool_call>" in xml_block or "<tool_call " in xml_block:
-        clean = re.sub(r"</?tool_call[^>]*>", "", xml_block).strip()
+    # 1. Handle <tool_call>{"name": "...", "arguments": {...}}</tool_call> format (and <tool>, <function_call>)
+    if any(tag in xml_block for tag in ("<tool_call>", "<tool_call ", "<tool>", "<tool ", "<function_call>", "<function_call ")):
+        clean = re.sub(r"</?(?:tool_call|tool|function_call)[^>]*>", "", xml_block).strip()
         clean = re.sub(r"^>+", "", clean).strip()
         clean = re.sub(r"[ \t]*>$", "", clean).strip()
         parsed = parse_tool_payload(clean)
@@ -283,13 +285,13 @@ def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
             norm_name = normalize_tool_name(parsed["name"], args_dict)
             return norm_name, _normalize_code_tool_params(norm_name, args_dict)
 
-    # 2. Handle direct tool XML tags like <update>...</update>, <edit>...</edit>, <write>...</write>, <bash>...</bash>
+    # 2. Handle direct tool XML tags like <write_file>...</write_file>, <edit>...</edit>, <bash>...</bash>
     tag_m = re.match(r"^\s*<([a-zA-Z0-9_-]+)", xml_block)
     tool_name = "unknown"
-    if tag_m and tag_m.group(1).lower() in ("update", "edit", "write", "bash", "read", "glob", "grep", "ls"):
+    if tag_m and tag_m.group(1).lower() in DIRECT_TOOL_TAGS:
         tool_name = tag_m.group(1).lower()
 
-    # 3. Handle <invoke name="...">...</invoke> format
+    # 3. Handle <invoke name="...">, <tool name="...">, <function_call name="..."> format
     m_name = re.search(r'name=["\']([^"\']+)["\']', xml_block)
     if m_name:
         tool_name = m_name.group(1)
@@ -329,19 +331,20 @@ def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
             close_m = re.search(rf"</{cand_tag}>\s*$", xml_block, re.IGNORECASE)
             inner_body = xml_block[open_tag_match.end() : close_m.start() if close_m else len(xml_block)]
 
-            if cand_tag in ("write", "update") and "content" not in params:
-                clean_body = re.sub(r"^\r?\n|\r?\n$", "", inner_body)
-                if clean_body:
-                    params["content"] = clean_body
-            elif cand_tag in ("bash", "cmd", "sh", "terminal") and "command" not in params:
+            if cand_tag in ("write", "update", "write_file", "create_file") and "content" not in params:
+                if not re.search(r"<(?:file_path|path|file|filename)\b", inner_body, re.IGNORECASE):
+                    clean_body = re.sub(r"^\r?\n|\r?\n$", "", inner_body)
+                    if clean_body:
+                        params["content"] = clean_body
+            elif cand_tag in ("bash", "cmd", "sh", "terminal", "execute_command", "run_command") and "command" not in params:
                 clean_body = inner_body.strip()
                 if clean_body:
                     params["command"] = clean_body
-            elif cand_tag in ("read",) and "file_path" not in params and "path" not in params:
+            elif cand_tag in ("read", "read_file", "view", "view_file") and "file_path" not in params and "path" not in params:
                 clean_body = inner_body.strip()
                 if clean_body:
                     params["file_path"] = clean_body
-            elif cand_tag in ("glob", "grep") and "pattern" not in params:
+            elif cand_tag in ("glob", "grep", "search_files", "grep_search") and "pattern" not in params:
                 clean_body = inner_body.strip()
                 if clean_body:
                     params["pattern"] = clean_body
@@ -1506,12 +1509,17 @@ async def openai_to_anthropic_stream(
             tool_name, params = _parse_invoke_xml(buffer)
             tl = tool_name.lower()
             is_truncated_coding_tool = (
-                (tl == "write" and "content" not in params)
-                or (tl == "edit" and ("old_string" not in params or "new_string" not in params))
-                or (tl == "bash" and "command" not in params)
-                or (tl == "read" and "file_path" not in params)
+                (tl in ("write", "write_file", "create_file") and "content" not in params and "contents" not in params)
+                or (
+                    tl in ("edit", "edit_file", "update", "update_file", "replace")
+                    and "content" not in params
+                    and "edits" not in params
+                    and (("old_string" not in params and "old_str" not in params) or ("new_string" not in params and "new_str" not in params))
+                )
+                or (tl in ("bash", "sh", "cmd", "terminal", "execute_command", "run_command") and "command" not in params and "cmd" not in params)
+                or (tl in ("read", "read_file", "view", "view_file") and "file_path" not in params and "path" not in params)
             )
-            if tool_name != "unknown" and not is_truncated_coding_tool:
+            if tool_name and tool_name.lower() != "unknown" and not is_truncated_coding_tool:
                 tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
                 emitted_tool_use_ids.append(tool_use_id)
                 yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'tool_use', 'id': tool_use_id, 'name': tool_name, 'input': {}}})}\n\n"
@@ -1645,19 +1653,8 @@ async def openai_to_anthropic_json(
             has_tool_call = True
 
     # 2. Handle XML <invoke>, <tool_call>, or direct tool tags in content string
-    elif re.search(
-        r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
-        r"(<invoke\b.*?</invoke>)|"
-        r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
-        content,
-        re.DOTALL | re.IGNORECASE,
-    ):
-        tool_pattern = re.compile(
-            r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
-            r"(<invoke\b.*?</invoke>)|"
-            r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
-            re.DOTALL | re.IGNORECASE,
-        )
+    elif CLOSED_TOOL_CALL_RE.search(content):
+        tool_pattern = CLOSED_TOOL_CALL_RE
         last_idx = 0
         for m in tool_pattern.finditer(content):
             pre_text = content[last_idx:m.start()]

@@ -1922,6 +1922,95 @@ def test_process_non_streaming_response_with_fenced_json():
     assert "pytest" in tc["function"]["arguments"]
 
 
+def test_extended_tool_aliases_in_stream_and_json():
+    """Verify write_file, edit_file, read_file, sh, cmd, tool, function_call are recognized across parsing and missing-check regexes."""
+    from src.core.emulation.stream_parser import (
+        find_opening_tool_tag,
+        parse_tool_payload,
+        CLOSED_TOOL_CALL_RE,
+    )
+    from src.converters.anthropic import _parse_invoke_xml
+    from src.providers.gemini.session import GeminiProvider
+
+    samples = [
+        ("<write_file>\n<file_path>app.py</file_path>\n<content>x=1</content>\n</write_file>", "Write", "file_path", "app.py"),
+        ("<edit_file>\n<path>app.py</path>\n<old_string>x=1</old_string>\n<new_string>x=2</new_string>\n</edit_file>", "Edit", "file_path", "app.py"),
+        ("<read_file path=\"app.py\"/>", "Read", "file_path", "app.py"),
+        ("<sh>pytest -v</sh>", "Bash", "command", "pytest -v"),
+        ("<cmd>npm test</cmd>", "Bash", "command", "npm test"),
+        ("<tool name=\"Write\">\n<file_path>main.py</file_path>\n<content>pass</content>\n</tool>", "Write", "file_path", "main.py"),
+        ("<function_call name=\"Bash\">\n<command>git status</command>\n</function_call>", "Bash", "command", "git status"),
+    ]
+
+    for xml_sample, expected_name, param_key, param_val in samples:
+        # 1. Opening tag detected
+        m = find_opening_tool_tag(xml_sample)
+        assert m is not None, f"Failed to find opening tag in {xml_sample}"
+
+        # 2. Closed pattern matches
+        assert bool(CLOSED_TOOL_CALL_RE.search(xml_sample)), f"CLOSED_TOOL_CALL_RE missed {xml_sample}"
+
+        # 3. Not marked as missing required tool call in Gemini provider
+        is_missing = GeminiProvider._is_missing_required_tool_call(
+            "CRITICAL MODE: TOOL_CALL_REQUIRED",
+            xml_sample,
+        )
+        assert not is_missing, f"Marked as missing: {xml_sample}"
+
+        # 4. Parsed by _parse_invoke_xml
+        name, params = _parse_invoke_xml(xml_sample)
+        assert name == expected_name, f"Expected {expected_name}, got {name} for {xml_sample}"
+        assert params.get(param_key) == param_val, f"Param {param_key} mismatch in {params}"
+
+        # 5. Parsed by parse_tool_payload
+        parsed = parse_tool_payload(xml_sample)
+        assert parsed is not None, f"parse_tool_payload failed for {xml_sample}"
+        assert parsed["name"] == expected_name
+
+
+def test_lowercase_write_read_parameter_aliasing():
+    """Verify normalize_tool_parameters aliases path to file_path for write_file/read_file."""
+    from src.core.emulation.stream_parser import normalize_tool_parameters
+
+    res_write = normalize_tool_parameters("write_file", {"path": "a.py"})
+    assert res_write["file_path"] == "a.py"
+
+    res_read = normalize_tool_parameters("read_file", {"path": "b.py"})
+    assert res_read["file_path"] == "b.py"
+
+    res_view = normalize_tool_parameters("view_file", {"path": "c.py"})
+    assert res_view["file_path"] == "c.py"
+
+
+def test_edit_tool_validation_requires_both_old_and_new_string():
+    """Verify is_valid_tool_call rejects Edit tool calls missing new_string when old_string is provided."""
+    from src.core.emulation.stream_parser import is_valid_tool_call
+
+    # Missing new_string
+    assert not is_valid_tool_call("Edit", {"file_path": "a.py", "old_string": "def foo():"})
+    # Both present
+    assert is_valid_tool_call("Edit", {"file_path": "a.py", "old_string": "def foo():", "new_string": "def bar():"})
+    # edits list present
+    assert is_valid_tool_call("Edit", {"file_path": "a.py", "edits": []})
+    # content replacement present
+    assert is_valid_tool_call("Edit", {"file_path": "a.py", "content": "whole file"})
+
+
+@pytest.mark.anyio
+async def test_streaming_unclosed_coding_tool_alias_detection():
+    """Verify unclosed write_file/edit_file stream buffer is rejected rather than emitted as broken tool call."""
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    # Truncated write_file without content
+    async def truncated_stream():
+        yield 'data: {"choices":[{"delta":{"content":"<write_file>\\n<file_path>app.py</file_path>"}}]}\n\n'
+
+    events = [ev async for ev in openai_to_anthropic_stream(truncated_stream(), model="test")]
+    assert not any("tool_use" in ev for ev in events)
+    assert any("content_block_start" in ev and "text" in ev for ev in events)
+
+
+
 
 
 
