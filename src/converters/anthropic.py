@@ -12,6 +12,7 @@ from src.core.emulation.stream_parser import (
     DIRECT_TOOL_TAGS,
     TOOL_OPEN_TAG_RE,
     _unwrap_autolinks_in_obj,
+    find_json_end_in_tag,
     find_opening_tool_tag,
     is_valid_tool_call,
     normalize_tool_name,
@@ -616,6 +617,8 @@ def _analyze_coding_workflow_state(
                         else:
                             if fp and fp not in modified_files:
                                 modified_files.append(fp)
+                            if fp and latest_turn_edit_error_file and _file_matches_any(fp, [latest_turn_edit_error_file]):
+                                latest_turn_edit_error_file = ""
                             modified_since_last_test_failure = True
                             if requires_test_execution:
                                 needs_test_run_after_modify = True
@@ -645,7 +648,7 @@ def _analyze_coding_workflow_state(
                             or "=== failures ===" in res_text.lower()
                             or "ran 0 tests" in res_text.lower()
                             or "assertionerror:" in res_text.lower()
-                            or re.search(r"\b(?:fail|error):\s+\w+", res_text.lower())
+                            or re.search(r"(?:^|\n)(?:FAIL|ERROR):\s+[a-zA-Z0-9_]+", res_text)
                             or re.search(r"\b[1-9]\d*\s+(?:failed|errors?)\b", res_text.lower())
                             or re.search(r"\bfailed\s*\([^)]*\)", res_text.lower())
                         )
@@ -718,7 +721,7 @@ def _analyze_coding_workflow_state(
                     or "=== failures ===" in content_lower
                     or "ran 0 tests" in content_lower
                     or "assertionerror:" in content_lower
-                    or re.search(r"\b(?:fail|error):\s+\w+", content_lower)
+                    or re.search(r"(?:^|\n)(?:FAIL|ERROR):\s+[a-zA-Z0-9_]+", content)
                     or re.search(r"\b[1-9]\d*\s+(?:failed|errors?)\b", content_lower)
                     or re.search(r"\bfailed\s*\([^)]*\)", content_lower)
                 )
@@ -799,6 +802,9 @@ def _analyze_coding_workflow_state(
         )
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 
+    if latest_turn_edit_error_file and _file_matches_any(latest_turn_edit_error_file, modified_files):
+        latest_turn_edit_error_file = ""
+
     if latest_turn_edit_error_file:
         excerpt_note = (
             f"\n- Active test failure to fix:\n{last_test_failure_excerpt}"
@@ -834,11 +840,24 @@ def _analyze_coding_workflow_state(
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 
     if requires_benchmark and not has_run_benchmark:
-        directive = (
-            "\n\n[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n"
-            "- All unit tests have passed, but you have NOT yet executed the required benchmark script via `Bash`!\n"
-            "- MANDATORY NEXT STEP FOR THIS TURN: Emit a `<tool_call>` or `<invoke name=\"Bash\">` block for the `Bash` tool right now to run the required benchmark script and verify performance."
-        )
+        unwritten_bench_files = [
+            f for f in requested_files
+            if any(bk in f.lower() for bk in ("bench_", "_bench", "benchmarks/", "benchmark"))
+            and not _file_matches_any(f, modified_files)
+        ]
+        if unwritten_bench_files:
+            target_bench = unwritten_bench_files[0]
+            directive = (
+                "\n\n[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n"
+                f"- All unit tests have passed, but the required benchmark script `{target_bench}` has NOT been created yet!\n"
+                f"- MANDATORY NEXT STEP FOR THIS TURN: Emit a `<tool_call>` or `<invoke name=\"Write\">` block for the `Write` tool to create `{target_bench}`, and then emit `<invoke name=\"Bash\">` to execute it and verify performance."
+            )
+        else:
+            directive = (
+                "\n\n[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n"
+                "- All unit tests have passed, but you have NOT yet executed the required benchmark script via `Bash`!\n"
+                "- MANDATORY NEXT STEP FOR THIS TURN: Emit a `<tool_call>` or `<invoke name=\"Bash\">` block for the `Bash` tool right now to run the required benchmark script and verify performance."
+            )
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 
     return {"is_incomplete": False, "progress_directive": "", "initial_plan": ""}
@@ -1134,22 +1153,7 @@ def anthropic_to_openai_request(req: dict) -> dict:
         else:
             messages.append({"role": role, "content": text_content.strip()})
 
-    # If the coding workflow is incomplete and the last message is a user tool_result turn,
-    # append the progress directive directly to the final user message so the model sees an
-    # explicit continuation instruction right after </tool_result>.
-    if (
-        workflow_state["is_incomplete"]
-        and workflow_state["progress_directive"]
-        and messages
-        and messages[-1].get("role") == "user"
-    ):
-        last_u = messages[-1]
-        if isinstance(last_u.get("content"), str):
-            last_u["content"] = f"{last_u['content']}\n{workflow_state['progress_directive'].strip()}".strip()
-            total_input_chars += len(workflow_state["progress_directive"])
-        elif isinstance(last_u.get("content"), list):
-            last_u["content"].append({"type": "text", "text": workflow_state["progress_directive"].strip()})
-            total_input_chars += len(workflow_state["progress_directive"])
+
 
     # 3. Build OpenAI Request
     openai_req = {
@@ -1465,10 +1469,13 @@ async def openai_to_anthropic_stream(
                             end_idx = 0
                             tag_len = len(m_self.group(0))
                         elif buffer.startswith("<tool_call"):
-                            m_alt = re.search(r'\}[ \t]*>', buffer)
-                            if m_alt:
-                                end_idx = m_alt.start()
-                                tag_len = len(m_alt.group(0))
+                            json_end = find_json_end_in_tag(buffer)
+                            if json_end != -1:
+                                after = buffer[json_end:]
+                                m_gt = re.match(r"^\s*>", after)
+                                if m_gt:
+                                    end_idx = json_end
+                                    tag_len = m_gt.end()
 
                     if end_idx == -1:
                         break

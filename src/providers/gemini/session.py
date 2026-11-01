@@ -570,9 +570,11 @@ class GeminiProvider(BaseProvider):
                     if "[CODING WORKFLOW PROGRESS TRACKER" in system_prefix:
                         idx_tr = system_prefix.find("[CODING WORKFLOW PROGRESS TRACKER")
                         tracker_tail = "\n\n" + system_prefix[idx_tr:].strip()
+                        system_prefix = system_prefix[:idx_tr].rstrip()
                     elif "[MULTI-FILE CREATION PLAN]:" in system_prefix:
                         idx_pl = system_prefix.find("[MULTI-FILE CREATION PLAN]:")
                         tracker_tail = "\n\n" + system_prefix[idx_pl:].strip()
+                        system_prefix = system_prefix[:idx_pl].rstrip()
 
                     directive_reinforcement = (
                         "\n\n[MANDATORY RULE]: Emit fresh <tool_call> tags for this query. "
@@ -610,6 +612,17 @@ class GeminiProvider(BaseProvider):
             system_prefix = re.sub(r"You are an automated API proxy[^\n]*\n?", "", system_prefix)
             system_prefix = re.sub(r"STRICT PROHIBITION ON CAPABILITY REFUSALS[^\n]*\n?", "", system_prefix)
 
+        tracker_tail = ""
+        if system_prefix and "TOOL_CALL_REQUIRED" in system_prefix:
+            if "[CODING WORKFLOW PROGRESS TRACKER" in system_prefix:
+                idx_tr = system_prefix.find("[CODING WORKFLOW PROGRESS TRACKER")
+                tracker_tail = "\n\n" + system_prefix[idx_tr:].strip()
+                system_prefix = system_prefix[:idx_tr].rstrip()
+            elif "[MULTI-FILE CREATION PLAN]:" in system_prefix:
+                idx_pl = system_prefix.find("[MULTI-FILE CREATION PLAN]:")
+                tracker_tail = "\n\n" + system_prefix[idx_pl:].strip()
+                system_prefix = system_prefix[:idx_pl].rstrip()
+
         prompt_parts = []
         if system_prefix:
             prompt_parts.append(f"[System Instructions]:\n{system_prefix}")
@@ -626,15 +639,7 @@ class GeminiProvider(BaseProvider):
         # Recency reinforcement for headless tool calling:
         # If tool calling is active and NOT in synthesis phase, reinforce the active directive at the END
         # so multi-turn conversations do not suffer from attention dilution.
-        if system_prefix and "TOOL_CALL_REQUIRED" in system_prefix:
-            tracker_tail = ""
-            if "[CODING WORKFLOW PROGRESS TRACKER" in system_prefix:
-                idx_tr = system_prefix.find("[CODING WORKFLOW PROGRESS TRACKER")
-                tracker_tail = "\n\n" + system_prefix[idx_tr:].strip()
-            elif "[MULTI-FILE CREATION PLAN]:" in system_prefix:
-                idx_pl = system_prefix.find("[MULTI-FILE CREATION PLAN]:")
-                tracker_tail = "\n\n" + system_prefix[idx_pl:].strip()
-
+        if tracker_tail or (system_prefix and "TOOL_CALL_REQUIRED" in system_prefix):
             prompt_parts.append(
                 "[ACTIVE DIRECTIVE FOR CURRENT TURN]:\n"
                 "MANDATORY: Emit fresh <tool_call> tags (or <invoke> blocks) for the current query above.\n"

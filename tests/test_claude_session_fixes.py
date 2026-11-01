@@ -2056,6 +2056,178 @@ def test_chatgpt_oversized_history_compaction():
     assert "continue" in out[-1]["content"]["parts"][0]
 
 
+def test_closed_tool_call_re_interior_braces_and_angle_brackets():
+    """Verify CLOSED_TOOL_CALL_RE matches the full tool call when code contains braces followed by > inside JSON arguments."""
+    from src.core.emulation.stream_parser import CLOSED_TOOL_CALL_RE
+
+    text = '<tool_call>{"name": "Write", "arguments": {"file_path": "a.js", "content": "if ({a: 1} > 0) { console.log(1); }"}}</tool_call>'
+    m = CLOSED_TOOL_CALL_RE.search(text)
+    assert m is not None
+    assert m.group(0) == text
+
+
+@pytest.mark.anyio
+async def test_stream_parser_does_not_slice_file_at_interior_braces_and_gt():
+    """Verify openai_to_anthropic_stream does not prematurely slice a tool call on interior code containing } >."""
+    from src.converters.anthropic import openai_to_anthropic_stream
+    import json
+
+    async def mock_stream():
+        # Stream chunks where chunk 1 contains an interior } >
+        chunk1 = 'data: {"choices": [{"delta": {"content": "<tool_call>{\\"name\\": \\"Write\\", \\"arguments\\": {\\"file_path\\": \\"a.js\\", \\"content\\": \\"if ({a: 1} > 0) {"}}]}\n\n'
+        chunk2 = 'data: {"choices": [{"delta": {"content": " return true; }\\"\\"}}</tool_call>"}}]}\n\n'
+        chunk3 = 'data: [DONE]\n\n'
+        yield chunk1
+        yield chunk2
+        yield chunk3
+
+    tool_blocks = []
+    async for sse in openai_to_anthropic_stream(mock_stream(), model="auto"):
+        for line in sse.splitlines():
+            if line.startswith("data: ") and not line.startswith("data: [DONE]"):
+                payload = json.loads(line[6:])
+                if payload.get("type") == "content_block_start":
+                    cb = payload.get("content_block", {})
+                    if cb.get("type") == "tool_use":
+                        tool_blocks.append(cb)
+                elif payload.get("type") == "content_block_delta":
+                    delta = payload.get("delta", {})
+                    if delta.get("type") == "input_json_delta":
+                        tool_blocks[-1]["partial_json"] = delta.get("partial_json", "")
+
+    assert len(tool_blocks) == 1
+    assert tool_blocks[0]["name"] == "Write"
+    parsed_input = json.loads(tool_blocks[0]["partial_json"])
+    assert parsed_input["file_path"] == "a.js"
+    assert "if ({a: 1} > 0) { return true; }" in parsed_input["content"]
+
+
+def test_analyze_coding_workflow_state_clears_edit_error_on_subsequent_success():
+    """Verify that if an earlier edit in a turn failed but a subsequent edit on the same file succeeded,
+    _analyze_coding_workflow_state does not report the file as having an edit error."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    non_system_msgs = [
+        {"role": "user", "content": "Fix the bug in micro_db/btree.py and run the tests"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu_1", "name": "Edit", "input": {"file_path": "micro_db/btree.py", "old_string": "x", "new_string": "x"}},
+                {"type": "tool_use", "id": "tu_2", "name": "Edit", "input": {"file_path": "micro_db/btree.py", "old_string": "x = 1", "new_string": "x = 2"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "is_error": True, "content": "No changes to make: old_string and new_string are exactly the same."},
+                {"type": "tool_result", "tool_use_id": "tu_2", "is_error": False, "content": "The file micro_db/btree.py has been updated successfully."},
+            ],
+        },
+    ]
+
+    state = _analyze_coding_workflow_state(
+        non_system_msgs=non_system_msgs,
+        has_coding_action_tools=True,
+        has_pending_tool_results=True,
+        has_error_tool_results=True,
+    )
+    # The error on btree.py was resolved by the second edit, so it should NOT demand overwriting btree.py!
+    assert "Your previous `Edit` tool call on `micro_db/btree.py` failed" not in state["progress_directive"]
+
+
+def test_analyze_coding_workflow_state_no_false_positive_failure_on_type_annotations():
+    """Verify that type annotations or logs containing 'error: none' or 'error: int' do not trigger test failure."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    non_system_msgs = [
+        {"role": "user", "content": "Implement parser in app.py and run tests"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu_1", "name": "Write", "input": {"file_path": "app.py", "content": "def parse(error: int = 0): pass"}},
+                {"type": "tool_use", "id": "tu_2", "name": "Bash", "input": {"command": "python3 -m unittest"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "is_error": False, "content": "File created."},
+                {"type": "tool_result", "tool_use_id": "tu_2", "is_error": False, "content": "Check logs: error: none. 0 error: all good.\nRan 3 tests in 0.01s\n\nOK"},
+            ],
+        },
+    ]
+
+    state = _analyze_coding_workflow_state(
+        non_system_msgs=non_system_msgs,
+        has_coding_action_tools=True,
+        has_pending_tool_results=True,
+        has_error_tool_results=False,
+    )
+    assert not state["is_incomplete"]
+    assert "test suite / command execution failed with errors" not in state["progress_directive"]
+
+
+def test_analyze_coding_workflow_state_uncreated_benchmark_script_directs_write_first():
+    """Verify that when unit tests have passed and a benchmark script is requested that has not been created yet,
+    the directive tells the model to Write the benchmark script first rather than running a non-existent file."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    non_system_msgs = [
+        {"role": "user", "content": "Fix cache/lfu.py. Run tests. Write benchmarks/bench_lfu.py to benchmark get/put throughput and execute it."},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu_1", "name": "Edit", "input": {"file_path": "cache/lfu.py", "old_string": "a", "new_string": "b"}},
+                {"type": "tool_use", "id": "tu_2", "name": "Bash", "input": {"command": "python3 -m unittest"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "is_error": False, "content": "File updated."},
+                {"type": "tool_result", "tool_use_id": "tu_2", "is_error": False, "content": "Ran 4 tests in 0.001s\n\nOK"},
+            ],
+        },
+    ]
+
+    state = _analyze_coding_workflow_state(
+        non_system_msgs=non_system_msgs,
+        has_coding_action_tools=True,
+        has_pending_tool_results=True,
+        has_error_tool_results=False,
+    )
+    assert state["is_incomplete"]
+    # Must direct creation of benchmarks/bench_lfu.py before execution
+    assert "benchmarks/bench_lfu.py` has NOT been created yet" in state["progress_directive"]
+    assert "Write` tool to create `benchmarks/bench_lfu.py`" in state["progress_directive"]
+
+
+def test_coding_workflow_progress_tracker_not_duplicated_in_system_prefix_and_footer():
+    """Verify that Gemini and ChatGPT providers strip the progress tracker from system_prefix
+    so it only appears at the active turn footer."""
+    from src.providers.gemini.session import GeminiProvider
+    from src.providers.chatgpt.session import _convert_messages as chatgpt_convert
+
+    tracker = "[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n- Please fix tests"
+    system_content = f"You are a coding assistant.\n\n[GHOST WORKSPACE DIRECTIVE]\nCRITICAL MODE: TOOL_CALL_REQUIRED.\n{tracker}"
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": "Fix the bug"},
+        {"role": "assistant", "content": '<tool_call>{"name": "Bash", "command": "pytest"}</tool_call>'},
+        {"role": "user", "content": '<tool_result id="tu_1">\nFAILED (errors=1)\n</tool_result>'},
+    ]
+
+    # Test Gemini
+    gemini_out = GeminiProvider()._build_prompt(messages)
+    assert gemini_out.count("[CODING WORKFLOW PROGRESS TRACKER") == 1
+
+    # Test ChatGPT
+    chatgpt_out = chatgpt_convert(messages)
+    full_chatgpt_text = "".join(p for m in chatgpt_out for p in m["content"]["parts"] if isinstance(p, str))
+    assert full_chatgpt_text.count("[CODING WORKFLOW PROGRESS TRACKER") == 1
+
+
+
 
 
 

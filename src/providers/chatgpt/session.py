@@ -1136,9 +1136,11 @@ def _convert_messages(messages: list[dict], retry_sanitized: bool = False) -> li
                     if "[CODING WORKFLOW PROGRESS TRACKER" in system_prefix:
                         idx_tr = system_prefix.find("[CODING WORKFLOW PROGRESS TRACKER")
                         tracker_tail = "\n\n" + system_prefix[idx_tr:].strip()
+                        system_prefix = system_prefix[:idx_tr].rstrip()
                     elif "[MULTI-FILE CREATION PLAN]:" in system_prefix:
                         idx_pl = system_prefix.find("[MULTI-FILE CREATION PLAN]:")
                         tracker_tail = "\n\n" + system_prefix[idx_pl:].strip()
+                        system_prefix = system_prefix[:idx_pl].rstrip()
 
                     recency_footer = (
                         "\n\n[ACTIVE DIRECTIVE FOR CURRENT TURN — FINAL CHANNEL <tool_call> TEXT ONLY]:\n"

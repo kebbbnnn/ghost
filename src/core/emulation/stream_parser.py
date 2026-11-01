@@ -53,14 +53,49 @@ TOOL_OPEN_TAG_RE = re.compile(rf"<(?P<tag>{'|'.join(ALL_TOOL_TAGS)})\b", re.IGNO
 
 DIRECT_TAGS_PATTERN = "|".join(DIRECT_TOOL_TAGS)
 CLOSED_TOOL_CALL_PATTERN = (
-    r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
+    r"(<tool_call\b[^>]*>.*?</tool_call>)|"
     r"(<invoke\b.*?</invoke>)|"
     r"(<tool\b[^>]*>.*?</tool>)|"
     r"(<function_call\b[^>]*>.*?</function_call>)|"
     rf"(<(?P<dtag>{DIRECT_TAGS_PATTERN})\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))|"
-    r"(```(?:json|tool_call)?\s*\{\s*\"name\"\s*:\s*\"[^\"]+\"[\s\S]*?\}\s*```)"
+    r"(```(?:json|tool_call)?\s*\{\s*\"name\"\s*:\s*\"[^\"]+\"[\s\S]*?\}\s*```)|"
+    r"(<tool_call\b[^>]*>\s*\{[\s\S]*?\}\s*>)"
 )
 CLOSED_TOOL_CALL_RE = re.compile(CLOSED_TOOL_CALL_PATTERN, re.DOTALL | re.IGNORECASE)
+
+
+def find_json_end_in_tag(text: str, start_pos: int = 0) -> int:
+    """Find the index immediately after the matching closing brace of the top-level JSON object.
+
+    Ignores braces inside quoted strings (respecting backslash escapes).
+    Returns the index immediately after the closing brace, or -1 if unclosed.
+    """
+    first_brace = text.find("{", start_pos)
+    if first_brace == -1:
+        return -1
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(first_brace, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+    return -1
 
 
 def find_opening_tool_tag(text: str, start_pos: int = 0) -> re.Match | None:
