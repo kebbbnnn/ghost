@@ -973,6 +973,11 @@ def anthropic_to_openai_request(req: dict) -> dict:
                             img_url = f"data:{media_type};base64,{data}"
                             image_parts.append({"type": "image_url", "image_url": {"url": img_url}})
                             total_input_chars += 400
+                elif btype in ("thinking", "thought"):
+                    th_text = block.get("thinking") or block.get("text") or ""
+                    if th_text:
+                        text_content += f"<thought>\n{th_text.strip()}\n</thought>\n"
+                        total_input_chars += len(th_text)
                 elif btype == "tool_use":
                     # Assistant used a tool (in history)
                     tool_id = block.get("id", "")

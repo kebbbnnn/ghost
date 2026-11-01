@@ -1081,6 +1081,32 @@ async def test_code_content_containing_pseudo_tags_not_truncated():
     assert "# see <readme.md> for details" in full_output
 
 
+def test_anthropic_thinking_blocks_in_history():
+    """Verify assistant thinking blocks in multi-turn history are preserved as <thought> blocks."""
+    from src.converters.anthropic import anthropic_to_openai_request
+
+    req = {
+        "model": "claude-3-7-sonnet",
+        "messages": [
+            {"role": "user", "content": "Calculate the factorial of 5"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "To compute 5!, 5*4*3*2*1 = 120"},
+                    {"type": "text", "text": "The answer is 120."},
+                ],
+            },
+            {"role": "user", "content": "Now compute 6!"},
+        ],
+    }
+    converted = anthropic_to_openai_request(req)
+    asst_msg = converted["messages"][1]
+    assert asst_msg["role"] == "assistant"
+    assert "<thought>\nTo compute 5!, 5*4*3*2*1 = 120\n</thought>" in asst_msg["content"]
+    assert "The answer is 120." in asst_msg["content"]
+
+
+
 
 
 
