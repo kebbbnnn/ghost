@@ -178,7 +178,18 @@ class ChatGPTProvider(BaseProvider):
                         if choices:
                             delta_content = choices[0].get("delta", {}).get("content", "")
                             if delta_content:
-                                new_text = self._get_incremental_text(content_tracker, delta_content)
+                                is_snapshot = ("message" in event) or (
+                                    isinstance(event.get("v"), dict) and "message" in event["v"]
+                                )
+                                if is_snapshot:
+                                    new_text = self._get_incremental_text(content_tracker, delta_content)
+                                else:
+                                    new_text = delta_content
+                                    if content_tracker:
+                                        content_tracker[0] += delta_content
+                                    else:
+                                        content_tracker.append(delta_content)
+
                                 if new_text:
                                     chunk["choices"][0]["delta"]["content"] = new_text
                                 else:
@@ -292,7 +303,10 @@ class ChatGPTProvider(BaseProvider):
                                 delta = choice.get("delta", {})
                                 content = delta.get("content", "")
                                 
-                                if "message" in event:
+                                is_snapshot = ("message" in event) or (
+                                    isinstance(event.get("v"), dict) and "message" in event["v"]
+                                )
+                                if is_snapshot:
                                     full_content = content
                                 else:
                                     full_content += content

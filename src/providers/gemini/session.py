@@ -652,11 +652,12 @@ class GeminiProvider(BaseProvider):
         self_closing_count = len(re.findall(rf"<(?:" + "|".join(ALL_TOOL_TAGS) + r")\b[^>]*?\/>", content))
         open_tags_count = sum(len(re.findall(rf"<{tag}\b", content)) for tag in ALL_TOOL_TAGS)
         close_tags_count = sum(content.count(f"</{tag}>") for tag in ALL_TOOL_TAGS)
+        alt_close_matches = len(re.findall(r'<tool_call\b[^>]*>(?:(?!</tool_call>)[\s\S])*?\}[ \t]*>', content))
+        close_tags_count += alt_close_matches
 
         has_closed_tool_call = (
             close_tags_count > 0
             or self_closing_count > 0
-            or ("<tool_call>" in content and "}>" in content)
         )
         has_unclosed_tool_call = (open_tags_count - self_closing_count > close_tags_count)
         if has_unclosed_tool_call:

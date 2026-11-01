@@ -1106,6 +1106,53 @@ def test_anthropic_thinking_blocks_in_history():
     assert "The answer is 120." in asst_msg["content"]
 
 
+@pytest.mark.anyio
+async def test_chatgpt_delta_streaming_preserves_prefix_and_tracker(monkeypatch):
+    """Verify ChatGPTProvider properly distinguishes incremental deltas from cumulative snapshots."""
+    from src.providers.chatgpt.session import ChatGPTProvider
+    import json
+
+    provider = ChatGPTProvider()
+
+    # Simulate raw stream with new delta-encoding format where chunks share a prefix
+    async def mock_stream_raw_chat(*args, **kwargs):
+        # 1. Delta "A"
+        yield 'data: {"v": "A"}\n\n'
+        # 2. Delta "Apple" (should not have "A" stripped)
+        yield 'data: {"v": "Apple"}\n\n'
+        # 3. Delta " sauce"
+        yield 'data: {"v": " sauce"}\n\n'
+        yield 'data: [DONE]\n\n'
+
+    monkeypatch.setattr(provider, "_stream_raw_chat", mock_stream_raw_chat)
+
+    emitted_texts = []
+    async for sse in provider.stream_chat([{"role": "user", "content": "hi"}], "auto"):
+        if sse.startswith("data: ") and not sse.startswith("data: [DONE]"):
+            data = json.loads(sse[6:])
+            choices = data.get("choices", [])
+            if choices:
+                c = choices[0].get("delta", {}).get("content", "")
+                if c:
+                    emitted_texts.append(c)
+
+    assert emitted_texts == ["A", "Apple", " sauce"]
+
+
+def test_gemini_alt_close_tag_not_marked_missing():
+    """Verify GeminiProvider does not mark tool calls closed with }> as missing or unclosed."""
+    from src.providers.gemini.session import GeminiProvider
+
+    prompt = "[GHOST WORKSPACE DIRECTIVE]\nCRITICAL MODE: TOOL_CALL_REQUIRED.\nACTION REQUIRED — TASK INCOMPLETE"
+    content_alt = '<tool_call>{"name": "Bash", "arguments": {"command": "ls"}}>'
+    assert not GeminiProvider._is_missing_required_tool_call(prompt, content_alt)
+
+    content_unclosed = '<tool_call>{"name": "Bash", "arguments": {"command": "ls"}'
+    assert GeminiProvider._is_missing_required_tool_call(prompt, content_unclosed)
+
+
+
+
 
 
 
