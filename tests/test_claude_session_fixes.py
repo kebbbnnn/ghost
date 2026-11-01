@@ -586,3 +586,48 @@ def test_server_safeguards_passthrough_streaming(monkeypatch):
     assert len(m_deltas) == 1
     assert "safeguard_results" in m_deltas[0]["delta"]
     assert m_deltas[0]["delta"]["safeguard_results"][0]["status"]["type"] == "available"
+
+
+def test_sanitize_claude_code_user_text_strips_attribution():
+    """Verify attribution system reminders are stripped unless user explicitly asks about commit."""
+    from src.converters.anthropic import _sanitize_claude_code_user_text
+
+    text_with_attrib = (
+        "<system-reminder>\n"
+        "Attribution for git commits and pull requests you create from here on:\n"
+        "- End git commit messages with: Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
+        "- End pull request descriptions with: Generated with Claude Code\n"
+        "</system-reminder>\n"
+        "Say hello in 5 words"
+    )
+    sanitized = _sanitize_claude_code_user_text(text_with_attrib)
+    assert "<system-reminder>" not in sanitized
+    assert "Say hello in 5 words" in sanitized
+
+
+def test_extract_clean_user_task_text_strips_system_reminders():
+    """Verify _extract_clean_user_task_text strips all system-reminders to avoid false workflow resets."""
+    from src.converters.anthropic import _extract_clean_user_task_text, _analyze_coding_workflow_state
+
+    msg_tool_result_with_reminder = {
+        "role": "user",
+        "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "Done"},
+            {"type": "text", "text": "<system-reminder>\nAttribution for git commits you create...\n</system-reminder>"},
+        ],
+    }
+    cleaned = _extract_clean_user_task_text(msg_tool_result_with_reminder)
+    assert cleaned == ""
+
+    # Verify multi-turn workflow properly identifies original user task and reaches synthesis
+    msg1 = {"role": "user", "content": "Say hello in 5 words"}
+    msg2 = {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo hi"}}]}
+    state = _analyze_coding_workflow_state(
+        [msg1, msg2, msg_tool_result_with_reminder],
+        has_coding_action_tools=True,
+        has_pending_tool_results=True,
+        has_error_tool_results=False,
+    )
+    assert state["is_incomplete"] is False
+    assert state["progress_directive"] == ""
+

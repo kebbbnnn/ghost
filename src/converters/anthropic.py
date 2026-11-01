@@ -175,14 +175,11 @@ def _sanitize_claude_code_user_text(text: str) -> str:
     """Strip irrelevant git commit attribution <system-reminder> blocks unless git/commit is requested."""
     if not text or "<system-reminder>" not in text:
         return text
-    lower = text.lower()
+    attrib_regex = r"<system-reminder>\s*Attribution for git commits and pull requests.*?</system-reminder>\s*"
+    remaining_text = re.sub(attrib_regex, "", text, flags=re.DOTALL | re.IGNORECASE)
+    lower = remaining_text.lower()
     if "commit" not in lower and "pull request" not in lower:
-        text = re.sub(
-            r"<system-reminder>\s*Attribution for git commits and pull requests.*?</system-reminder>\s*",
-            "",
-            text,
-            flags=re.DOTALL,
-        )
+        return remaining_text
     return text
 
 
@@ -428,15 +425,16 @@ def _extract_clean_user_task_text(msg: dict) -> str:
         return ""
     content = msg.get("content", "")
     if isinstance(content, str):
-        cleaned = _sanitize_claude_code_user_text(content)
-        cleaned = re.sub(r"<tool_result\b[^>]*>.*?</tool_result>", "", cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"<system-reminder\b[^>]*>.*?</system-reminder>", "", content, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"<tool_result\b[^>]*>.*?</tool_result>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         return cleaned.strip()
     if isinstance(content, list):
         parts = []
         for b in content:
             if isinstance(b, dict) and b.get("type") == "text":
-                txt = _sanitize_claude_code_user_text(b.get("text", ""))
-                txt = re.sub(r"<tool_result\b[^>]*>.*?</tool_result>", "", txt, flags=re.DOTALL)
+                txt = b.get("text", "")
+                txt = re.sub(r"<system-reminder\b[^>]*>.*?</system-reminder>", "", txt, flags=re.DOTALL | re.IGNORECASE)
+                txt = re.sub(r"<tool_result\b[^>]*>.*?</tool_result>", "", txt, flags=re.DOTALL | re.IGNORECASE)
                 if txt.strip():
                     parts.append(txt.strip())
         return "\n".join(parts).strip()
