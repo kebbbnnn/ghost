@@ -92,7 +92,7 @@ def is_chatgpt_capability_refusal(text: str) -> bool:
     if not text:
         return False
     lower = text.strip().lower()
-    if "<tool_call>" in lower or "<invoke" in lower:
+    if any(f"<{tag}" in lower for tag in ("tool_call", "invoke", "update", "edit", "write", "bash", "read")):
         return False
     return any(pat in lower for pat in CHATGPT_CAPABILITY_REFUSAL_PATTERNS)
 
@@ -106,7 +106,7 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
         return False
     if not response_text or not response_text.strip():
         return True
-    if "<tool_call>" in response_text or "<invoke" in response_text:
+    if any(f"<{tag}" in response_text for tag in ("tool_call", "invoke", "update", "edit", "write", "bash", "read")):
         return False
     if is_chatgpt_capability_refusal(response_text):
         return True

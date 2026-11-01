@@ -54,7 +54,7 @@ def is_gemini_canned_refusal(text: str) -> bool:
     if not text:
         return False
     stripped = text.strip().lower()
-    if "<tool_call>" in stripped or "<invoke" in stripped:
+    if any(f"<{tag}" in stripped for tag in ("tool_call", "invoke", "update", "edit", "write", "bash", "read")):
         return False
     if len(stripped) > 800:
         return False

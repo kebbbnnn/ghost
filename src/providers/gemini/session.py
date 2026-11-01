@@ -633,13 +633,16 @@ class GeminiProvider(BaseProvider):
         """Detect when Gemini ignored TOOL_CALL_REQUIRED, emitted an unclosed tool block, or dumped markdown code blocks."""
         if "CRITICAL MODE: TOOL_CALL_REQUIRED" not in prompt:
             return False
-        has_closed_tool_call = (
-            ("<tool_call>" in content and "</tool_call>" in content)
-            or ("<invoke" in content and "</invoke>" in content)
+        valid_tool_tags = ("tool_call", "invoke", "update", "edit", "write", "bash", "read", "glob", "grep", "ls")
+        has_closed_tool_call = any(
+            (f"<{tag}" in content and f"</{tag}>" in content)
+            for tag in valid_tool_tags
+        ) or (
+            "<tool_call>" in content and "}>" in content
         )
-        has_unclosed_tool_call = (
-            content.count("<tool_call>") > content.count("</tool_call>")
-            or len(re.findall(r"<invoke\b", content)) > content.count("</invoke>")
+        has_unclosed_tool_call = any(
+            len(re.findall(rf"<{tag}\b", content)) > content.count(f"</{tag}>")
+            for tag in valid_tool_tags
         )
         if has_unclosed_tool_call:
             return True

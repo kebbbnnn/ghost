@@ -858,4 +858,35 @@ def test_assistant_string_content_tool_parsing_in_workflow_state():
     assert "engine.py" in state["progress_directive"]
 
 
+def test_direct_tool_tags_recognized_by_provider_refusal_and_missing_checks():
+    """Verify Gemini and ChatGPT providers recognize direct tags (<write>, <edit>, <bash>, etc.) without false positive refusals."""
+    from src.providers.gemini.converter import is_gemini_canned_refusal
+    from src.providers.chatgpt.session import is_chatgpt_capability_refusal, _is_chatgpt_missing_required_tool_call
+    from src.providers.gemini.session import GeminiProvider
+
+    direct_tag_samples = [
+        '<write path="main.py">print("hello")</write>',
+        '<edit path="main.py"><old>hello</old><new>world</new></edit>',
+        '<bash>python3 -m pytest</bash>',
+        '<read path="main.py"/>',
+    ]
+
+    for sample in direct_tag_samples:
+        assert not is_gemini_canned_refusal(sample), f"Gemini refusal false positive on: {sample}"
+        assert not is_chatgpt_capability_refusal(sample), f"ChatGPT refusal false positive on: {sample}"
+        assert not _is_chatgpt_missing_required_tool_call(
+            [{"role": "user", "content": "Please write main.py"}], sample
+        ), f"ChatGPT missing tool call false positive on: {sample}"
+
+    gemini = GeminiProvider()
+    prompt = "CRITICAL MODE: TOOL_CALL_REQUIRED: You must call a tool now."
+    for sample in direct_tag_samples:
+        if sample.endswith("/>"):
+            continue
+        assert not gemini._is_missing_required_tool_call(
+            prompt, sample
+        ), f"Gemini missing tool call false positive on: {sample}"
+
+
+
 
