@@ -551,12 +551,21 @@ class GeminiProvider(BaseProvider):
             if system_prefix:
                 directive_reinforcement = ""
                 if "TOOL_CALL_REQUIRED" in system_prefix:
+                    tracker_tail = ""
+                    if "[CODING WORKFLOW PROGRESS TRACKER" in system_prefix:
+                        idx_tr = system_prefix.find("[CODING WORKFLOW PROGRESS TRACKER")
+                        tracker_tail = "\n\n" + system_prefix[idx_tr:].strip()
+                    elif "[MULTI-FILE CREATION PLAN]:" in system_prefix:
+                        idx_pl = system_prefix.find("[MULTI-FILE CREATION PLAN]:")
+                        tracker_tail = "\n\n" + system_prefix[idx_pl:].strip()
+
                     directive_reinforcement = (
                         "\n\n[MANDATORY RULE]: Emit fresh <tool_call> tags for this query. "
-                        "If the user asks to build, create, edit, or save code or files, you MUST invoke the Write, Edit, or Bash tools to write to disk. "
+                        "If the user asks to build, create, edit, or save code or files, you MUST invoke tools (e.g. Write, Edit, or Bash) to write to disk. "
                         "Do NOT use Google Drive or Gmail. "
                         "NEVER format URLs as markdown links [url](url) inside JSON arguments; use plain URL strings. "
                         "Do not answer directly with markdown code blocks when files should be written."
+                        f"{tracker_tail}"
                     )
                 return f"[System Instructions]:\n{system_prefix}\n\n{latest_turn_text}{directive_reinforcement}"
             return latest_turn_text
@@ -564,14 +573,20 @@ class GeminiProvider(BaseProvider):
         # Fresh/stateless conversation: compact older middle turns only if total prompt exceeds MAX_GEMINI_PROMPT_CHARS
         total_chat_len = sum(len(p) for p in chat_parts)
         if (len(system_prefix) + total_chat_len) > MAX_GEMINI_PROMPT_CHARS and len(chat_parts) > 2:
-            # Truncate older middle turns while preserving first user context and latest 2 turns
-            compacted = []
-            for idx, part in enumerate(chat_parts):
-                if idx > 0 and idx < len(chat_parts) - 2 and len(part) > 8000:
-                    compacted.append(part[:8000] + "\n...[prior turn truncated for context window]...")
+            # Stage 1: Truncate large individual middle turns while preserving first user context and latest 2 turns
+            compacted = [chat_parts[0]]
+            for idx in range(1, len(chat_parts) - 2):
+                part = chat_parts[idx]
+                if len(part) > 4000:
+                    compacted.append(part[:4000] + "\n...[prior turn truncated for context window]...")
                 else:
                     compacted.append(part)
+            compacted.extend(chat_parts[-2:])
             chat_parts = compacted
+
+            # Stage 2: If still exceeding limit, drop oldest middle turns while keeping initial task and latest turns
+            while len(chat_parts) > 3 and (len(system_prefix) + sum(len(p) for p in chat_parts)) > MAX_GEMINI_PROMPT_CHARS:
+                chat_parts.pop(1)
 
         prompt_parts = []
         if system_prefix:

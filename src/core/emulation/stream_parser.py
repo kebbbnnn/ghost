@@ -346,8 +346,23 @@ def parse_parameter_xml_value(p_name: str, raw_val: str) -> Any:
         unwrapped = html.unescape(unwrapped)
 
     p_name_lower = p_name.lower()
-    if p_name_lower in STRING_PARAM_NAMES:
-        # Expected to be a string parameter. Only unwrap explicit outer JSON quotes if present.
+    is_code = p_name_lower in ("content", "old_string", "new_string", "old_str", "new_str")
+    if is_code:
+        # For code parameters, preserve single quotes and double-quoted source code literals.
+        # Only unwrap outer JSON double-quotes if it was explicitly JSON-escaped (contains \n, \", \\, \t).
+        if len(unwrapped) >= 2 and unwrapped.startswith('"') and unwrapped.endswith('"'):
+            if any(esc in unwrapped for esc in ("\\n", '\\"', "\\\\", "\\t")):
+                try:
+                    parsed = json.loads(unwrapped)
+                    val = parsed if isinstance(parsed, str) else unwrapped
+                except Exception:
+                    val = unwrapped
+            else:
+                val = unwrapped
+        else:
+            val = unwrapped
+    elif p_name_lower in STRING_PARAM_NAMES:
+        # Expected to be a string parameter. Only unwrap explicit outer JSON/shell quotes if present.
         if len(unwrapped) >= 2 and unwrapped.startswith('"') and unwrapped.endswith('"'):
             try:
                 parsed = json.loads(unwrapped)

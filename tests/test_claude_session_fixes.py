@@ -956,6 +956,44 @@ def test_generic_benchmark_directive_no_domain_leak():
     assert "Bash" in state["progress_directive"]
 
 
+def test_code_string_literals_preserve_quotes_in_xml():
+    """Verify source code string literals with quotes in old_string/new_string/content are preserved and not stripped."""
+    from src.core.emulation.stream_parser import parse_parameter_xml_value
+
+    # Single-quoted string literal in code:
+    assert parse_parameter_xml_value("old_string", "'active'") == "'active'"
+    assert parse_parameter_xml_value("new_string", "'inactive'") == "'inactive'"
+
+    # Double-quoted single-line code literal:
+    assert parse_parameter_xml_value("old_string", '"active"') == '"active"'
+    assert parse_parameter_xml_value("new_string", '"inactive"') == '"inactive"'
+
+    # Non-code parameters (file_path, command) should still have outer quotes stripped:
+    assert parse_parameter_xml_value("file_path", '"src/main.py"') == "src/main.py"
+    assert parse_parameter_xml_value("file_path", "'src/main.py'") == "src/main.py"
+
+
+def test_gemini_oversized_history_compaction():
+    """Verify GeminiProvider safely compacts oversized conversation histories without dropping the original task."""
+    from src.providers.gemini.session import GeminiProvider, MAX_GEMINI_PROMPT_CHARS
+
+    provider = GeminiProvider()
+    # Create a conversation with initial task + 40 turns of 8,000 characters each (320,000 chars total)
+    messages = [{"role": "system", "content": "You are a coding assistant."}]
+    messages.append({"role": "user", "content": "INITIAL TASK: Build a web server with routing."})
+    for i in range(40):
+        messages.append({"role": "assistant", "content": f"<tool_call>step {i}</tool_call>" + ("x" * 7000)})
+        messages.append({"role": "user", "content": f"[Tool Results]: step {i} result" + ("y" * 1000)})
+    messages.append({"role": "assistant", "content": "Final step"})
+    messages.append({"role": "user", "content": "continue"})
+
+    prompt = provider._build_prompt(messages)
+    assert len(prompt) <= MAX_GEMINI_PROMPT_CHARS
+    assert "INITIAL TASK: Build a web server with routing." in prompt
+    assert "continue" in prompt
+
+
+
 
 
 

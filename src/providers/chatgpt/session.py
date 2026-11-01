@@ -192,7 +192,7 @@ class ChatGPTProvider(BaseProvider):
                         else:
                             buffered_chunks.append(formatted_chunk)
                             current_full = content_tracker[0] if content_tracker else ""
-                            if "<tool_call>" in current_full or "<invoke" in current_full:
+                            if any(f"<{tag}" in current_full for tag in ALL_TOOL_TAGS):
                                 streaming_unlocked = True
                                 for bc in buffered_chunks:
                                     if auto_trace and trace:
