@@ -56,7 +56,7 @@ def is_gemini_canned_refusal(text: str) -> bool:
     if not text:
         return False
     stripped = text.strip().lower()
-    if any(f"<{tag}" in stripped for tag in ALL_TOOL_TAGS):
+    if any(re.search(rf"<{tag}\b", stripped) for tag in ALL_TOOL_TAGS):
         return False
     if len(stripped) > 800:
         return False

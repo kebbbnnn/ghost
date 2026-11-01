@@ -93,7 +93,7 @@ def is_chatgpt_capability_refusal(text: str) -> bool:
     if not text:
         return False
     lower = text.strip().lower()
-    if any(f"<{tag}" in lower for tag in ALL_TOOL_TAGS):
+    if any(re.search(rf"<{tag}\b", lower) for tag in ALL_TOOL_TAGS):
         return False
     return any(pat in lower for pat in CHATGPT_CAPABILITY_REFUSAL_PATTERNS)
 
@@ -107,7 +107,7 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
         return False
     if not response_text or not response_text.strip():
         return True
-    if any(f"<{tag}" in response_text for tag in ALL_TOOL_TAGS):
+    if any(re.search(rf"<{tag}\b", response_text) for tag in ALL_TOOL_TAGS):
         return False
     if is_chatgpt_capability_refusal(response_text):
         return True
@@ -192,7 +192,7 @@ class ChatGPTProvider(BaseProvider):
                         else:
                             buffered_chunks.append(formatted_chunk)
                             current_full = content_tracker[0] if content_tracker else ""
-                            if any(f"<{tag}" in current_full for tag in ALL_TOOL_TAGS):
+                            if any(re.search(rf"<{tag}\b", current_full) for tag in ALL_TOOL_TAGS):
                                 streaming_unlocked = True
                                 for bc in buffered_chunks:
                                     if auto_trace and trace:

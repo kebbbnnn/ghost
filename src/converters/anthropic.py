@@ -7,6 +7,7 @@ from typing import AsyncGenerator
 from src.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
     DIRECT_TOOL_TAGS,
+    TOOL_OPEN_TAG_RE,
     _unwrap_autolinks_in_obj,
     normalize_tool_name,
     normalize_tool_parameters,
@@ -306,15 +307,38 @@ def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
             if dk_match:
                 params[dk] = parse_parameter_xml_value(dk, dk_match.group(1))
 
-        # Look for attributes on opening root tag only for direct tool tags (e.g. <read path="main.py" offset="10"/>)
+        # Look for attributes and inner content on opening root tag for direct tool tags (e.g. <read path="main.py"/>, <bash>cmd</bash>)
         open_tag_match = re.match(r"^\s*<([a-zA-Z0-9_-]+)\b[^>]*>", xml_block)
         if open_tag_match and open_tag_match.group(1).lower() in DIRECT_TOOL_TAGS:
+            cand_tag = open_tag_match.group(1).lower()
+            if tool_name == "unknown":
+                tool_name = cand_tag
             open_tag_str = open_tag_match.group(0)
             attr_matches = re.finditer(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', open_tag_str)
             for am in attr_matches:
                 k, v = am.group(1), am.group(2).strip()
                 if k not in params:
                     params[k] = v
+
+            close_m = re.search(rf"</{cand_tag}>\s*$", xml_block, re.IGNORECASE)
+            inner_body = xml_block[open_tag_match.end() : close_m.start() if close_m else len(xml_block)]
+
+            if cand_tag in ("write", "update") and "content" not in params:
+                clean_body = re.sub(r"^\r?\n|\r?\n$", "", inner_body)
+                if clean_body:
+                    params["content"] = clean_body
+            elif cand_tag in ("bash", "cmd", "sh", "terminal") and "command" not in params:
+                clean_body = inner_body.strip()
+                if clean_body:
+                    params["command"] = clean_body
+            elif cand_tag in ("read",) and "file_path" not in params and "path" not in params:
+                clean_body = inner_body.strip()
+                if clean_body:
+                    params["file_path"] = clean_body
+            elif cand_tag in ("glob", "grep") and "pattern" not in params:
+                clean_body = inner_body.strip()
+                if clean_body:
+                    params["pattern"] = clean_body
 
         parsed = parse_tool_payload(xml_block)
         if parsed:
@@ -1094,6 +1118,7 @@ async def openai_to_anthropic_stream(
 
     block_index = 0
     active_block_type = None  # None, "text", or "tool_use"
+    active_tool_tag: str | None = None
     buffer = ""
     tool_called = False
     emitted_tool_use_ids: list[str] = []
@@ -1175,19 +1200,15 @@ async def openai_to_anthropic_stream(
 
             while buffer:
                 if active_block_type != "tool_use":
-                    # Check for earliest opening tool tag
-                    found_tag = None
-                    tag_idx = -1
-                    for t in OPEN_TAGS:
-                        idx = buffer.find(t)
-                        if idx != -1 and (tag_idx == -1 or idx < tag_idx):
-                            tag_idx = idx
-                            found_tag = t
+                    # Check for earliest opening tool tag with word boundary
+                    m_open = TOOL_OPEN_TAG_RE.search(buffer)
+                    if m_open and m_open.end() < len(buffer):
+                        tag_idx = m_open.start()
+                        matched_tag_name = m_open.group("tag").lower()
 
-                    if tag_idx != -1:
                         # Check if this tag is already complete and self-closing, e.g. <read path="..."/>
                         remainder = buffer[tag_idx:]
-                        m_self = re.match(r"^<[a-zA-Z0-9_-]+\b[^>]*?\/>", remainder)
+                        m_self = re.match(rf"^<{matched_tag_name}\b[^>]*?\/>", remainder)
                         if m_self:
                             text_before = re.sub(r"```[a-zA-Z0-9_-]*\s*$", "", buffer[:tag_idx])
                             if text_before and text_before.strip():
@@ -1251,14 +1272,17 @@ async def openai_to_anthropic_stream(
 
                         buffer = buffer[tag_idx:]
                         active_block_type = "tool_use"
+                        active_tool_tag = matched_tag_name
                     else:
                         # Check lookahead prefix match across all open tags
                         max_prefix_len = 0
-                        for t in OPEN_TAGS:
-                            for l in range(min(len(t) - 1, len(buffer)), 0, -1):
-                                if t.startswith(buffer[-l:]):
+                        for candidate_tag in ALL_TOOL_TAGS:
+                            full_open = f"<{candidate_tag}"
+                            for l in range(min(len(full_open), len(buffer)), 0, -1):
+                                if full_open.startswith(buffer[-l:]):
                                     if l > max_prefix_len:
                                         max_prefix_len = l
+                                    break
 
                         if max_prefix_len > 0:
                             safe_text = buffer[:-max_prefix_len]
@@ -1304,11 +1328,16 @@ async def openai_to_anthropic_stream(
 
                 if active_block_type == "tool_use":
                     # Determine matching closing tag
-                    close_tag = "</invoke>"
-                    for t in ALL_TOOL_TAGS:
-                        if buffer.startswith(f"<{t}"):
-                            close_tag = f"</{t}>"
-                            break
+                    if active_tool_tag == "tool_call":
+                        close_tag = "</tool_call>"
+                    elif active_tool_tag:
+                        close_tag = f"</{active_tool_tag}>"
+                    else:
+                        close_tag = "</invoke>"
+                        for t in ALL_TOOL_TAGS:
+                            if re.search(rf"^<{t}\b", buffer):
+                                close_tag = f"</{t}>"
+                                break
 
                     end_idx = buffer.find(close_tag)
                     tag_len = len(close_tag) if end_idx != -1 else 0
@@ -1325,14 +1354,14 @@ async def openai_to_anthropic_stream(
                                 end_idx = m_alt.start()
                                 tag_len = len(m_alt.group(0))
 
-                    # Check if a subsequent open tag starts before close_tag
+                    # Check if an unclosed tool tag was superseded by a next tool tag
                     next_open_idx = -1
-                    for t in OPEN_TAGS:
-                        pos = buffer.find(t, 1)
-                        if pos != -1 and (next_open_idx == -1 or pos < next_open_idx):
-                            next_open_idx = pos
+                    if end_idx == -1:
+                        m_next = TOOL_OPEN_TAG_RE.search(buffer, 1)
+                        if m_next:
+                            next_open_idx = m_next.start()
 
-                    if next_open_idx != -1 and (end_idx == -1 or next_open_idx < end_idx):
+                    if end_idx == -1 and next_open_idx != -1:
                         xml_block = buffer[:next_open_idx]
                         buffer = buffer[next_open_idx:]
                     elif end_idx != -1:
@@ -1350,6 +1379,7 @@ async def openai_to_anthropic_stream(
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
 
                     active_block_type = None
+                    active_tool_tag = None
                     block_index += 1
                     tool_called = True
                     output_tokens_accumulated += max(1, len(xml_block) // 4)
@@ -1374,13 +1404,12 @@ async def openai_to_anthropic_stream(
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                 tool_called = True
                 active_block_type = None
-            elif not tool_called:
-                active_block_type = "text"
-                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': buffer}})}\n\n"
-                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
-                active_block_type = None
             else:
+                clean_buf = unwrap_markdown_autolinks(buffer)
+                if clean_buf.strip():
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': clean_buf}})}\n\n"
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                 active_block_type = None
         else:
             clean_rem = re.sub(r"^\s*```\s*$", "", buffer)
@@ -1499,14 +1528,14 @@ async def openai_to_anthropic_json(
     elif re.search(
         r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
         r"(<invoke\b.*?</invoke>)|"
-        r"(<(?:update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?:update|edit|write|bash|read|glob|grep|ls)>))",
+        r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
         content,
         re.DOTALL | re.IGNORECASE,
     ):
         tool_pattern = re.compile(
             r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
             r"(<invoke\b.*?</invoke>)|"
-            r"(<(?:update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?:update|edit|write|bash|read|glob|grep|ls)>))",
+            r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
             re.DOTALL | re.IGNORECASE,
         )
         last_idx = 0

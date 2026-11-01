@@ -993,6 +993,95 @@ def test_gemini_oversized_history_compaction():
     assert "continue" in prompt
 
 
+def test_direct_tag_inner_body_extraction():
+    """Verify parse_tool_payload and _parse_invoke_xml properly extract inner body for direct tags."""
+    from src.core.emulation.stream_parser import parse_tool_payload
+    from src.converters.anthropic import _parse_invoke_xml
+
+    # 1. Direct bash tag
+    bash_xml = "<bash>echo hello world</bash>"
+    p1 = parse_tool_payload(bash_xml)
+    assert p1 is not None
+    assert p1["name"] == "bash"
+    assert p1["arguments"]["command"] == "echo hello world"
+
+    n1, a1 = _parse_invoke_xml(bash_xml)
+    assert n1 == "bash"
+    assert a1["command"] == "echo hello world"
+
+    # 2. Direct write tag with inner content
+    write_xml = '<write path="doc.py">\ndef check():\n    return True\n</write>'
+    p2 = parse_tool_payload(write_xml)
+    assert p2 is not None
+    assert p2["name"] == "write"
+    assert p2["arguments"]["file_path"] == "doc.py"
+    assert p2["arguments"]["content"] == "def check():\n    return True"
+
+    n2, a2 = _parse_invoke_xml(write_xml)
+    assert n2 == "write"
+    assert a2["file_path"] == "doc.py"
+    assert a2["content"] == "def check():\n    return True"
+
+    # 3. Direct read tag with inner file_path
+    read_xml = "<read>src/main.py</read>"
+    p3 = parse_tool_payload(read_xml)
+    assert p3 is not None
+    assert p3["name"] == "read"
+    assert p3["arguments"]["file_path"] == "src/main.py"
+
+    # 4. Direct glob tag with inner pattern
+    glob_xml = "<glob>src/**/*.py</glob>"
+    p4 = parse_tool_payload(glob_xml)
+    assert p4 is not None
+    assert p4["name"] == "glob"
+    assert p4["arguments"]["pattern"] == "src/**/*.py"
+
+
+@pytest.mark.anyio
+async def test_tag_boundary_prevents_false_matches():
+    """Verify words starting with tool tag prefixes (like <readme.md>, <writer>) are never mistaken for tool tags."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    # Stream with a tool call followed by text mentioning <writer> and <readme.md>
+    chunk_payload = json.dumps({"choices": [{"delta": {"content": '<bash>echo 1</bash> I am a <writer> in New York. Please check <readme.md> for info.'}}]})
+    async def chunks():
+        yield f"data: {chunk_payload}\n\n"
+
+    events = []
+    async for c in openai_to_anthropic_stream(chunks(), model="claude-3-5-sonnet"):
+        events.append(c)
+
+    full_output = "".join(events)
+    # Both tool_use and subsequent text mentioning <writer> and <readme.md> must be preserved
+    assert '"name": "bash"' in full_output
+    assert "<writer>" in full_output
+    assert "<readme.md>" in full_output
+
+
+@pytest.mark.anyio
+async def test_code_content_containing_pseudo_tags_not_truncated():
+    """Verify code written via <write> or <edit> that contains pseudo-tags like <readme.md> is never truncated."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    code_body = 'def check():\n    # see <readme.md> for details\n    return True\n'
+    raw_content = f'<write path="doc.py">\n{code_body}</write>'
+    chunk_payload = json.dumps({"choices": [{"delta": {"content": raw_content}}]})
+    async def chunks():
+        yield f"data: {chunk_payload}\n\n"
+
+    events = []
+    async for c in openai_to_anthropic_stream(chunks(), model="claude-3-5-sonnet"):
+        events.append(c)
+
+    full_output = "".join(events)
+    assert '"name": "write"' in full_output
+    assert "doc.py" in full_output
+    assert "# see <readme.md> for details" in full_output
+
+
+
 
 
 

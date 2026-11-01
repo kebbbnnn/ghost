@@ -24,6 +24,7 @@ CLOSE_TAG = "</tool_call>"
 DIRECT_TOOL_TAGS = ("update", "edit", "write", "bash", "read", "glob", "grep", "ls")
 ALL_TOOL_TAGS = ("tool_call", "invoke", "update", "edit", "write", "bash", "read", "glob", "grep", "ls")
 OPEN_TAGS = [f"<{t}" for t in ALL_TOOL_TAGS]
+TOOL_OPEN_TAG_RE = re.compile(rf"<(?P<tag>{'|'.join(ALL_TOOL_TAGS)})\b", re.IGNORECASE)
 
 AUTOLINK_URL_PATTERN = re.compile(
     r"\[(https?://[^\s\[\]\(\)\"']+?)\]\(https?://[^\s\[\]\(\)\"']+?\)"
@@ -543,6 +544,26 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                 if k not in params:
                     params[k] = v
 
+            close_m = re.search(rf"</{cand_tag}>\s*$", unwrapped, re.IGNORECASE)
+            inner_body = unwrapped[open_tag_match.end() : close_m.start() if close_m else len(unwrapped)]
+
+            if cand_tag in ("write", "update") and "content" not in params:
+                clean_body = re.sub(r"^\r?\n|\r?\n$", "", inner_body)
+                if clean_body:
+                    params["content"] = clean_body
+            elif cand_tag in ("bash", "cmd", "sh", "terminal") and "command" not in params:
+                clean_body = inner_body.strip()
+                if clean_body:
+                    params["command"] = clean_body
+            elif cand_tag in ("read",) and "file_path" not in params and "path" not in params:
+                clean_body = inner_body.strip()
+                if clean_body:
+                    params["file_path"] = clean_body
+            elif cand_tag in ("glob", "grep") and "pattern" not in params:
+                clean_body = inner_body.strip()
+                if clean_body:
+                    params["pattern"] = clean_body
+
         # Parameter name normalization
         if "file_path" not in params:
             for alt in ("path", "file", "filename", "filepath"):
@@ -780,19 +801,16 @@ class StreamEmulationProcessor:
 
         while self.buffer:
             if not self.in_tool_tag:
-                # Look for earliest opening tool tag (<tool_call> or <invoke)
-                open_idx = -1
-                matched_open_tag = None
-                for candidate_tag in OPEN_TAGS:
-                    idx = self.buffer.find(candidate_tag)
-                    if idx != -1 and (open_idx == -1 or idx < open_idx):
-                        open_idx = idx
-                        matched_open_tag = candidate_tag
+                # Look for earliest opening tool tag (<tool_call>, <invoke, or direct tags) with word boundary
+                m_open = TOOL_OPEN_TAG_RE.search(self.buffer)
+                if m_open and m_open.end() < len(self.buffer):
+                    open_idx = m_open.start()
+                    matched_tag_name = m_open.group("tag").lower()
+                    matched_open_tag = m_open.group(0)
 
-                if open_idx != -1 and matched_open_tag is not None:
                     # Check if this tag is already complete and self-closing, e.g. <read path="..."/>
                     remainder = self.buffer[open_idx:]
-                    self_close_m = re.match(r"^<[a-zA-Z0-9_-]+\b[^>]*?\/>", remainder)
+                    self_close_m = re.match(rf"^<{matched_tag_name}\b[^>]*?\/>", remainder)
                     if self_close_m:
                         pre_text = self.buffer[:open_idx]
                         pre_text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", pre_text)
@@ -818,14 +836,18 @@ class StreamEmulationProcessor:
 
                     # Transition to in_tool_tag
                     self.in_tool_tag = True
-                    tag_name = matched_open_tag[1:].lower()
-                    if tag_name == "tool_call":
+                    if matched_tag_name == "tool_call":
                         self.active_close_tag = CLOSE_TAG
                         self.tool_accumulator = ""
+                        gt_idx = self.buffer.find(">", open_idx)
+                        if gt_idx != -1:
+                            self.buffer = self.buffer[gt_idx + 1:]
+                        else:
+                            self.buffer = self.buffer[open_idx + len(matched_open_tag):]
                     else:
-                        self.active_close_tag = f"</{tag_name}>"
-                        self.tool_accumulator = matched_open_tag
-                    self.buffer = self.buffer[open_idx + len(matched_open_tag):]
+                        self.active_close_tag = f"</{matched_tag_name}>"
+                        self.tool_accumulator = self.buffer[open_idx : open_idx + len(matched_open_tag)]
+                        self.buffer = self.buffer[open_idx + len(matched_open_tag):]
                     continue
 
                 # Not found: check if buffer contains a GenUI component tag or incomplete GenUI tag
@@ -915,6 +937,17 @@ class StreamEmulationProcessor:
                     self.tool_accumulator = ""
                     continue
 
+                # Check if an unclosed tool tag was superseded by a next tool tag
+                m_next = TOOL_OPEN_TAG_RE.search(self.buffer)
+                if m_next and m_next.start() > 0:
+                    self.tool_accumulator += self.buffer[:m_next.start()]
+                    self.buffer = self.buffer[m_next.start():]
+                    self.in_tool_tag = False
+                    async for c in self._emit_tool_call(self.tool_accumulator):
+                        yield c
+                    self.tool_accumulator = ""
+                    continue
+
                 # Not closed yet: check for potential prefix of close_tag
                 match_prefix_len = 0
                 for length in range(min(len(close_tag) - 1, len(self.buffer)), 0, -1):
@@ -979,7 +1012,10 @@ class StreamEmulationProcessor:
         parsed = parse_tool_payload(raw_tool_str)
         if not parsed:
             # If payload couldn't be parsed, fallback to flushing raw text
-            fallback_text = f"{OPEN_TAG}{raw_tool_str}{CLOSE_TAG}"
+            if raw_tool_str.strip().startswith("<"):
+                fallback_text = raw_tool_str
+            else:
+                fallback_text = f"{OPEN_TAG}{raw_tool_str}{CLOSE_TAG}"
             async for c in self._emit_content(fallback_text):
                 yield c
             return
