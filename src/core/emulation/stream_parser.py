@@ -1063,6 +1063,7 @@ class StreamEmulationProcessor:
                     if close_tag != CLOSE_TAG:
                         self.tool_accumulator += close_tag
                     self.buffer = self.buffer[close_idx + len(close_tag):]
+                    self.buffer = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", self.buffer)
                     self.in_tool_tag = False
 
                     # Emit complete tool call chunk
@@ -1191,8 +1192,10 @@ class StreamEmulationProcessor:
                     yield c
         elif self.buffer:
             # Remaining buffered text (like unmatched prefix '<' or partial GenUI tag)
-            cleaned_remaining = sanitize_genui_tags(self.buffer)
-            if not self.tool_calls_emitted or cleaned_remaining.strip():
+            cleaned_remaining = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", self.buffer)
+            cleaned_remaining = sanitize_genui_tags(cleaned_remaining)
+            has_substance = bool(re.search(r"[a-zA-Z0-9]", cleaned_remaining))
+            if cleaned_remaining and (not self.tool_calls_emitted or has_substance):
                 async for c in self._emit_content(cleaned_remaining):
                     yield c
             self.buffer = ""

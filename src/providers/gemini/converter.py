@@ -44,6 +44,8 @@ GEMINI_CANNED_REFUSALS = (
     "cannot process this request",
     "i seem to be encountering an error",
     "encountering an error",
+    "encountered an error",
+    "could you try again",
     "can i try something else for you",
     "try something else for you",
     "something went wrong",
@@ -177,6 +179,8 @@ def parse_gemini_response(raw_text: str) -> dict:
                 # Extract content at inner[4][0][1][0]
                 content = _extract_content(inner)
                 if content:
+                    # Clean trailing rogue closing braces/fences after complete tool tag
+                    content = re.sub(r"(</(?:tool_call|invoke|[a-z]+)>)\s*[\}\]]+\s*$", r"\1", content)
                     if is_gemini_canned_refusal(content):
                         fallback_refusal = content
                     elif len(content) >= len(best_content):
@@ -261,6 +265,9 @@ def parse_streaming_chunks(raw_text: str):
             content = _extract_content(inner)
             if not content:
                 continue
+
+            # Clean trailing rogue closing braces/fences after complete tool tag
+            content = re.sub(r"(</(?:tool_call|invoke|[a-z]+)>)\s*[\}\]]+\s*$", r"\1", content)
 
             # Ignore post-generation canned refusal overwrite if valid content was already yielded
             if prev_content and is_gemini_canned_refusal(content):

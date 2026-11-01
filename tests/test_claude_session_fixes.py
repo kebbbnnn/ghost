@@ -1453,6 +1453,103 @@ def test_workflow_state_pytest_zero_failed_with_intentional_traceback():
     assert "failed with errors" not in state.get("progress_directive", "")
 
 
+@pytest.mark.anyio
+async def test_trailing_closing_brace_after_tool_call_not_emitted_as_text_block_in_stream():
+    """Verify stream converter does not emit rogue trailing '}' or punctuation debris as a text block after tool calls."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    raw_tool_with_trailing_brace = (
+        '<tool_call>{"name": "Write", "arguments": {"file_path": "/tmp/types.py", "content": "class A: pass"}}</tool_call>}\n'
+    )
+
+    async def mock_generator():
+        yield f'data: {json.dumps({"choices": [{"delta": {"content": raw_tool_with_trailing_brace}}]})}\n\n'
+        yield 'data: [DONE]\n\n'
+
+    events = []
+    async for sse_line in openai_to_anthropic_stream(mock_generator(), model="claude-opus-5-5"):
+        for line in sse_line.split("\n"):
+            line = line.strip()
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+
+    # Should have tool_use content block start
+    starts = [e for e in events if e.get("type") == "content_block_start"]
+    assert len(starts) == 1
+    assert starts[0]["content_block"]["type"] == "tool_use"
+    assert starts[0]["content_block"]["name"] == "Write"
+
+    # Must NOT have any text block emitting '}'
+    text_starts = [e for e in starts if e["content_block"].get("type") == "text"]
+    assert len(text_starts) == 0
+
+    text_deltas = [e for e in events if e.get("type") == "content_block_delta" and e.get("delta", {}).get("type") == "text_delta"]
+    assert len(text_deltas) == 0
+
+
+@pytest.mark.anyio
+async def test_trailing_closing_brace_after_tool_call_not_emitted_in_json():
+    """Verify non-streaming openai_to_anthropic_json strips trailing '}' after tool calls."""
+    from src.converters.anthropic import openai_to_anthropic_json
+
+    openai_resp = {
+        "model": "claude-opus-5-5",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": '<tool_call>{"name": "Write", "arguments": {"file_path": "/tmp/types.py", "content": "class A: pass"}}</tool_call>}\n',
+                }
+            }
+        ],
+    }
+
+    res = await openai_to_anthropic_json(openai_resp)
+    blocks = res["content"]
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "tool_use"
+    assert blocks[0]["name"] == "Write"
+
+
+def test_sanitize_claude_code_assistant_text_strips_isolated_punctuation():
+    """Verify assistant sanitizer strips rogue punctuation blocks from history."""
+    from src.converters.anthropic import _sanitize_claude_code_assistant_text
+
+    assert _sanitize_claude_code_assistant_text("}") == ""
+    assert _sanitize_claude_code_assistant_text("}\n") == ""
+    assert _sanitize_claude_code_assistant_text("```") == ""
+    assert _sanitize_claude_code_assistant_text(">") == ""
+    assert _sanitize_claude_code_assistant_text("I created the file types.py") == "I created the file types.py"
+
+
+def test_gemini_converter_canned_refusal_and_trailing_brace():
+    """Verify Gemini canned refusal detects 'encountered an error' and strips trailing braces after </tool_call>."""
+    from src.providers.gemini.converter import is_gemini_canned_refusal, parse_gemini_response
+    import json
+
+    assert is_gemini_canned_refusal("I encountered an error doing what you asked. Could you try again?")
+
+    # Inner envelope with trailing brace after </tool_call>
+    fake_inner = [
+        None,
+        ["c1", "r1"],
+        None,
+        None,
+        [
+            [
+                "rc1",
+                ['<tool_call>{"name": "Write", "arguments": {"file_path": "a.py", "content": "1"}}</tool_call>}'],
+            ]
+        ],
+    ]
+    raw_rpc = json.dumps([["wrb.fr", None, json.dumps(fake_inner)]])
+    parsed = parse_gemini_response(raw_rpc)
+    assert parsed["content"].endswith("</tool_call>")
+    assert not parsed["content"].endswith("}")
+
+
+
 
 
 

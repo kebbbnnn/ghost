@@ -175,6 +175,9 @@ def _sanitize_claude_code_assistant_text(text: str) -> str:
         return ""
     if is_gemini_canned_refusal(text):
         return "Understood. Ready to proceed with the workspace task."
+    # Strip isolated closing syntax debris like '}' or '```' or '>' with no letters or digits
+    if not re.search(r"[a-zA-Z0-9]", text):
+        return ""
     return text
 
 
@@ -1429,7 +1432,9 @@ async def openai_to_anthropic_stream(
                         break
 
                     xml_block = buffer[:end_idx + tag_len]
-                    buffer = re.sub(r"^\s*```(?:\s*\n)?", "", buffer[end_idx + tag_len:])
+                    buffer = buffer[end_idx + tag_len:]
+                    # Strip any immediate trailing rogue braces/fences after closing tag (e.g. </tool_call>})
+                    buffer = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", buffer)
 
                     tool_name, params = _parse_invoke_xml(xml_block)
                     if not tool_name:
@@ -1483,8 +1488,10 @@ async def openai_to_anthropic_stream(
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                 active_block_type = None
         else:
-            clean_rem = re.sub(r"^\s*```\s*$", "", buffer)
-            if clean_rem and (not tool_called or clean_rem.strip()):
+            clean_rem = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", buffer)
+            clean_rem = re.sub(r"^\s*```\s*$", "", clean_rem)
+            has_substance = bool(re.search(r"[a-zA-Z0-9]", clean_rem))
+            if clean_rem and (not tool_called or has_substance):
                 if active_block_type != "text":
                     yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
                     active_block_type = "text"
@@ -1630,9 +1637,10 @@ async def openai_to_anthropic_json(
             last_idx = m.end()
 
         post_text = content[last_idx:]
-        post_text = re.sub(r"^\s*```(?:\s*\n)?", "", post_text)
+        post_text = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", post_text)
         post_text = re.sub(r"```\s*$", "", post_text).strip()
-        if post_text:
+        has_substance = bool(re.search(r"[a-zA-Z0-9]", post_text))
+        if post_text and (not has_tool_call or has_substance):
             blocks.append({"type": "text", "text": unwrap_markdown_autolinks(post_text)})
     else:
         # Normal text response: check stop_sequences and max_tokens
