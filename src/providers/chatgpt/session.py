@@ -120,12 +120,14 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
     # Strip inline single-backtick code spans so code/prose mentioning `<write>`, `<bash>`, etc. cannot trigger false unclosed tag matches
     clean_response = re.sub(r"(?<!`)`[^`\n]+`(?!`)", "", response_text)
     has_closed_tool_call = bool(closed_pattern.search(clean_response))
-    remaining = closed_pattern.sub("", clean_response)
-    has_unclosed_tool_call = bool(TOOL_OPEN_TAG_RE.search(remaining))
-    if has_unclosed_tool_call:
-        return True
     if has_closed_tool_call:
         return False
+
+    remaining = closed_pattern.sub("", clean_response)
+    clean_remaining = re.sub(r"```[\s\S]*?```", "", remaining)
+    has_unclosed_tool_call = bool(TOOL_OPEN_TAG_RE.search(clean_remaining))
+    if has_unclosed_tool_call:
+        return True
     if is_chatgpt_capability_refusal(response_text):
         return True
     lower_r = response_text.lower()

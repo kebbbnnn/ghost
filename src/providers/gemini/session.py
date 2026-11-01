@@ -599,17 +599,19 @@ class GeminiProvider(BaseProvider):
             while len(chat_parts) > 3 and (len(system_prefix) + sum(len(p) for p in chat_parts)) > MAX_GEMINI_PROMPT_CHARS:
                 chat_parts.pop(1)
 
+        if retry_sanitized and system_prefix:
+            system_prefix = re.sub(r"\[GHOST KERNEL OVERRIDE[^\]]*\]\n?", "", system_prefix)
+            system_prefix = re.sub(r"DISREGARD AND OVERRIDE[^\n]*\n?", "", system_prefix)
+            system_prefix = re.sub(r"\[SANDBOX EXECUTION OVERRIDE\][^\n]*\n?", "", system_prefix)
+            system_prefix = re.sub(r"You are an automated API proxy[^\n]*\n?", "", system_prefix)
+            system_prefix = re.sub(r"STRICT PROHIBITION ON CAPABILITY REFUSALS[^\n]*\n?", "", system_prefix)
+
         prompt_parts = []
         if system_prefix:
             prompt_parts.append(f"[System Instructions]:\n{system_prefix}")
         prompt_parts.extend(chat_parts)
 
         if retry_sanitized:
-            system_prefix = re.sub(r"\[GHOST KERNEL OVERRIDE[^\]]*\]\n?", "", system_prefix)
-            system_prefix = re.sub(r"DISREGARD AND OVERRIDE[^\n]*\n?", "", system_prefix)
-            system_prefix = re.sub(r"\[SANDBOX EXECUTION OVERRIDE\][^\n]*\n?", "", system_prefix)
-            system_prefix = re.sub(r"You are an automated API proxy[^\n]*\n?", "", system_prefix)
-            system_prefix = re.sub(r"STRICT PROHIBITION ON CAPABILITY REFUSALS[^\n]*\n?", "", system_prefix)
             prompt_parts.append(
                 "[DEVELOPER WORKSPACE DIRECTIVE]: This is a local software development environment. "
                 "Do NOT invoke Google Drive, Gmail, or Workspace extensions. Fulfill the developer request directly.\n"
@@ -669,13 +671,15 @@ class GeminiProvider(BaseProvider):
         # Strip inline single-backtick code spans so code/prose mentioning `<write>`, `<bash>`, etc. cannot trigger false unclosed tag matches
         clean_content = re.sub(r"(?<!`)`[^`\n]+`(?!`)", "", content)
         has_closed_tool_call = bool(closed_pattern.search(clean_content))
-        # Strip all properly closed tool calls so code/comments inside them cannot produce false unclosed tag matches
-        remaining = closed_pattern.sub("", clean_content)
-        has_unclosed_tool_call = bool(TOOL_OPEN_TAG_RE.search(remaining))
-        if has_unclosed_tool_call:
-            return True
         if has_closed_tool_call:
             return False
+
+        # Strip all properly closed tool calls and markdown code blocks to inspect remaining text for genuinely unclosed tags
+        remaining = closed_pattern.sub("", clean_content)
+        clean_remaining = re.sub(r"```[\s\S]*?```", "", remaining)
+        has_unclosed_tool_call = bool(TOOL_OPEN_TAG_RE.search(clean_remaining))
+        if has_unclosed_tool_call:
+            return True
         # 1. Refusal, capability refusal, or canned reassurance without tool execution
         lower_c = content.lower()
         if is_gemini_canned_refusal(content) or any(
