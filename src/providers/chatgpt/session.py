@@ -23,6 +23,7 @@ from curl_cffi.requests.exceptions import HTTPError
 
 from src.core.provider import BaseProvider
 from src.core.exceptions import RateLimitError, TokenExpiredError
+from src.core.emulation.stream_parser import ALL_TOOL_TAGS
 from .converter import (
     map_model,
     parse_chatgpt_sse,
@@ -92,7 +93,7 @@ def is_chatgpt_capability_refusal(text: str) -> bool:
     if not text:
         return False
     lower = text.strip().lower()
-    if any(f"<{tag}" in lower for tag in ("tool_call", "invoke", "update", "edit", "write", "bash", "read")):
+    if any(f"<{tag}" in lower for tag in ALL_TOOL_TAGS):
         return False
     return any(pat in lower for pat in CHATGPT_CAPABILITY_REFUSAL_PATTERNS)
 
@@ -106,7 +107,7 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
         return False
     if not response_text or not response_text.strip():
         return True
-    if any(f"<{tag}" in response_text for tag in ("tool_call", "invoke", "update", "edit", "write", "bash", "read")):
+    if any(f"<{tag}" in response_text for tag in ALL_TOOL_TAGS):
         return False
     if is_chatgpt_capability_refusal(response_text):
         return True

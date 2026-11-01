@@ -881,11 +881,80 @@ def test_direct_tool_tags_recognized_by_provider_refusal_and_missing_checks():
     gemini = GeminiProvider()
     prompt = "CRITICAL MODE: TOOL_CALL_REQUIRED: You must call a tool now."
     for sample in direct_tag_samples:
-        if sample.endswith("/>"):
-            continue
         assert not gemini._is_missing_required_tool_call(
             prompt, sample
         ), f"Gemini missing tool call false positive on: {sample}"
+
+
+def test_self_closing_direct_tags_in_streaming():
+    """Verify that self-closing direct tags (<read .../>, <glob .../>) are converted to tool_use events in streaming."""
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    async def mock_stream():
+        yield 'data: {"choices": [{"delta": {"content": "<read path=\\"src/app.py\\" offset=\\"10\\" limit=\\"50\\"/>"}}]}\n\n'
+        yield 'data: [DONE]\n\n'
+
+    async def run():
+        events = []
+        async for chunk in openai_to_anthropic_stream(mock_stream(), model="gemini"):
+            events.append(chunk)
+        return "".join(events)
+
+    full_output = asyncio.run(run())
+    assert '"type": "tool_use"' in full_output
+    assert '"name": "read"' in full_output
+    assert 'file_path' in full_output
+    assert 'src/app.py' in full_output
+    assert '10' in full_output
+    assert '50' in full_output
+
+
+def test_self_closing_direct_tags_in_non_streaming():
+    """Verify self-closing tags in non-streaming response are properly converted to tool_use blocks."""
+    from src.converters.anthropic import openai_to_anthropic_json
+
+    openai_resp = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": '<glob pattern="*.py" path="."/>\nChecking files.',
+                }
+            }
+        ]
+    }
+    resp = asyncio.run(openai_to_anthropic_json(openai_resp))
+    assert resp["stop_reason"] == "tool_use"
+    tool_blocks = [b for b in resp["content"] if b["type"] == "tool_use"]
+    assert len(tool_blocks) == 1
+    assert tool_blocks[0]["name"] == "glob"
+    assert tool_blocks[0]["input"]["pattern"] == "*.py"
+    assert tool_blocks[0]["input"]["path"] == "."
+
+
+def test_generic_benchmark_directive_no_domain_leak():
+    """Verify benchmark detection does not inject kvstore-specific 5,000 keys leakage."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    msgs = [
+        {"role": "user", "content": "Create matrix.py and run benchmark via Bash."},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t1", "name": "Write", "input": {"file_path": "matrix.py", "content": "pass"}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "File created"}],
+        },
+    ]
+    state = _analyze_coding_workflow_state(
+        msgs, has_coding_action_tools=True, has_pending_tool_results=True, has_error_tool_results=False
+    )
+    # Verification directive must not mention kvstore compaction or 5,000 keys
+    assert "5,000 keys" not in state["progress_directive"]
+    assert "compaction" not in state["progress_directive"]
+    assert "Bash" in state["progress_directive"]
+
 
 
 

@@ -17,6 +17,8 @@ import re
 import time
 import uuid
 
+from src.core.emulation.stream_parser import ALL_TOOL_TAGS
+
 log = logging.getLogger(__name__)
 
 AUTOLINK_URL_PATTERN = re.compile(
@@ -54,7 +56,7 @@ def is_gemini_canned_refusal(text: str) -> bool:
     if not text:
         return False
     stripped = text.strip().lower()
-    if any(f"<{tag}" in stripped for tag in ("tool_call", "invoke", "update", "edit", "write", "bash", "read")):
+    if any(f"<{tag}" in stripped for tag in ALL_TOOL_TAGS):
         return False
     if len(stripped) > 800:
         return False

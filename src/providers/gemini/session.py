@@ -28,6 +28,7 @@ import httpx
 
 from src.core.provider import BaseProvider
 from src.core.exceptions import RateLimitError, TokenExpiredError, ProviderError
+from src.core.emulation.stream_parser import ALL_TOOL_TAGS
 from .converter import (
     is_gemini_canned_refusal,
     parse_gemini_response,
@@ -633,17 +634,16 @@ class GeminiProvider(BaseProvider):
         """Detect when Gemini ignored TOOL_CALL_REQUIRED, emitted an unclosed tool block, or dumped markdown code blocks."""
         if "CRITICAL MODE: TOOL_CALL_REQUIRED" not in prompt:
             return False
-        valid_tool_tags = ("tool_call", "invoke", "update", "edit", "write", "bash", "read", "glob", "grep", "ls")
-        has_closed_tool_call = any(
-            (f"<{tag}" in content and f"</{tag}>" in content)
-            for tag in valid_tool_tags
-        ) or (
-            "<tool_call>" in content and "}>" in content
+        self_closing_count = len(re.findall(rf"<(?:" + "|".join(ALL_TOOL_TAGS) + r")\b[^>]*?\/>", content))
+        open_tags_count = sum(len(re.findall(rf"<{tag}\b", content)) for tag in ALL_TOOL_TAGS)
+        close_tags_count = sum(content.count(f"</{tag}>") for tag in ALL_TOOL_TAGS)
+
+        has_closed_tool_call = (
+            close_tags_count > 0
+            or self_closing_count > 0
+            or ("<tool_call>" in content and "}>" in content)
         )
-        has_unclosed_tool_call = any(
-            len(re.findall(rf"<{tag}\b", content)) > content.count(f"</{tag}>")
-            for tag in valid_tool_tags
-        )
+        has_unclosed_tool_call = (open_tags_count - self_closing_count > close_tags_count)
         if has_unclosed_tool_call:
             return True
         if has_closed_tool_call:

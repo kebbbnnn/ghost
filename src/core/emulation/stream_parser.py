@@ -21,7 +21,9 @@ log = logging.getLogger(__name__)
 
 OPEN_TAG = "<tool_call>"
 CLOSE_TAG = "</tool_call>"
-OPEN_TAGS = ["<tool_call>", "<invoke", "<update", "<edit", "<write", "<bash"]
+DIRECT_TOOL_TAGS = ("update", "edit", "write", "bash", "read", "glob", "grep", "ls")
+ALL_TOOL_TAGS = ("tool_call", "invoke", "update", "edit", "write", "bash", "read", "glob", "grep", "ls")
+OPEN_TAGS = [f"<{t}" for t in ALL_TOOL_TAGS]
 
 AUTOLINK_URL_PATTERN = re.compile(
     r"\[(https?://[^\s\[\]\(\)\"']+?)\]\(https?://[^\s\[\]\(\)\"']+?\)"
@@ -468,6 +470,10 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
         fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"([^"]+)"', raw_text)
         if fp_match:
             args["file_path"] = fp_match.group(1).strip()
+        for int_field in ("offset", "limit"):
+            m = re.search(rf'"{int_field}"\s*:\s*(\d+)', raw_text)
+            if m:
+                args[int_field] = int(m.group(1))
 
     elif fn_lower in ("glob", "grep"):
         pat_match = re.search(r'"pattern"\s*:\s*"([^"]+)"', raw_text)
@@ -486,10 +492,14 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
         return None
 
     unwrapped = unwrap_markdown_autolinks(raw_payload).strip()
+    if "<tool_call>" in unwrapped or "<tool_call " in unwrapped or unwrapped.startswith("<tool_call"):
+        unwrapped = re.sub(r"</?tool_call[^>]*>", "", unwrapped).strip()
+        unwrapped = re.sub(r"^>+", "", unwrapped).strip()
+        unwrapped = re.sub(r"[ \t]*>$", "", unwrapped).strip()
 
     # 1. Support direct tool XML tags e.g. <update>...</update>, <edit>...</edit>, <write>...</write>, <bash>...</bash>
     tag_m = re.match(r"^\s*<([a-zA-Z0-9_-]+)", unwrapped)
-    if tag_m and tag_m.group(1).lower() in ("update", "edit", "write", "bash", "read", "glob", "grep", "ls"):
+    if tag_m and tag_m.group(1).lower() in DIRECT_TOOL_TAGS:
         cand_tag = tag_m.group(1).lower()
         params: dict = {}
         for dk in (
@@ -512,11 +522,11 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
         open_tag_match = re.match(r"^\s*<[^>]+>", unwrapped)
         if open_tag_match:
             open_tag_str = open_tag_match.group(0)
-            for attr in ("file_path", "path", "file", "command"):
-                if attr not in params:
-                    m_attr = re.search(rf'\b{attr}=["\']([^"\']+)["\']', open_tag_str)
-                    if m_attr:
-                        params[attr] = m_attr.group(1).strip()
+            attr_matches = re.finditer(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', open_tag_str)
+            for am in attr_matches:
+                k, v = am.group(1), am.group(2).strip()
+                if k not in params:
+                    params[k] = v
 
         # Parameter name normalization
         if "file_path" not in params:
@@ -765,6 +775,23 @@ class StreamEmulationProcessor:
                         matched_open_tag = candidate_tag
 
                 if open_idx != -1 and matched_open_tag is not None:
+                    # Check if this tag is already complete and self-closing, e.g. <read path="..."/>
+                    remainder = self.buffer[open_idx:]
+                    self_close_m = re.match(r"^<[a-zA-Z0-9_-]+\b[^>]*?\/>", remainder)
+                    if self_close_m:
+                        pre_text = self.buffer[:open_idx]
+                        pre_text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", pre_text)
+                        if pre_text and pre_text.strip():
+                            async for c in self._emit_content(pre_text):
+                                yield c
+                                if self.stop_triggered or self.length_triggered:
+                                    return
+                        full_tag = self_close_m.group(0)
+                        self.buffer = self.buffer[open_idx + len(full_tag):]
+                        async for c in self._emit_tool_call(full_tag):
+                            yield c
+                        continue
+
                     # Emit everything before the open tag as normal content
                     pre_text = self.buffer[:open_idx]
                     pre_text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", pre_text)
@@ -776,24 +803,13 @@ class StreamEmulationProcessor:
 
                     # Transition to in_tool_tag
                     self.in_tool_tag = True
-                    if matched_open_tag == "<invoke":
-                        self.active_close_tag = "</invoke>"
-                        self.tool_accumulator = "<invoke"
-                    elif matched_open_tag == "<update":
-                        self.active_close_tag = "</update>"
-                        self.tool_accumulator = "<update"
-                    elif matched_open_tag == "<edit":
-                        self.active_close_tag = "</edit>"
-                        self.tool_accumulator = "<edit"
-                    elif matched_open_tag == "<write":
-                        self.active_close_tag = "</write>"
-                        self.tool_accumulator = "<write"
-                    elif matched_open_tag == "<bash":
-                        self.active_close_tag = "</bash>"
-                        self.tool_accumulator = "<bash"
-                    else:
+                    tag_name = matched_open_tag[1:].lower()
+                    if tag_name == "tool_call":
                         self.active_close_tag = CLOSE_TAG
                         self.tool_accumulator = ""
+                    else:
+                        self.active_close_tag = f"</{tag_name}>"
+                        self.tool_accumulator = matched_open_tag
                     self.buffer = self.buffer[open_idx + len(matched_open_tag):]
                     continue
 
@@ -857,12 +873,23 @@ class StreamEmulationProcessor:
                     break
 
             else:
-                # Inside tool tag: accumulate until active_close_tag
+                # Inside tool tag: check for self-closing tag finish or active_close_tag
+                if not self.tool_accumulator.endswith(">"):
+                    m_self = re.search(r'^[^>]*?\/>', self.buffer)
+                    if m_self:
+                        self.tool_accumulator += self.buffer[:m_self.end()]
+                        self.buffer = self.buffer[m_self.end():]
+                        self.in_tool_tag = False
+                        async for c in self._emit_tool_call(self.tool_accumulator):
+                            yield c
+                        self.tool_accumulator = ""
+                        continue
+
                 close_tag = self.active_close_tag
                 close_idx = self.buffer.find(close_tag)
                 if close_idx != -1:
                     self.tool_accumulator += self.buffer[:close_idx]
-                    if close_tag in ("</invoke>", "</update>", "</edit>", "</write>", "</bash>"):
+                    if close_tag != CLOSE_TAG:
                         self.tool_accumulator += close_tag
                     self.buffer = self.buffer[close_idx + len(close_tag):]
                     self.in_tool_tag = False
@@ -937,7 +964,7 @@ class StreamEmulationProcessor:
         parsed = parse_tool_payload(raw_tool_str)
         if not parsed:
             # If payload couldn't be parsed, fallback to flushing raw text
-            fallback_text = f"<{OPEN_TAG}>{raw_tool_str}</{CLOSE_TAG}>"
+            fallback_text = f"{OPEN_TAG}{raw_tool_str}{CLOSE_TAG}"
             async for c in self._emit_content(fallback_text):
                 yield c
             return
@@ -1087,13 +1114,14 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
                 raw_content = raw_content[: raw_content.find(s)]
                 choice["finish_reason"] = "stop"
 
-    # 2. Extract <tool_call> and <invoke> blocks
+    # 2. Extract <tool_call>, <invoke>, and direct tool XML blocks
     pattern = re.compile(
-        rf"(?:{re.escape(OPEN_TAG)}(.*?){re.escape(CLOSE_TAG)})|(<invoke\b.*?</invoke>)",
-        re.DOTALL,
+        r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
+        r"(<invoke\b.*?</invoke>)|"
+        r"(<(?:update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?:update|edit|write|bash|read|glob|grep|ls)>))",
+        re.DOTALL | re.IGNORECASE,
     )
-    raw_matches = pattern.findall(raw_content)
-    matches = [m[0] if m[0] else m[1] for m in raw_matches]
+    matches = [m.group(0) for m in pattern.finditer(raw_content)]
 
     if matches:
         tool_calls = []

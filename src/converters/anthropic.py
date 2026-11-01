@@ -5,6 +5,8 @@ import uuid
 from typing import AsyncGenerator
 
 from src.core.emulation.stream_parser import (
+    ALL_TOOL_TAGS,
+    DIRECT_TOOL_TAGS,
     _unwrap_autolinks_in_obj,
     normalize_tool_name,
     normalize_tool_parameters,
@@ -304,15 +306,15 @@ def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
             if dk_match:
                 params[dk] = parse_parameter_xml_value(dk, dk_match.group(1))
 
-        # Look for attributes on opening root tag e.g. <update path="index.html">
-        open_tag_match = re.match(r"^\s*<[^>]+>", xml_block)
-        if open_tag_match:
+        # Look for attributes on opening root tag only for direct tool tags (e.g. <read path="main.py" offset="10"/>)
+        open_tag_match = re.match(r"^\s*<([a-zA-Z0-9_-]+)\b[^>]*>", xml_block)
+        if open_tag_match and open_tag_match.group(1).lower() in DIRECT_TOOL_TAGS:
             open_tag_str = open_tag_match.group(0)
-            for attr in ("file_path", "path", "file", "command"):
-                if attr not in params:
-                    m_attr = re.search(rf'\b{attr}=["\']([^"\']+)["\']', open_tag_str)
-                    if m_attr:
-                        params[attr] = m_attr.group(1).strip()
+            attr_matches = re.finditer(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', open_tag_str)
+            for am in attr_matches:
+                k, v = am.group(1), am.group(2).strip()
+                if k not in params:
+                    params[k] = v
 
         parsed = parse_tool_payload(xml_block)
         if parsed:
@@ -631,7 +633,7 @@ def _analyze_coding_workflow_state(
                         if (
                             requires_benchmark
                             and not bash_failed
-                            and any(bk in cmd.lower() for bk in ("benchmark", "5000", "5_000", "range(5000", "range(1000"))
+                            and any(bk in cmd.lower() for bk in ("benchmark", "bench", "perf", "timeit", "profile"))
                         ):
                             has_run_benchmark = True
             elif isinstance(content, str) and "<tool_result" in content:
@@ -721,7 +723,7 @@ def _analyze_coding_workflow_state(
         directive = (
             "\n\n[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n"
             "- All unit tests have passed, but you have NOT yet executed the required benchmark script via `Bash`!\n"
-            "- MANDATORY NEXT STEP FOR THIS TURN: Emit a `<tool_call>` or `<invoke name=\"Bash\">` block for the `Bash` tool right now to run the benchmark verification (writing 5,000 keys, querying 1,000 keys, triggering compaction, and verifying data integrity)."
+            "- MANDATORY NEXT STEP FOR THIS TURN: Emit a `<tool_call>` or `<invoke name=\"Bash\">` block for the `Bash` tool right now to run the required benchmark script and verify performance."
         )
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 
@@ -1102,7 +1104,7 @@ async def openai_to_anthropic_stream(
     captured_conversation_id: str | None = None
     captured_parent_message_id: str | None = None
 
-    OPEN_TAGS = ["<invoke", "<tool_call>", "<update", "<edit", "<write", "<bash"]
+    OPEN_TAGS = [f"<{t}" for t in ALL_TOOL_TAGS]
 
     async for chunk_line in openai_stream:
         if stop_triggered or length_triggered:
@@ -1183,6 +1185,35 @@ async def openai_to_anthropic_stream(
                             found_tag = t
 
                     if tag_idx != -1:
+                        # Check if this tag is already complete and self-closing, e.g. <read path="..."/>
+                        remainder = buffer[tag_idx:]
+                        m_self = re.match(r"^<[a-zA-Z0-9_-]+\b[^>]*?\/>", remainder)
+                        if m_self:
+                            text_before = re.sub(r"```[a-zA-Z0-9_-]*\s*$", "", buffer[:tag_idx])
+                            if text_before and text_before.strip():
+                                if active_block_type != "text":
+                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                    active_block_type = "text"
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(text_before)}})}\n\n"
+                                output_tokens_accumulated += max(1, len(text_before) // 4)
+                            if active_block_type == "text":
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                                active_block_type = None
+                                block_index += 1
+
+                            xml_block = m_self.group(0)
+                            buffer = buffer[tag_idx + len(xml_block):]
+                            tool_name, params = _parse_invoke_xml(xml_block)
+                            tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                            emitted_tool_use_ids.append(tool_use_id)
+                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'tool_use', 'id': tool_use_id, 'name': tool_name, 'input': {}}})}\n\n"
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(params)}})}\n\n"
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                            block_index += 1
+                            tool_called = True
+                            output_tokens_accumulated += max(1, len(xml_block) // 4)
+                            continue
+
                         text_before = re.sub(r"```[a-zA-Z0-9_-]*\s*$", "", buffer[:tag_idx])
                         if text_before:
                             # Enforce stop sequences on text_before
@@ -1273,26 +1304,26 @@ async def openai_to_anthropic_stream(
 
                 if active_block_type == "tool_use":
                     # Determine matching closing tag
-                    if buffer.startswith("<tool_call"):
-                        close_tag = "</tool_call>"
-                    elif buffer.startswith("<update"):
-                        close_tag = "</update>"
-                    elif buffer.startswith("<edit"):
-                        close_tag = "</edit>"
-                    elif buffer.startswith("<write"):
-                        close_tag = "</write>"
-                    elif buffer.startswith("<bash"):
-                        close_tag = "</bash>"
-                    else:
-                        close_tag = "</invoke>"
+                    close_tag = "</invoke>"
+                    for t in ALL_TOOL_TAGS:
+                        if buffer.startswith(f"<{t}"):
+                            close_tag = f"</{t}>"
+                            break
 
                     end_idx = buffer.find(close_tag)
+                    tag_len = len(close_tag) if end_idx != -1 else 0
 
-                    # Also check for malformed closing tag `}>` or `}></tool_call>` for JSON tool calls
-                    if end_idx == -1 and buffer.startswith("<tool_call>"):
-                        m_alt = re.search(r'\}[ \t]*>', buffer)
-                        if m_alt:
-                            end_idx = m_alt.start()
+                    # Check for self-closing tag or malformed closing tag
+                    if end_idx == -1:
+                        m_self = re.match(r"^<[a-zA-Z0-9_-]+\b[^>]*?\/>", buffer)
+                        if m_self:
+                            end_idx = 0
+                            tag_len = len(m_self.group(0))
+                        elif buffer.startswith("<tool_call"):
+                            m_alt = re.search(r'\}[ \t]*>', buffer)
+                            if m_alt:
+                                end_idx = m_alt.start()
+                                tag_len = len(m_alt.group(0))
 
                     # Check if a subsequent open tag starts before close_tag
                     next_open_idx = -1
@@ -1305,11 +1336,6 @@ async def openai_to_anthropic_stream(
                         xml_block = buffer[:next_open_idx]
                         buffer = buffer[next_open_idx:]
                     elif end_idx != -1:
-                        if buffer.find(close_tag) != -1 and buffer.find(close_tag) == end_idx:
-                            tag_len = len(close_tag)
-                        else:
-                            m_alt = re.search(r'\}[ \t]*>', buffer)
-                            tag_len = len(m_alt.group(0)) if m_alt else 1
                         xml_block = buffer[:end_idx + tag_len]
                         buffer = re.sub(r"^\s*```(?:\s*\n)?", "", buffer[end_idx + tag_len:])
                     else:
@@ -1470,63 +1496,41 @@ async def openai_to_anthropic_json(
             has_tool_call = True
 
     # 2. Handle XML <invoke>, <tool_call>, or direct tool tags in content string
-    elif any(tag in content for tag in ("<invoke", "<tool_call>", "<update", "<edit", "<write", "<bash")):
-        curr = content
-        TAG_PAIRS = [
-            ("<tool_call>", "</tool_call>"),
-            ("<invoke", "</invoke>"),
-            ("<update", "</update>"),
-            ("<edit", "</edit>"),
-            ("<write", "</write>"),
-            ("<bash", "</bash>"),
-        ]
-        while curr:
-            earliest_idx = -1
-            chosen_open = None
-            chosen_close = None
-            for op, cl in TAG_PAIRS:
-                idx = curr.find(op)
-                if idx != -1 and (earliest_idx == -1 or idx < earliest_idx):
-                    earliest_idx = idx
-                    chosen_open = op
-                    chosen_close = cl
+    elif re.search(
+        r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
+        r"(<invoke\b.*?</invoke>)|"
+        r"(<(?:update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?:update|edit|write|bash|read|glob|grep|ls)>))",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    ):
+        tool_pattern = re.compile(
+            r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
+            r"(<invoke\b.*?</invoke>)|"
+            r"(<(?:update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?:update|edit|write|bash|read|glob|grep|ls)>))",
+            re.DOTALL | re.IGNORECASE,
+        )
+        last_idx = 0
+        for m in tool_pattern.finditer(content):
+            pre_text = content[last_idx:m.start()]
+            pre_text = re.sub(r"```[a-zA-Z0-9_-]*\s*$", "", pre_text).strip()
+            if pre_text:
+                blocks.append({"type": "text", "text": unwrap_markdown_autolinks(pre_text)})
+            xml_block = m.group(0)
+            tool_name, params = _parse_invoke_xml(xml_block)
+            blocks.append({
+                "type": "tool_use",
+                "id": f"toolu_{uuid.uuid4().hex[:24]}",
+                "name": tool_name,
+                "input": params,
+            })
+            has_tool_call = True
+            last_idx = m.end()
 
-            if earliest_idx != -1 and chosen_open and chosen_close:
-                text_before = re.sub(r"```[a-zA-Z0-9_-]*\s*$", "", curr[:earliest_idx]).strip()
-                if text_before:
-                    blocks.append({"type": "text", "text": unwrap_markdown_autolinks(text_before)})
-
-                end_idx = curr.find(chosen_close, earliest_idx)
-                if end_idx != -1:
-                    xml_block = curr[earliest_idx:end_idx + len(chosen_close)]
-                    curr = re.sub(r"^\s*```(?:\s*\n)?", "", curr[end_idx + len(chosen_close):])
-
-                    tool_name, params = _parse_invoke_xml(xml_block)
-                    blocks.append({
-                        "type": "tool_use",
-                        "id": f"toolu_{uuid.uuid4().hex[:24]}",
-                        "name": tool_name,
-                        "input": params
-                    })
-                    has_tool_call = True
-                else:
-                    tool_name, params = _parse_invoke_xml(curr[earliest_idx:])
-                    if tool_name != "unknown":
-                        blocks.append({
-                            "type": "tool_use",
-                            "id": f"toolu_{uuid.uuid4().hex[:24]}",
-                            "name": tool_name,
-                            "input": params
-                        })
-                        has_tool_call = True
-                    else:
-                        blocks.append({"type": "text", "text": unwrap_markdown_autolinks(curr)})
-                    break
-            else:
-                clean_tail = re.sub(r"^\s*```\s*$", "", curr).strip()
-                if clean_tail:
-                    blocks.append({"type": "text", "text": unwrap_markdown_autolinks(clean_tail)})
-                break
+        post_text = content[last_idx:]
+        post_text = re.sub(r"^\s*```(?:\s*\n)?", "", post_text)
+        post_text = re.sub(r"```\s*$", "", post_text).strip()
+        if post_text:
+            blocks.append({"type": "text", "text": unwrap_markdown_autolinks(post_text)})
     else:
         # Normal text response: check stop_sequences and max_tokens
         text_resp = content
