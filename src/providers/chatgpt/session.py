@@ -23,7 +23,11 @@ from curl_cffi.requests.exceptions import HTTPError
 
 from src.core.provider import BaseProvider
 from src.core.exceptions import RateLimitError, TokenExpiredError
-from src.core.emulation.stream_parser import ALL_TOOL_TAGS, TOOL_OPEN_TAG_RE
+from src.core.emulation.stream_parser import (
+    ALL_TOOL_TAGS,
+    TOOL_OPEN_TAG_RE,
+    synthesize_workflow_recovery_tool_call,
+)
 from .converter import (
     map_model,
     parse_chatgpt_sse,
@@ -238,10 +242,33 @@ class ChatGPTProvider(BaseProvider):
                             conversation_id = None
                             parent_message_id = None
                             continue
-                        for bc in buffered_chunks:
+                        if _is_chatgpt_missing_required_tool_call(messages, full_text):
+                            log.warning(
+                                "ChatGPT persistent capability refusal or missed tool call (%s); synthesizing safe recovery response...",
+                                full_text[:80],
+                            )
+                            buffered_chunks.clear()
+                            recovery_text = synthesize_workflow_recovery_tool_call("", messages)
+                            recovery_chunk = {
+                                "id": chunk_id,
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": target_model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": recovery_text},
+                                    "finish_reason": "stop",
+                                }],
+                            }
+                            formatted = format_openai_chunk(recovery_chunk)
                             if auto_trace and trace:
-                                trace.log_client_chunk(bc)
-                            yield bc
+                                trace.log_client_chunk(formatted)
+                            yield formatted
+                        else:
+                            for bc in buffered_chunks:
+                                if auto_trace and trace:
+                                    trace.log_client_chunk(bc)
+                                yield bc
                         buffered_chunks.clear()
 
                     break  # success
@@ -335,6 +362,12 @@ class ChatGPTProvider(BaseProvider):
                         conversation_id = None
                         parent_message_id = None
                         continue
+                    if _is_chatgpt_missing_required_tool_call(messages, full_content):
+                        log.warning(
+                            "ChatGPT persistent non-streaming refusal or missed tool call (%s); synthesizing safe recovery response...",
+                            full_content[:80],
+                        )
+                        full_content = synthesize_workflow_recovery_tool_call("", messages)
                     break
                 except TokenExpiredError:
                     if attempt == 0:

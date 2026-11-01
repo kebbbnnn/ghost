@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 
-from src.core.emulation.stream_parser import ALL_TOOL_TAGS
+from src.core.emulation.stream_parser import ALL_TOOL_TAGS, strip_googleusercontent_artifacts
 
 log = logging.getLogger(__name__)
 
@@ -314,7 +314,7 @@ def _extract_content(inner) -> str:
             if isinstance(parts, list) and len(parts) > 0:
                 content = parts[0]
                 text = content if isinstance(content, str) else str(content)
-                text = re.sub(r"https?://googleusercontent\.com/card_content/\d+\s*", "", text)
+                text = strip_googleusercontent_artifacts(text)
                 if "[http" in text:
                     text = AUTOLINK_URL_PATTERN.sub(r"\1", text)
                 return text

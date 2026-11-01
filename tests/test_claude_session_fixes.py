@@ -1549,6 +1549,76 @@ def test_gemini_converter_canned_refusal_and_trailing_brace():
     assert not parsed["content"].endswith("}")
 
 
+def test_strip_googleusercontent_artifacts():
+    """Verify strip_googleusercontent_artifacts strips card_content, lmdx_content, lmdx_image, and image_agent_tag_."""
+    from src.core.emulation.stream_parser import strip_googleusercontent_artifacts
+
+    raw = (
+        "Here is the code: http://googleusercontent.com/lmdx_content/GGwoSJUEzvrAGycLKoTELsLNlVTTDkoArQfwwQ1234 "
+        "and card http://googleusercontent.com/card_content/987654 "
+        "and image https://googleusercontent.com/lmdx_image/42 "
+        "and tag http://googleusercontent.com/image_agent_tag_99 "
+        "Keep this: https://github.com/project and https://google.com/search"
+    )
+    cleaned = strip_googleusercontent_artifacts(raw)
+    assert "googleusercontent.com" not in cleaned
+    assert "https://github.com/project" in cleaned
+    assert "https://google.com/search" in cleaned
+    assert "Here is the code: and card and image and tag Keep this:" in " ".join(cleaned.split())
+
+
+def test_synthesize_workflow_recovery_tool_call_traceback():
+    """Verify recovery tool call targets the actual failed file in multi-file tracebacks."""
+    from src.core.emulation.stream_parser import synthesize_workflow_recovery_tool_call
+
+    tb_prompt = """
+CRITICAL MODE: TOOL_CALL_REQUIRED
+Traceback (most recent call last):
+  File "/opt/homebrew/lib/python3.14/runpy.py", line 198, in _run_module_as_main
+  File "benchmarks/bench_vm.py", line 12, in <module>
+    from vm.lexer import Lexer
+  File "vm/lexer.py", line 4, in <module>
+    class TokenType(Enum):
+NameError: name 'Enum' is not defined
+"""
+    call = synthesize_workflow_recovery_tool_call(tb_prompt)
+    assert '<invoke name="Read">' in call
+    assert '<parameter name="file_path">vm/lexer.py</parameter>' in call
+    assert "benchmarks/bench_vm.py" not in call
+    assert "runpy.py" not in call
+
+
+def test_synthesize_workflow_recovery_tool_call_pytest_header():
+    """Verify recovery tool call targets file from pytest error header."""
+    from src.core.emulation.stream_parser import synthesize_workflow_recovery_tool_call
+
+    pytest_prompt = """
+CRITICAL MODE: TOOL_CALL_REQUIRED
+____________________ test_compiler ____________________
+vm/parser.py:45: SyntaxError: unexpected EOF while parsing
+FAILED tests/test_vm.py::test_compiler - SyntaxError
+"""
+    call = synthesize_workflow_recovery_tool_call(pytest_prompt)
+    assert '<invoke name="Read">' in call
+    assert '<parameter name="file_path">tests/test_vm.py</parameter>' in call or '<parameter name="file_path">vm/parser.py</parameter>' in call
+
+
+def test_synthesize_workflow_recovery_tool_call_missing_files_and_synthesis():
+    """Verify missing files detection and synthesis completion recovery."""
+    from src.core.emulation.stream_parser import synthesize_workflow_recovery_tool_call
+
+    prompt_missing = "Remaining files still NOT created/modified (1 total): vm/vm.py"
+    call = synthesize_workflow_recovery_tool_call(prompt_missing)
+    assert '<invoke name="Write">' in call
+    assert '<parameter name="file_path">vm/vm.py</parameter>' in call
+
+    prompt_passed = "SYNTHESIS: Benchmark Completed with 550.16 commits/sec. PASSED."
+    call_passed = synthesize_workflow_recovery_tool_call(prompt_passed)
+    assert "completed successfully" in call_passed
+    assert "<invoke" not in call_passed
+
+
+
 
 
 
