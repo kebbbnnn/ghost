@@ -757,3 +757,105 @@ def test_json_tool_call_alias_normalization_and_serialization():
     assert "cmd" not in parsed["arguments"]
 
 
+def test_tool_result_preserves_indentation_and_non_string_content():
+    """Verify tool_result does not strip leading code line indentation and serializes dict/int/bool content."""
+    from src.converters.anthropic import anthropic_to_openai_request
+
+    # 1. Tool result with leading 4 spaces indentation on line 1
+    req = {
+        "messages": [
+            {"role": "user", "content": "Show me the function"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "tu_read_1", "name": "Read", "input": {"file_path": "foo.py"}}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_read_1",
+                        "content": "    def indented_func():\n        return 42\n",
+                    }
+                ],
+            },
+        ]
+    }
+    openai_req = anthropic_to_openai_request(req)
+    last_user_content = openai_req["messages"][-1]["content"]
+    assert '<tool_result id="tu_read_1">\n    def indented_func():\n        return 42\n</tool_result>' in last_user_content
+    # The assistant message in history must include the invoke tag:
+    assistant_content = openai_req["messages"][1]["content"]
+    assert '<invoke name="Read">' in assistant_content
+
+    # 2. Tool result with non-string dictionary content
+    req_dict = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_err_1",
+                        "content": {"error": "File not found", "errno": 2},
+                    }
+                ],
+            }
+        ]
+    }
+    openai_req_dict = anthropic_to_openai_request(req_dict)
+    u_content = openai_req_dict["messages"][-1]["content"]
+    assert 'File not found' in u_content
+    assert '"errno": 2' in u_content
+
+
+def test_continuation_word_preserves_original_coding_task():
+    """Verify that when the user says 'continue' or 'proceed', Ghost looks back to the original task and tracks files."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    msgs = [
+        {"role": "user", "content": "Create `parser.py` and run pytest via Bash."},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "README.md"}],
+        },
+        # User says "continue" in next turn
+        {"role": "user", "content": "continue"},
+    ]
+    state = _analyze_coding_workflow_state(
+        msgs, has_coding_action_tools=True, has_pending_tool_results=False, has_error_tool_results=False
+    )
+    # The original task had `parser.py` and requires test execution
+    # It must not be wiped out!
+    assert state["initial_plan"] != "" or state["is_incomplete"] is True or "parser.py" in str(state)
+
+
+def test_assistant_string_content_tool_parsing_in_workflow_state():
+    """Verify _analyze_coding_workflow_state parses tool uses from string content in assistant messages."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    msgs = [
+        {"role": "user", "content": "Create `engine.py` and run tests via Bash."},
+        {
+            "role": "assistant",
+            "content": '<invoke name="Write" id="t1"><parameter name="file_path">engine.py</parameter><parameter name="content">print(1)</parameter></invoke>',
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "File created"}],
+        },
+    ]
+    state = _analyze_coding_workflow_state(
+        msgs, has_coding_action_tools=True, has_pending_tool_results=True, has_error_tool_results=False
+    )
+    # engine.py was created! Next step is running tests via Bash:
+    assert state["is_incomplete"] is True
+    assert "Bash" in state["progress_directive"]
+    assert "engine.py" in state["progress_directive"]
+
+
+

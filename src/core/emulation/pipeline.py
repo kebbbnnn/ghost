@@ -201,7 +201,7 @@ class EmulationPipeline:
                 raw_content = tr.get("content", "")
                 content_str = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
                 formatted_parts.append(f"- Function {fn_name} ({call_id}):\n{content_str}")
-            formatted_parts.append("\nPlease review the tool results above and provide the final answer to the user's request.")
+            formatted_parts.append("\nPlease review the tool results above and proceed with the necessary steps to fulfill the user's request.")
             folded.append({
                 "role": "user",
                 "content": "\n\n".join(formatted_parts)

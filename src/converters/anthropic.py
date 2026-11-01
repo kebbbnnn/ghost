@@ -411,6 +411,13 @@ def _file_matches_any(req_f: str, candidate_paths: list[str]) -> bool:
     return False
 
 
+CONTINUATION_PHRASES: set[str] = {
+    "continue", "proceed", "go on", "go ahead", "keep going", "keep working",
+    "next", "ok", "okay", "yes", "y", "done", "finish", "complete", "complete the task",
+    "please continue", "please proceed",
+}
+
+
 def _analyze_coding_workflow_state(
     non_system_msgs: list[dict],
     has_coding_action_tools: bool,
@@ -426,6 +433,8 @@ def _analyze_coding_workflow_state(
     for idx in range(len(non_system_msgs) - 1, -1, -1):
         cleaned = _extract_clean_user_task_text(non_system_msgs[idx])
         if cleaned:
+            if idx > 0 and cleaned.lower().strip() in CONTINUATION_PHRASES:
+                continue
             task_start_idx = idx
             task_text = cleaned
             break
@@ -462,7 +471,8 @@ def _analyze_coding_workflow_state(
             f"- Start immediately in this turn by emitting `<invoke name=\"Write\">` or `<tool_call>` blocks for the `Write` tool to create the files in order (starting with: {', '.join(first_batch)}). Write complete, working code for every file!"
         )
 
-    if not has_pending_tool_results:
+    is_initial_task_turn = (task_start_idx == len(non_system_msgs) - 1)
+    if not has_pending_tool_results and is_initial_task_turn:
         return {"is_incomplete": False, "progress_directive": "", "initial_plan": initial_plan}
 
     assistant_turns = 0
@@ -505,6 +515,33 @@ def _analyze_coding_workflow_state(
                         fp = str(t_in.get("file_path") or t_in.get("path") or "").strip()
                         if fp and fp not in read_files:
                             read_files.append(fp)
+            elif isinstance(content, str) and ("<invoke" in content or "<tool_call" in content or any(f"<{t}" in content for t in ("write", "edit", "bash", "read", "update"))):
+                tool_matches = re.finditer(
+                    r"(<invoke\b.*?</invoke>|<tool_call\b.*?</tool_call>|<update\b.*?</update>|<edit\b.*?</edit>|<write\b.*?</write>|<bash\b.*?</bash>|<read\b.*?</read>)",
+                    content,
+                    re.DOTALL,
+                )
+                for tm in tool_matches:
+                    t_block = tm.group(1)
+                    parsed_name, parsed_params = _parse_invoke_xml(t_block)
+                    if parsed_name and parsed_name != "unknown":
+                        tl = parsed_name.lower()
+                        id_m = re.search(r'\bid=["\']([^"\']+)["\']', t_block)
+                        tu_id = id_m.group(1).strip() if id_m else ""
+                        tu_info = {"name": tl, "input": parsed_params}
+                        if tu_id:
+                            tool_use_by_id[tu_id] = tu_info
+                        last_assistant_tool_uses.append(tu_info)
+                        if tl in ("write", "edit", "multiedit", "notebookedit"):
+                            fp = str(parsed_params.get("file_path") or parsed_params.get("path") or "").strip()
+                            if fp and fp not in modified_files:
+                                modified_files.append(fp)
+                            if requires_test_execution:
+                                needs_test_run_after_modify = True
+                        elif tl == "read":
+                            fp = str(parsed_params.get("file_path") or parsed_params.get("path") or "").strip()
+                            if fp and fp not in read_files:
+                                read_files.append(fp)
         elif role == "user":
             latest_turn_edit_error_file = ""
             if isinstance(content, list):
@@ -912,6 +949,7 @@ def anthropic_to_openai_request(req: dict) -> dict:
                             total_input_chars += 400
                 elif btype == "tool_use":
                     # Assistant used a tool (in history)
+                    tool_id = block.get("id", "")
                     tool_name = block.get("name")
                     tool_args = block.get("input", {})
 
@@ -957,8 +995,11 @@ def anthropic_to_openai_request(req: dict) -> dict:
                                         img_url = f"data:{media_type};base64,{data}"
                                         image_parts.append({"type": "image_url", "image_url": {"url": img_url}})
                                         total_input_chars += 400
+                    elif res_content is not None:
+                        res_text = json.dumps(res_content) if not isinstance(res_content, (int, float, bool)) else str(res_content)
 
-                    result_repr = f'<tool_result id="{tool_id}"{err_attr}>\n{res_text.strip()}\n</tool_result>\n'
+                    trimmed_res_text = re.sub(r"^\r?\n+|\r?\n+$", "", res_text)
+                    result_repr = f'<tool_result id="{tool_id}"{err_attr}>\n{trimmed_res_text}\n</tool_result>\n'
                     text_content += result_repr
                     total_input_chars += len(result_repr)
 
