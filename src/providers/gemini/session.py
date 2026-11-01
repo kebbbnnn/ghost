@@ -139,6 +139,8 @@ class GeminiProvider(BaseProvider):
                     content_str = transpile_fenced_json_tool_calls(content_str)
                     if "CRITICAL MODE: TOOL_CALL_REQUIRED" in prompt and "```python?code_reference" in content_str:
                         content_str = transpile_gemini_code_reference(content_str, prompt)
+                    elif "```" in content_str and "?code_" in content_str:
+                        content_str = re.sub(r"```([a-zA-Z0-9_-]+)\?[^\n]*", r"```\1", content_str)
                     parsed["content"] = content_str
                     if attempt < 2 and (
                         is_gemini_canned_refusal(content_str)
@@ -225,6 +227,8 @@ class GeminiProvider(BaseProvider):
                 content_str = transpile_fenced_json_tool_calls(content_str)
                 if "CRITICAL MODE: TOOL_CALL_REQUIRED" in prompt and "```python?code_reference" in content_str:
                     content_str = transpile_gemini_code_reference(content_str, prompt)
+                elif "```" in content_str and "?code_" in content_str:
+                    content_str = re.sub(r"```([a-zA-Z0-9_-]+)\?[^\n]*", r"```\1", content_str)
                 parsed["content"] = content_str
                 if attempt < 2 and (
                     is_gemini_canned_refusal(content_str)

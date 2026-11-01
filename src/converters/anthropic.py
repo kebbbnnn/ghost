@@ -1282,7 +1282,7 @@ async def openai_to_anthropic_stream(
 
                 tool_use_id = tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
                 emitted_tool_use_ids.append(tool_use_id)
-                if active_block_type == "text":
+                if active_block_type in ("text", "thinking"):
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                     active_block_type = None
                     block_index += 1
@@ -1295,8 +1295,26 @@ async def openai_to_anthropic_stream(
                 output_tokens_accumulated += max(1, len(args_str) // 4)
             continue
 
+        # Handle upstream reasoning content stream
+        reasoning_chunk = delta.get("reasoning_content") or delta.get("reasoning")
+        if reasoning_chunk:
+            if active_block_type == "text":
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                active_block_type = None
+                block_index += 1
+            if active_block_type != "thinking":
+                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                active_block_type = "thinking"
+            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'thinking_delta', 'thinking': reasoning_chunk}})}\n\n"
+            output_tokens_accumulated += max(1, len(reasoning_chunk) // 4)
+            continue
+
         content = delta.get("content")
         if content:
+            if active_block_type == "thinking":
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                active_block_type = None
+                block_index += 1
             buffer += content
 
             while buffer:
@@ -1537,6 +1555,10 @@ async def openai_to_anthropic_stream(
             else:
                 clean_buf = unwrap_markdown_autolinks(buffer)
                 if clean_buf.strip():
+                    if active_block_type == "thinking":
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                        active_block_type = None
+                        block_index += 1
                     yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
                     yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': clean_buf}})}\n\n"
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
@@ -1546,13 +1568,17 @@ async def openai_to_anthropic_stream(
             clean_rem = re.sub(r"^\s*```\s*$", "", clean_rem)
             has_substance = bool(re.search(r"[a-zA-Z0-9]", clean_rem))
             if clean_rem and (not tool_called or has_substance):
+                if active_block_type == "thinking":
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                    active_block_type = None
+                    block_index += 1
                 if active_block_type != "text":
                     yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
                     active_block_type = "text"
                 yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(clean_rem)}})}\n\n"
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                 active_block_type = None
-    elif active_block_type == "text":
+    elif active_block_type in ("text", "thinking"):
         yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
         active_block_type = None
 
@@ -1635,6 +1661,26 @@ async def openai_to_anthropic_json(
     for s in (stop_sequences or []):
         if isinstance(s, str) and s and s not in normalized_stops:
             normalized_stops.append(s)
+
+    # Handle upstream reasoning / thinking content
+    reasoning = msg_obj.get("reasoning_content") or msg_obj.get("reasoning")
+    if reasoning and isinstance(reasoning, str) and reasoning.strip():
+        blocks.append({
+            "type": "thinking",
+            "thinking": reasoning.strip(),
+            "signature": "",
+        })
+    elif "<thought>" in content or "<think>" in content:
+        thought_match = re.search(r"<(?:thought|think)>(.*?)</(?:thought|think)>", content, re.DOTALL)
+        if thought_match:
+            th_str = thought_match.group(1).strip()
+            content = (content[:thought_match.start()] + content[thought_match.end():]).strip()
+            if th_str:
+                blocks.append({
+                    "type": "thinking",
+                    "thinking": th_str,
+                    "signature": "",
+                })
 
     # 1. Handle native OpenAI tool_calls if already parsed by provider
     if tool_calls and isinstance(tool_calls, list):

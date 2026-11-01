@@ -1314,6 +1314,34 @@ class StreamEmulationProcessor:
                     self.tool_accumulator = ""
                     continue
 
+                # Check for malformed tag ending with }> (where top-level JSON closed at depth 0)
+                combined = self.tool_accumulator + self.buffer
+                json_end = find_json_end_in_tag(combined)
+                if json_end != -1:
+                    after = combined[json_end:]
+                    m_gt = re.match(r"^\s*>", after)
+                    if m_gt:
+                        full_payload = combined[:json_end]
+                        self.buffer = after[m_gt.end():]
+                        self.buffer = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", self.buffer)
+                        self.in_tool_tag = False
+                        self.tool_accumulator = ""
+                        async for c in self._emit_tool_call(full_payload):
+                            yield c
+                        continue
+
+                # Check if a new tool tag starts in buffer while inside unclosed tool tag
+                m_next = find_opening_tool_tag(self.buffer)
+                if m_next and m_next.start() > 0:
+                    open_pos = m_next.start()
+                    unclosed_payload = self.tool_accumulator + self.buffer[:open_pos]
+                    self.buffer = self.buffer[open_pos:]
+                    self.in_tool_tag = False
+                    self.tool_accumulator = ""
+                    async for c in self._emit_tool_call(unclosed_payload):
+                        yield c
+                    continue
+
 
                 # Not closed yet: check for potential prefix of close_tag
                 match_prefix_len = 0
@@ -1563,6 +1591,9 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
 
         if tool_calls:
             clean_content = CLOSED_TOOL_CALL_RE.sub("", raw_content).strip()
+            clean_content = re.sub(r"```[a-zA-Z0-9_-]*\s*```", "", clean_content).strip()
+            clean_content = re.sub(r"```[a-zA-Z0-9_-]*\s*$", "", clean_content).strip()
+            clean_content = re.sub(r"^\s*```\s*", "", clean_content).strip()
             message["content"] = clean_content if clean_content else None
             message["tool_calls"] = tool_calls
             choice["finish_reason"] = "tool_calls"
@@ -1571,6 +1602,9 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
             (p := parse_tool_payload(m)) and p["name"] in executed_tools for m in matches
         ):
             clean_content = CLOSED_TOOL_CALL_RE.sub("", raw_content).strip()
+            clean_content = re.sub(r"```[a-zA-Z0-9_-]*\s*```", "", clean_content).strip()
+            clean_content = re.sub(r"```[a-zA-Z0-9_-]*\s*$", "", clean_content).strip()
+            clean_content = re.sub(r"^\s*```\s*", "", clean_content).strip()
             if clean_content:
                 message["content"] = clean_content
                 message.pop("tool_calls", None)

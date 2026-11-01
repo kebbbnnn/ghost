@@ -2227,6 +2227,126 @@ def test_coding_workflow_progress_tracker_not_duplicated_in_system_prefix_and_fo
     assert full_chatgpt_text.count("[CODING WORKFLOW PROGRESS TRACKER") == 1
 
 
+@pytest.mark.anyio
+async def test_stream_emulation_processor_contiguous_malformed_tool_calls():
+    """Verify StreamEmulationProcessor detects malformed endings like }> and contiguous unclosed tool tags."""
+    from src.core.emulation.stream_parser import StreamEmulationProcessor
+    import json
+
+    processor = StreamEmulationProcessor({"model": "test"})
+    async def mock_stream():
+        # First tool call ends with }> instead of </tool_call>
+        # Second tool call immediately follows
+        chunks = [
+            '<tool_call>{"name": "Bash", "arguments": {"command": "ls"}}>',
+            ' <tool_call>{"name": "Bash", "arguments": {"command": "pwd"}}</tool_call>',
+        ]
+        for c in chunks:
+            raw = {"choices": [{"delta": {"content": c}}]}
+            yield f"data: {json.dumps(raw)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    parsed_tool_calls = []
+    async for item in processor.process_stream(mock_stream()):
+        if item.startswith("data: ") and not item.startswith("data: [DONE]"):
+            data = json.loads(item[6:])
+            tc = data.get("choices", [{}])[0].get("delta", {}).get("tool_calls")
+            if tc:
+                for c in tc:
+                    fn = c.get("function", {})
+                    if fn.get("arguments"):
+                        parsed_tool_calls.append(json.loads(fn["arguments"]))
+
+    assert len(parsed_tool_calls) == 2
+    assert parsed_tool_calls[0]["command"] == "ls"
+    assert parsed_tool_calls[1]["command"] == "pwd"
+
+
+@pytest.mark.anyio
+async def test_openai_to_anthropic_stream_reasoning_content():
+    """Verify openai_to_anthropic_stream converts delta reasoning_content into Anthropic thinking blocks."""
+    from src.converters.anthropic import openai_to_anthropic_stream
+    import json
+
+    async def mock_reasoning_stream():
+        chunks = [
+            {"choices": [{"delta": {"reasoning_content": "Let me think about this step."}}]},
+            {"choices": [{"delta": {"reasoning_content": " The solution is clear."}}]},
+            {"choices": [{"delta": {"content": "Here is the final answer."}}]},
+        ]
+        for c in chunks:
+            yield f"data: {json.dumps(c)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    events = []
+    async for event_str in openai_to_anthropic_stream(mock_reasoning_stream(), model="test-reasoning"):
+        events.append(event_str)
+
+    full = "".join(events)
+    assert '"type": "thinking"' in full
+    assert '"thinking_delta"' in full
+    assert "Let me think about this step." in full
+    assert '"type": "text"' in full
+    assert "Here is the final answer." in full
+
+
+@pytest.mark.anyio
+async def test_openai_to_anthropic_json_reasoning_and_thought_tags():
+    """Verify openai_to_anthropic_json converts reasoning_content and <thought> tags into Anthropic thinking blocks."""
+    from src.converters.anthropic import openai_to_anthropic_json
+
+    # Test reasoning_content field
+    resp_with_reasoning = {
+        "model": "deepseek-r1",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "Pondering the algorithmic complexity...",
+                    "content": "The complexity is O(N log N).",
+                }
+            }
+        ],
+    }
+    anthropic_res = await openai_to_anthropic_json(resp_with_reasoning)
+    blocks = anthropic_res["content"]
+    assert len(blocks) == 2
+    assert blocks[0]["type"] == "thinking"
+    assert blocks[0]["thinking"] == "Pondering the algorithmic complexity..."
+    assert blocks[1]["type"] == "text"
+    assert "The complexity is O(N log N)." in blocks[1]["text"]
+
+    # Test <thought> tag inside content
+    resp_with_tag = {
+        "model": "gemini-tot",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "<thought>\nAnalyzing tree candidate 1.\n</thought>\n\nCandidate 1 is optimal.",
+                }
+            }
+        ],
+    }
+    anthropic_tag_res = await openai_to_anthropic_json(resp_with_tag)
+    blocks_tag = anthropic_tag_res["content"]
+    assert len(blocks_tag) == 2
+    assert blocks_tag[0]["type"] == "thinking"
+    assert "Analyzing tree candidate 1." in blocks_tag[0]["thinking"]
+    assert blocks_tag[1]["type"] == "text"
+    assert blocks_tag[1]["text"] == "Candidate 1 is optimal."
+
+
+def test_gemini_code_reference_sanitized_in_non_tool_prompts():
+    """Verify GeminiProvider strips query parameters from markdown fences (e.g. ```python?code_reference)
+    in non-tool responses."""
+    import re
+    raw_content = "Here is the calculation:\n```python?code_reference&code_event_index=1\nprint(42)\n```\nDone."
+    sanitized = re.sub(r"```([a-zA-Z0-9_-]+)\?[^\n]*", r"```\1", raw_content)
+    assert sanitized == "Here is the calculation:\n```python\nprint(42)\n```\nDone."
+
+
+
 
 
 
