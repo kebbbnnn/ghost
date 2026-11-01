@@ -1669,6 +1669,126 @@ This command requires approval
     assert "pytest" in call_appr
 
 
+def test_analyze_coding_workflow_state_long_run_fails_not_completed():
+    """Verify workflow state remains incomplete in long runs (50+ turns) when tests are failing."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    # Construct conversation with 50 turns
+    msgs = [
+        {"role": "user", "content": "Fix vm/compiler.py so tests/test_vm.py passes."}
+    ]
+    for i in range(25):
+        msgs.append({
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": f"tu_{i*2}", "name": "Write", "input": {"file_path": "vm/compiler.py", "content": "..."}}
+            ]
+        })
+        msgs.append({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": f"tu_{i*2}", "content": "File written"}
+            ]
+        })
+        msgs.append({
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": f"tu_{i*2+1}", "name": "Bash", "input": {"command": "python3 -m unittest -v tests/test_vm.py"}}
+            ]
+        })
+        msgs.append({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": f"tu_{i*2+1}", "content": "Ran 6 tests in 0.002s\n\nFAILED (failures=4)"}
+            ]
+        })
+
+    state = _analyze_coding_workflow_state(
+        non_system_msgs=msgs,
+        has_coding_action_tools=True,
+        has_pending_tool_results=True,
+        has_error_tool_results=False,
+    )
+    assert state["is_incomplete"] is True
+    assert "FAILED" in state["progress_directive"] or "Bash" in state["progress_directive"]
+
+
+def test_analyze_coding_workflow_state_unittest_success_detected():
+    """Verify unittest success 'Ran X tests... OK' marks tests passed."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    msgs = [
+        {"role": "user", "content": "Fix vm/compiler.py so tests/test_vm.py passes."},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "tu_1", "name": "Write", "input": {"file_path": "vm/compiler.py", "content": "..."}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "Success"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "tu_2", "name": "Bash", "input": {"command": "python3 -m unittest -v tests/test_vm.py"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_2", "content": "Ran 6 tests in 0.002s\n\nOK"}]},
+    ]
+    state = _analyze_coding_workflow_state(
+        non_system_msgs=msgs,
+        has_coding_action_tools=True,
+        has_pending_tool_results=True,
+        has_error_tool_results=False,
+    )
+    assert state["is_incomplete"] is False
+
+
+@pytest.mark.anyio
+async def test_role_stop_sequences_in_stream_and_json():
+    """Verify simulated user turns '\\n\\n[User]:' are truncated in stream and JSON with tool_use stop_reason."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream, openai_to_anthropic_json
+
+    simulated_raw = (
+        'I am fixing the compiler.\n'
+        '<invoke name="Write">\n'
+        '  <parameter name="file_path">vm/compiler.py</parameter>\n'
+        '  <parameter name="content">print(1)</parameter>\n'
+        '</invoke>\n\n'
+        '[User]: <tool_result id="tu_fake">\nRan 6 tests\n\nOK\n</tool_result>\n\n'
+        '[Assistant]: <invoke name="Bash"><parameter name="command">ls</parameter></invoke>'
+    )
+
+    # 1. JSON test
+    json_resp = {
+        "choices": [{
+            "message": {"content": simulated_raw}
+        }]
+    }
+    converted_json = await openai_to_anthropic_json(json_resp)
+    assert converted_json["stop_reason"] == "tool_use"
+    # Ensure only 1 tool was emitted (the first one), not the hallucinated second tool
+    tool_uses = [b for b in converted_json["content"] if b.get("type") == "tool_use"]
+    assert len(tool_uses) == 1
+    assert tool_uses[0]["name"] == "Write"
+    # Ensure [User]: was not dumped into content
+    for b in converted_json["content"]:
+        if b.get("type") == "text":
+            assert "[User]:" not in b.get("text", "")
+
+    # 2. Stream test
+    async def mock_stream():
+        # Split into small chunks
+        for chunk in [simulated_raw[:40], simulated_raw[40:120], simulated_raw[120:]]:
+            yield f'data: {{"choices": [{{"delta": {{"content": {json.dumps(chunk)}}}}}]}}\n\n'
+        yield 'data: [DONE]\n\n'
+
+    stream_events = []
+    async for sse in openai_to_anthropic_stream(mock_stream(), model="auto"):
+        for line in sse.split("\n"):
+            if line.startswith("data: "):
+                stream_events.append(json.loads(line[6:]))
+
+    m_deltas = [e for e in stream_events if e.get("type") == "message_delta"]
+    assert len(m_deltas) == 1
+    assert m_deltas[0]["delta"]["stop_reason"] == "tool_use"
+
+    c_starts = [e for e in stream_events if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"]
+    assert len(c_starts) == 1
+    assert c_starts[0]["content_block"]["name"] == "Write"
+
+
+
 
 
 

@@ -6,6 +6,7 @@ from typing import AsyncGenerator
 
 from src.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
+    DEFAULT_ROLE_STOP_SEQUENCES,
     DIRECT_TOOL_TAGS,
     TOOL_OPEN_TAG_RE,
     _unwrap_autolinks_in_obj,
@@ -512,6 +513,7 @@ def _analyze_coding_workflow_state(
     assistant_turns = 0
     modified_files: list[str] = []
     read_files: list[str] = []
+    executed_files: list[str] = []
     needs_test_run_after_modify = False
     last_test_failed = False
     modified_since_last_test_failure = False
@@ -616,22 +618,42 @@ def _analyze_coding_workflow_state(
                                 needs_test_run_after_modify = True
                     elif tl == "bash":
                         cmd = str(t_in.get("command", "")).strip()
-                        writes_files_in_bash = any(
-                            marker in cmd
-                            for marker in ("open(", ".write(", ".write_text(", "cat <<", "cat >", "tee ")
+                        for req_f in requested_files:
+                            req_base = req_f.split("/")[-1]
+                            if req_f in cmd or req_base in cmd:
+                                if req_f not in executed_files:
+                                    executed_files.append(req_f)
+                        writes_files_in_bash = bool(
+                            any(
+                                marker in cmd
+                                for marker in (
+                                    ".write(", ".write_text(", ".write_bytes(",
+                                    "cat <<", "cat >", "tee ", "sed -i",
+                                )
+                            )
+                            or (
+                                "open(" in cmd
+                                and any(m in cmd for m in ('"w"', "'w'", '"a"', "'a'", '"wb"', "'wb'"))
+                            )
                         )
                         has_failures = bool(
                             is_err
                             or "FAILED (" in res_text
                             or "=== failures ===" in res_text.lower()
                             or "ran 0 tests" in res_text.lower()
+                            or "assertionerror:" in res_text.lower()
+                            or re.search(r"\b(?:fail|error):\s+\w+", res_text.lower())
                             or re.search(r"\b[1-9]\d*\s+(?:failed|errors?)\b", res_text.lower())
+                            or re.search(r"\bfailed\s*\([^)]*\)", res_text.lower())
                         )
                         has_explicit_success = (
                             not has_failures
-                            and any(
-                                kw in res_text.lower()
-                                for kw in ("passed", "success", "test result: ok", "0 failed")
+                            and (
+                                any(
+                                    kw in res_text.lower()
+                                    for kw in ("passed", "success", "test result: ok", "0 failed")
+                                )
+                                or bool(re.search(r"(?:Ran \d+ tests? in [0-9.]+s\s*\n+|(?:\r?\n|^))\s*OK\b", res_text))
                             )
                         )
                         bash_failed = bool(
@@ -671,17 +693,9 @@ def _analyze_coding_workflow_state(
                                 last_test_failure_excerpt = res_text.strip()[-1500:]
                                 needs_test_run_after_modify = False
                             else:
-                                if len(modified_files) > 0:
+                                if is_test_runner:
                                     needs_test_run_after_modify = False
-                                if (
-                                    is_test_runner
-                                    or "\nok" in res_text.lower()
-                                    or "passed" in res_text.lower()
-                                    or "success" in res_text.lower()
-                                    or "ok" in res_text.split()
-                                    or "test" in cmd.lower()
-                                    or not res_text.strip()
-                                ):
+                                if has_explicit_success:
                                     last_test_failed = False
                                     modified_since_last_test_failure = False
                                     last_test_failure_excerpt = ""
@@ -700,13 +714,19 @@ def _analyze_coding_workflow_state(
                     or "FAILED (" in content
                     or "=== failures ===" in content_lower
                     or "ran 0 tests" in content_lower
+                    or "assertionerror:" in content_lower
+                    or re.search(r"\b(?:fail|error):\s+\w+", content_lower)
                     or re.search(r"\b[1-9]\d*\s+(?:failed|errors?)\b", content_lower)
+                    or re.search(r"\bfailed\s*\([^)]*\)", content_lower)
                 )
                 has_explicit_success = (
                     not has_failures
-                    and any(
-                        kw in content_lower
-                        for kw in ("passed", "success", "test result: ok", "0 failed")
+                    and (
+                        any(
+                            kw in content_lower
+                            for kw in ("passed", "success", "test result: ok", "0 failed")
+                        )
+                        or bool(re.search(r"(?:Ran \d+ tests? in [0-9.]+s\s*\n+|(?:\r?\n|^))\s*OK\b", content))
                     )
                 )
                 if has_failures or (
@@ -717,7 +737,7 @@ def _analyze_coding_workflow_state(
                     last_test_failed = True
                     modified_since_last_test_failure = False
                     last_test_failure_excerpt = content.strip()[-1500:]
-                elif has_explicit_success or "\nok" in content_lower:
+                elif has_explicit_success:
                     last_test_failed = False
                     modified_since_last_test_failure = False
                     last_test_failure_excerpt = ""
@@ -732,13 +752,19 @@ def _analyze_coding_workflow_state(
                 ):
                     has_run_benchmark = True
 
-    if assistant_turns >= 40:
-        return {"is_incomplete": False, "progress_directive": "", "initial_plan": ""}
-
     missing_files: list[str] = []
     for req_f in requested_files:
         is_mod = _file_matches_any(req_f, modified_files)
         is_read = _file_matches_any(req_f, read_files)
+        is_exec = _file_matches_any(req_f, executed_files)
+        req_lower = req_f.lower()
+        is_test_or_bench = any(
+            t in req_lower
+            for t in ("test_", "_test", "tests/", "/test", "bench_", "_bench", "benchmarks/")
+        )
+        if is_test_or_bench and (is_exec or is_read or is_mod or len(modified_files) > 0):
+            continue
+
         if has_modification_verbs:
             if not is_mod and not is_read:
                 missing_files.append(req_f)
@@ -795,7 +821,7 @@ def _analyze_coding_workflow_state(
         )
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 
-    if requires_test_execution and (needs_test_run_after_modify or last_test_failed):
+    if (requires_test_execution or last_test_failed) and (needs_test_run_after_modify or last_test_failed):
         directive = (
             "\n\n[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n"
             f"- Files created/modified so far ({len(modified_files)}): {completed_display}\n"
@@ -1162,9 +1188,11 @@ async def openai_to_anthropic_stream(
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
 
     # Normalize stop sequences
-    normalized_stops: list[str] = []
+    normalized_stops: list[str] = list(DEFAULT_ROLE_STOP_SEQUENCES)
     if stop_sequences:
-        normalized_stops = [s for s in stop_sequences if isinstance(s, str) and s]
+        for s in stop_sequences:
+            if isinstance(s, str) and s and s not in normalized_stops:
+                normalized_stops.append(s)
 
     # Message Start
     msg_start = {
@@ -1277,16 +1305,27 @@ async def openai_to_anthropic_stream(
                         m_self = re.match(rf"^<{matched_tag_name}\b[^>]*?\/>", remainder)
                         if m_self:
                             text_before = re.sub(r"```[a-zA-Z0-9_-]*\s*$", "", buffer[:tag_idx])
-                            if text_before and text_before.strip():
-                                if active_block_type != "text":
-                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                                    active_block_type = "text"
-                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(text_before)}})}\n\n"
-                                output_tokens_accumulated += max(1, len(text_before) // 4)
+                            if text_before:
+                                for s in normalized_stops:
+                                    if s in text_before:
+                                        s_idx = text_before.find(s)
+                                        text_before = text_before[:s_idx]
+                                        stop_triggered = True
+                                        matched_stop_sequence = s
+                                        break
+                                if text_before and text_before.strip():
+                                    if active_block_type != "text":
+                                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                        active_block_type = "text"
+                                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(text_before)}})}\n\n"
+                                    output_tokens_accumulated += max(1, len(text_before) // 4)
                             if active_block_type == "text":
                                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                                 active_block_type = None
                                 block_index += 1
+                            if stop_triggered:
+                                buffer = ""
+                                break
 
                             xml_block = m_self.group(0)
                             buffer = buffer[tag_idx + len(xml_block):]
@@ -1502,12 +1541,12 @@ async def openai_to_anthropic_stream(
         yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
         active_block_type = None
 
-    if stop_triggered:
+    if tool_called:
+        stop_reason = "tool_use"
+    elif stop_triggered:
         stop_reason = "stop_sequence"
     elif length_triggered:
         stop_reason = "max_tokens"
-    elif tool_called:
-        stop_reason = "tool_use"
     else:
         stop_reason = "end_turn"
 
@@ -1577,7 +1616,10 @@ async def openai_to_anthropic_json(
     length_triggered = False
     matched_stop_sequence = None
 
-    normalized_stops = [s for s in (stop_sequences or []) if isinstance(s, str) and s]
+    normalized_stops = list(DEFAULT_ROLE_STOP_SEQUENCES)
+    for s in (stop_sequences or []):
+        if isinstance(s, str) and s and s not in normalized_stops:
+            normalized_stops.append(s)
 
     # 1. Handle native OpenAI tool_calls if already parsed by provider
     if tool_calls and isinstance(tool_calls, list):
@@ -1621,6 +1663,22 @@ async def openai_to_anthropic_json(
             pre_text = content[last_idx:m.start()]
             pre_text = re.sub(r"```[a-zA-Z0-9_-]*\s*$", "", pre_text).strip()
             if pre_text:
+                stop_pos = -1
+                matched_s = None
+                for s in normalized_stops:
+                    pos = pre_text.find(s)
+                    if pos != -1:
+                        if stop_pos == -1 or pos < stop_pos:
+                            stop_pos = pos
+                            matched_s = s
+                if stop_pos != -1:
+                    pre_text = pre_text[:stop_pos].strip()
+                    if pre_text:
+                        blocks.append({"type": "text", "text": unwrap_markdown_autolinks(pre_text)})
+                    stop_triggered = True
+                    matched_stop_sequence = matched_s
+                    last_idx = len(content)
+                    break
                 blocks.append({"type": "text", "text": unwrap_markdown_autolinks(pre_text)})
             xml_block = m.group(0)
             tool_name, params = _parse_invoke_xml(xml_block)
@@ -1639,6 +1697,13 @@ async def openai_to_anthropic_json(
         post_text = content[last_idx:]
         post_text = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", post_text)
         post_text = re.sub(r"```\s*$", "", post_text).strip()
+        for s in normalized_stops:
+            if s in post_text:
+                idx = post_text.find(s)
+                post_text = post_text[:idx].strip()
+                stop_triggered = True
+                matched_stop_sequence = s
+                break
         has_substance = bool(re.search(r"[a-zA-Z0-9]", post_text))
         if post_text and (not has_tool_call or has_substance):
             blocks.append({"type": "text", "text": unwrap_markdown_autolinks(post_text)})
@@ -1663,12 +1728,12 @@ async def openai_to_anthropic_json(
     if not blocks:
         blocks.append({"type": "text", "text": ""})
 
-    if stop_triggered:
+    if has_tool_call:
+        stop_reason = "tool_use"
+    elif stop_triggered:
         stop_reason = "stop_sequence"
     elif length_triggered:
         stop_reason = "max_tokens"
-    elif has_tool_call:
-        stop_reason = "tool_use"
     else:
         stop_reason = "end_turn"
 

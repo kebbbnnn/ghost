@@ -60,6 +60,18 @@ GOOGLEUSERCONTENT_PATTERN = re.compile(
     r"https?://googleusercontent\.com/(?:card_content/\d+|lmdx_content/[a-zA-Z0-9_-]+|lmdx_image/\d+|image_agent_tag_\d+)\s*"
 )
 
+DEFAULT_ROLE_STOP_SEQUENCES: tuple[str, ...] = (
+    "\n\n[User]:",
+    "\n[User]:",
+    "[User]:",
+    "\n\n[User ",
+    "\n[User ",
+    "[User ",
+    "\n\n[Human]:",
+    "\n[Human]:",
+    "[Human]:",
+)
+
 
 def strip_googleusercontent_artifacts(text: str) -> str:
     """Strip internal Google card, image, and sandbox artifact URL tokens leaking into output."""
@@ -893,7 +905,10 @@ class StreamEmulationProcessor:
     def __init__(self, context: dict):
         self.context = context
         self.model = context.get("model", "auto")
-        self.stop_sequences: list[str] = context.get("stop", [])
+        self.stop_sequences: list[str] = list(DEFAULT_ROLE_STOP_SEQUENCES)
+        for s in context.get("stop", []):
+            if isinstance(s, str) and s and s not in self.stop_sequences:
+                self.stop_sequences.append(s)
         self.max_tokens: int | None = context.get("max_tokens")
         self.is_synthesis_phase: bool = context.get("is_synthesis_phase", False)
         self.executed_tools: set[str] = set(context.get("executed_tool_names", []))
