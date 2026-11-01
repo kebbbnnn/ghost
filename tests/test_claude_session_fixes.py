@@ -1850,6 +1850,79 @@ def test_genuinely_unclosed_tool_call_is_caught():
     assert _is_chatgpt_missing_required_tool_call(messages, unclosed_response)
 
 
+def test_transpile_fenced_json_tool_calls_single():
+    """Verify single tool call in ```json is transpiled to <tool_call> tag."""
+    from src.core.emulation.stream_parser import transpile_fenced_json_tool_calls
+
+    sample = 'I will run benchmarks:\n```json\n{"name": "Bash", "arguments": {"command": "python3 bench.py"}}\n```'
+    transpiled = transpile_fenced_json_tool_calls(sample)
+    assert "<tool_call>" in transpiled
+    assert "</tool_call>" in transpiled
+    assert '"name": "Bash"' in transpiled
+    assert "I will run benchmarks:" in transpiled
+
+
+def test_transpile_fenced_json_tool_calls_preserves_non_tool():
+    """Verify regular non-tool json data in ```json is untouched."""
+    from src.core.emulation.stream_parser import transpile_fenced_json_tool_calls
+
+    sample = 'Here is config:\n```json\n{"host": "localhost", "port": 8080}\n```'
+    transpiled = transpile_fenced_json_tool_calls(sample)
+    assert "<tool_call>" not in transpiled
+    assert "```json" in transpiled
+
+
+def test_transpile_fenced_json_tool_calls_array():
+    """Verify array of tool calls in ```json is transpiled to multiple <tool_call> tags."""
+    from src.core.emulation.stream_parser import transpile_fenced_json_tool_calls
+
+    sample = '```json\n[\n  {"name": "Write", "arguments": {"file_path": "a.py", "content": "x=1"}},\n  {"name": "Bash", "arguments": {"command": "pytest"}}\n]\n```'
+    transpiled = transpile_fenced_json_tool_calls(sample)
+    assert transpiled.count("<tool_call>") == 2
+    assert transpiled.count("</tool_call>") == 2
+
+
+def test_fenced_json_tool_call_not_flagged_as_missing():
+    """Verify fenced json tool calls are not falsely rejected as missing tool calls."""
+    from src.providers.gemini.session import GeminiProvider
+    from src.providers.chatgpt.session import _is_chatgpt_missing_required_tool_call
+
+    prompt = "CRITICAL MODE: TOOL_CALL_REQUIRED\nMANDATORY: Emit fresh <tool_call> tags"
+    messages = [{"role": "system", "content": prompt}]
+    sample = '```json\n{"name": "Bash", "arguments": {"command": "python3 benchmarks/bench_vm.py"}}\n```'
+
+    assert not GeminiProvider._is_missing_required_tool_call(prompt, sample)
+    assert not _is_chatgpt_missing_required_tool_call(messages, sample)
+
+
+def test_process_non_streaming_response_with_fenced_json():
+    """Verify process_non_streaming_response parses fenced json tool call into tool_calls."""
+    from src.core.emulation.stream_parser import process_non_streaming_response
+
+    resp = {
+        "id": "chatcmpl-123",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": '```json\n{"name": "Bash", "arguments": {"command": "pytest"}}\n```'
+                },
+                "finish_reason": "stop"
+            }
+        ]
+    }
+    context = {"model": "gpt-4o"}
+    processed = process_non_streaming_response(resp, context)
+    choice = processed["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert "tool_calls" in choice["message"]
+    tc = choice["message"]["tool_calls"][0]
+    assert tc["function"]["name"] == "Bash"
+    assert "pytest" in tc["function"]["arguments"]
+
+
+
 
 
 

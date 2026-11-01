@@ -27,6 +27,7 @@ from src.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
     TOOL_OPEN_TAG_RE,
     synthesize_workflow_recovery_tool_call,
+    transpile_fenced_json_tool_calls,
 )
 from .converter import (
     map_model,
@@ -114,7 +115,8 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
     closed_pattern = re.compile(
         r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
         r"(<invoke\b.*?</invoke>)|"
-        r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
+        r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))|"
+        r"(```(?:json|tool_call)?\s*\{\s*\"name\"\s*:\s*\"[^\"]+\"[\s\S]*?\}\s*```)",
         re.DOTALL | re.IGNORECASE,
     )
     # Strip inline single-backtick code spans so code/prose mentioning `<write>`, `<bash>`, etc. cannot trigger false unclosed tag matches
@@ -260,6 +262,7 @@ class ChatGPTProvider(BaseProvider):
 
                     if not streaming_unlocked:
                         full_text = content_tracker[0] if content_tracker else ""
+                        full_text = transpile_fenced_json_tool_calls(full_text)
                         if attempt == 0 and _is_chatgpt_missing_required_tool_call(messages, full_text):
                             log.warning(
                                 "ChatGPT returned capability refusal or missed required tool call (%s); retrying with sanitized RPC prompt...",
@@ -380,6 +383,7 @@ class ChatGPTProvider(BaseProvider):
 
                                 if choice.get("finish_reason"):
                                     finish_reason = choice["finish_reason"]
+                    full_content = transpile_fenced_json_tool_calls(full_content)
                     if attempt == 0 and _is_chatgpt_missing_required_tool_call(messages, full_content):
                         log.warning(
                             "ChatGPT non-streaming returned refusal or missed required tool call (%s); retrying with sanitized RPC prompt...",

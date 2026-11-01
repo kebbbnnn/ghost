@@ -32,6 +32,7 @@ from src.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
     TOOL_OPEN_TAG_RE,
     synthesize_workflow_recovery_tool_call,
+    transpile_fenced_json_tool_calls,
 )
 from .converter import (
     is_gemini_canned_refusal,
@@ -134,9 +135,10 @@ class GeminiProvider(BaseProvider):
                     )
                     parsed = parse_gemini_response(raw)
                     content_str = parsed.get("content", "")
+                    content_str = transpile_fenced_json_tool_calls(content_str)
                     if "CRITICAL MODE: TOOL_CALL_REQUIRED" in prompt and "```python?code_reference" in content_str:
                         content_str = transpile_gemini_code_reference(content_str, prompt)
-                        parsed["content"] = content_str
+                    parsed["content"] = content_str
                     if attempt < 2 and (
                         is_gemini_canned_refusal(content_str)
                         or self._is_missing_required_tool_call(prompt, content_str)
@@ -219,9 +221,10 @@ class GeminiProvider(BaseProvider):
                 )
                 parsed = parse_gemini_response(raw)
                 content_str = parsed.get("content", "")
+                content_str = transpile_fenced_json_tool_calls(content_str)
                 if "CRITICAL MODE: TOOL_CALL_REQUIRED" in prompt and "```python?code_reference" in content_str:
                     content_str = transpile_gemini_code_reference(content_str, prompt)
-                    parsed["content"] = content_str
+                parsed["content"] = content_str
                 if attempt < 2 and (
                     is_gemini_canned_refusal(content_str)
                     or self._is_missing_required_tool_call(prompt, content_str)
@@ -665,7 +668,8 @@ class GeminiProvider(BaseProvider):
         closed_pattern = re.compile(
             r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
             r"(<invoke\b.*?</invoke>)|"
-            r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
+            r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))|"
+            r"(```(?:json|tool_call)?\s*\{\s*\"name\"\s*:\s*\"[^\"]+\"[\s\S]*?\}\s*```)",
             re.DOTALL | re.IGNORECASE,
         )
         # Strip inline single-backtick code spans so code/prose mentioning `<write>`, `<bash>`, etc. cannot trigger false unclosed tag matches

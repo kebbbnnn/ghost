@@ -896,6 +896,60 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
     return None
 
 
+def transpile_fenced_json_tool_calls(content: str) -> str:
+    """
+    Detect fenced markdown code blocks (or bare JSON) containing tool calls
+    (e.g. ```json {"name": "Bash", "arguments": ...} ```) and transpile them
+    into standard <tool_call>{"name": ..., "arguments": ...}</tool_call> tags.
+    """
+    if not content or ("{" not in content and "<" not in content):
+        return content
+
+    fence_pattern = re.compile(
+        r"```(?:json|tool_call|tools)?\s*\n?([\s\S]*?)\n?```",
+        re.IGNORECASE,
+    )
+
+    def _replace_fence(match: re.Match) -> str:
+        body = match.group(1).strip()
+        if not body or ("{" not in body and "[" not in body):
+            return match.group(0)
+
+        # 1. Try parsing body as JSON array of tool calls
+        if body.startswith("["):
+            try:
+                data = json.loads(body)
+                if isinstance(data, list) and data:
+                    converted = []
+                    for item in data:
+                        parsed = parse_tool_payload(json.dumps(item))
+                        if parsed and parsed.get("name"):
+                            converted.append(f"<tool_call>\n{json.dumps(parsed)}\n</tool_call>")
+                    if converted and len(converted) == len(data):
+                        return "\n".join(converted)
+            except Exception:
+                pass
+
+        # 2. Try single tool call object
+        parsed = parse_tool_payload(body)
+        if parsed and parsed.get("name"):
+            return f"<tool_call>\n{json.dumps(parsed)}\n</tool_call>"
+
+        return match.group(0)
+
+    result = fence_pattern.sub(_replace_fence, content)
+
+    # 3. Check for bare JSON object if no tool calls were found in fences
+    if "<tool_call>" not in result and "<invoke" not in result and "{" in result:
+        stripped = result.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            parsed = parse_tool_payload(stripped)
+            if parsed and parsed.get("name"):
+                return f"<tool_call>\n{json.dumps(parsed)}\n</tool_call>"
+
+    return result
+
+
 class StreamEmulationProcessor:
     """
     Sliding-window stream processor that buffers potential tag boundaries
@@ -1329,6 +1383,7 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
     choice = dict(choices[0])
     message = dict(choice.get("message", {}))
     raw_content = message.get("content") or ""
+    raw_content = transpile_fenced_json_tool_calls(raw_content)
 
     def _finalize_response(r: dict, ch: dict, msg: dict) -> dict:
         ch["message"] = msg
