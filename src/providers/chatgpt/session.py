@@ -23,7 +23,7 @@ from curl_cffi.requests.exceptions import HTTPError
 
 from src.core.provider import BaseProvider
 from src.core.exceptions import RateLimitError, TokenExpiredError
-from src.core.emulation.stream_parser import ALL_TOOL_TAGS
+from src.core.emulation.stream_parser import ALL_TOOL_TAGS, TOOL_OPEN_TAG_RE
 from .converter import (
     map_model,
     parse_chatgpt_sse,
@@ -99,7 +99,7 @@ def is_chatgpt_capability_refusal(text: str) -> bool:
 
 
 def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: str) -> bool:
-    """Return True if TOOL_CALL_REQUIRED was active and ChatGPT returned a refusal or raw code block without calling a tool."""
+    """Return True if TOOL_CALL_REQUIRED was active and ChatGPT returned a refusal, unclosed tag, or raw code block without calling a tool."""
     sys_text = " ".join(
         str(m.get("content", "")) for m in messages if m.get("role") == "system"
     )
@@ -107,7 +107,20 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
         return False
     if not response_text or not response_text.strip():
         return True
-    if any(re.search(rf"<{tag}\b", response_text) for tag in ALL_TOOL_TAGS):
+    closed_pattern = re.compile(
+        r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
+        r"(<invoke\b.*?</invoke>)|"
+        r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
+        re.DOTALL | re.IGNORECASE,
+    )
+    # Strip inline single-backtick code spans so code/prose mentioning `<write>`, `<bash>`, etc. cannot trigger false unclosed tag matches
+    clean_response = re.sub(r"(?<!`)`[^`\n]+`(?!`)", "", response_text)
+    has_closed_tool_call = bool(closed_pattern.search(clean_response))
+    remaining = closed_pattern.sub("", clean_response)
+    has_unclosed_tool_call = bool(TOOL_OPEN_TAG_RE.search(remaining))
+    if has_unclosed_tool_call:
+        return True
+    if has_closed_tool_call:
         return False
     if is_chatgpt_capability_refusal(response_text):
         return True
@@ -1080,13 +1093,53 @@ def _convert_messages(messages: list[dict], retry_sanitized: bool = False) -> li
             out.append(user_msg)
 
         elif role == "assistant":
-            text = content if isinstance(content, str) else _extract_text(content)
+            text = (content if isinstance(content, str) else _extract_text(content)) if content is not None else ""
+            if text == "None":
+                text = ""
+            tool_calls = msg.get("tool_calls")
+            if tool_calls and isinstance(tool_calls, list):
+                serialized = []
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    fn_name = fn.get("name", "")
+                    fn_args = fn.get("arguments", "{}")
+                    tc_id = tc.get("id", "")
+                    id_attr = f' id="{tc_id}"' if tc_id else ""
+                    if isinstance(fn_args, str):
+                        try:
+                            parsed_args = json.loads(fn_args)
+                        except Exception:
+                            parsed_args = fn_args
+                    else:
+                        parsed_args = fn_args
+                    serialized.append(
+                        f'<tool_call{id_attr}>\n{{"name": "{fn_name}", "arguments": {json.dumps(parsed_args)}}}\n</tool_call>'
+                    )
+                if serialized:
+                    tool_block = "\n".join(serialized)
+                    text = f"{text}\n{tool_block}".strip() if text else tool_block
+
             out.append({
                 "id": str(uuid.uuid4()),
                 "author": {"role": "assistant"},
                 "content": {
                     "content_type": "text",
                     "parts": [text],
+                },
+            })
+
+        elif role == "tool":
+            call_id = msg.get("tool_call_id") or "call"
+            raw_c = msg.get("content", "")
+            c_str = raw_c if isinstance(raw_c, str) else json.dumps(raw_c)
+            tool_repr = f'<tool_result id="{call_id}">\n{c_str.strip()}\n</tool_result>'
+            out.append({
+                "id": str(uuid.uuid4()),
+                "author": {"role": "user"},
+                "create_time": time.time(),
+                "content": {
+                    "content_type": "text",
+                    "parts": [tool_repr],
                 },
             })
 

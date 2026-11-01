@@ -9,6 +9,8 @@ from src.core.emulation.stream_parser import (
     DIRECT_TOOL_TAGS,
     TOOL_OPEN_TAG_RE,
     _unwrap_autolinks_in_obj,
+    find_opening_tool_tag,
+    is_valid_tool_call,
     normalize_tool_name,
     normalize_tool_parameters,
     parse_parameter_xml_value,
@@ -350,7 +352,10 @@ def _parse_invoke_xml(xml_block: str) -> tuple[str, dict]:
                         params[k] = v
 
     norm_name = normalize_tool_name(tool_name, params)
-    return norm_name, _normalize_code_tool_params(norm_name, params)
+    cleaned_params = _normalize_code_tool_params(norm_name, params)
+    if not is_valid_tool_call(norm_name, cleaned_params):
+        return "", {}
+    return norm_name, cleaned_params
 
 
 def _extract_msg_text(msg: dict) -> str:
@@ -535,7 +540,7 @@ def _analyze_coding_workflow_state(
                         fp = str(t_in.get("file_path") or t_in.get("path") or t_in.get("notebook_path") or "").strip()
                         if fp and fp not in modified_files:
                             modified_files.append(fp)
-                        if requires_test_execution:
+                        if requires_test_execution and fp:
                             needs_test_run_after_modify = True
                     elif tl == "read":
                         fp = str(t_in.get("file_path") or t_in.get("path") or "").strip()
@@ -562,7 +567,7 @@ def _analyze_coding_workflow_state(
                             fp = str(parsed_params.get("file_path") or parsed_params.get("path") or "").strip()
                             if fp and fp not in modified_files:
                                 modified_files.append(fp)
-                            if requires_test_execution:
+                            if requires_test_execution and fp:
                                 needs_test_run_after_modify = True
                         elif tl == "read":
                             fp = str(parsed_params.get("file_path") or parsed_params.get("path") or "").strip()
@@ -612,14 +617,26 @@ def _analyze_coding_workflow_state(
                             marker in cmd
                             for marker in ("open(", ".write(", ".write_text(", "cat <<", "cat >", "tee ")
                         )
-                        bash_failed = bool(
+                        has_failures = bool(
                             is_err
                             or "FAILED (" in res_text
-                            or "=== FAILURES ===" in res_text
-                            or "Ran 0 tests" in res_text
+                            or "=== failures ===" in res_text.lower()
+                            or "ran 0 tests" in res_text.lower()
+                            or re.search(r"\b[1-9]\d*\s+(?:failed|errors?)\b", res_text.lower())
+                        )
+                        has_explicit_success = (
+                            not has_failures
+                            and any(
+                                kw in res_text.lower()
+                                for kw in ("passed", "success", "test result: ok", "0 failed")
+                            )
+                        )
+                        bash_failed = bool(
+                            has_failures
                             or (
                                 "Traceback (most recent call last):" in res_text
-                                and "\nOK" not in res_text
+                                and "\nok" not in res_text.lower()
+                                and not has_explicit_success
                             )
                         )
                         if writes_files_in_bash and not bash_failed:
@@ -633,7 +650,11 @@ def _analyze_coding_workflow_state(
                                 needs_test_run_after_modify = True
 
                         is_test_runner = any(
-                            k in cmd for k in ("pytest", "unittest", "discover", "cargo test", "go test", "npm test")
+                            k in cmd.lower()
+                            for k in (
+                                "pytest", "unittest", "discover", "cargo test", "go test",
+                                "npm test", "vitest", "jest", "mocha", "ctest", "make test", "test_", "_test"
+                            )
                         )
                         is_test_cmd = is_test_runner or (
                             not writes_files_in_bash
@@ -649,7 +670,15 @@ def _analyze_coding_workflow_state(
                             else:
                                 if len(modified_files) > 0:
                                     needs_test_run_after_modify = False
-                                if is_test_runner or "\nOK" in res_text or "passed" in res_text.lower():
+                                if (
+                                    is_test_runner
+                                    or "\nok" in res_text.lower()
+                                    or "passed" in res_text.lower()
+                                    or "success" in res_text.lower()
+                                    or "ok" in res_text.split()
+                                    or "test" in cmd.lower()
+                                    or not res_text.strip()
+                                ):
                                     last_test_failed = False
                                     modified_since_last_test_failure = False
                                     last_test_failure_excerpt = ""
@@ -661,15 +690,44 @@ def _analyze_coding_workflow_state(
                         ):
                             has_run_benchmark = True
             elif isinstance(content, str) and "<tool_result" in content:
-                if (
-                    'is_error="true"' in content
+                content_lower = content.lower()
+                is_err_res = 'is_error="true"' in content
+                has_failures = bool(
+                    is_err_res
                     or "FAILED (" in content
-                    or "=== FAILURES ===" in content
-                    or ("Traceback (most recent call last):" in content and "\nOK" not in content)
+                    or "=== failures ===" in content_lower
+                    or "ran 0 tests" in content_lower
+                    or re.search(r"\b[1-9]\d*\s+(?:failed|errors?)\b", content_lower)
+                )
+                has_explicit_success = (
+                    not has_failures
+                    and any(
+                        kw in content_lower
+                        for kw in ("passed", "success", "test result: ok", "0 failed")
+                    )
+                )
+                if has_failures or (
+                    "Traceback (most recent call last):" in content
+                    and "\nok" not in content_lower
+                    and not has_explicit_success
                 ):
                     last_test_failed = True
                     modified_since_last_test_failure = False
                     last_test_failure_excerpt = content.strip()[-1500:]
+                elif has_explicit_success or "\nok" in content_lower:
+                    last_test_failed = False
+                    modified_since_last_test_failure = False
+                    last_test_failure_excerpt = ""
+
+                if (
+                    requires_benchmark
+                    and not last_test_failed
+                    and any(
+                        bk in content_lower
+                        for bk in ("benchmark", "bench", "perf", "timeit", "profile", "ops/sec", "operations/sec")
+                    )
+                ):
+                    has_run_benchmark = True
 
     if assistant_turns >= 40:
         return {"is_incomplete": False, "progress_directive": "", "initial_plan": ""}
@@ -1205,8 +1263,8 @@ async def openai_to_anthropic_stream(
 
             while buffer:
                 if active_block_type != "tool_use":
-                    # Check for earliest opening tool tag with word boundary
-                    m_open = TOOL_OPEN_TAG_RE.search(buffer)
+                    # Check for earliest opening tool tag not inside inline backticks
+                    m_open = find_opening_tool_tag(buffer)
                     if m_open and m_open.end() < len(buffer):
                         tag_idx = m_open.start()
                         matched_tag_name = m_open.group("tag").lower()
@@ -1230,6 +1288,14 @@ async def openai_to_anthropic_stream(
                             xml_block = m_self.group(0)
                             buffer = buffer[tag_idx + len(xml_block):]
                             tool_name, params = _parse_invoke_xml(xml_block)
+                            if not tool_name:
+                                if active_block_type != "text":
+                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                    active_block_type = "text"
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(xml_block)}})}\n\n"
+                                output_tokens_accumulated += max(1, len(xml_block) // 4)
+                                continue
+
                             tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
                             emitted_tool_use_ids.append(tool_use_id)
                             yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'tool_use', 'id': tool_use_id, 'name': tool_name, 'input': {}}})}\n\n"
@@ -1359,23 +1425,23 @@ async def openai_to_anthropic_stream(
                                 end_idx = m_alt.start()
                                 tag_len = len(m_alt.group(0))
 
-                    # Check if an unclosed tool tag was superseded by a next tool tag
-                    next_open_idx = -1
                     if end_idx == -1:
-                        m_next = TOOL_OPEN_TAG_RE.search(buffer, 1)
-                        if m_next:
-                            next_open_idx = m_next.start()
-
-                    if end_idx == -1 and next_open_idx != -1:
-                        xml_block = buffer[:next_open_idx]
-                        buffer = buffer[next_open_idx:]
-                    elif end_idx != -1:
-                        xml_block = buffer[:end_idx + tag_len]
-                        buffer = re.sub(r"^\s*```(?:\s*\n)?", "", buffer[end_idx + tag_len:])
-                    else:
                         break
 
+                    xml_block = buffer[:end_idx + tag_len]
+                    buffer = re.sub(r"^\s*```(?:\s*\n)?", "", buffer[end_idx + tag_len:])
+
                     tool_name, params = _parse_invoke_xml(xml_block)
+                    if not tool_name:
+                        if active_block_type != "text":
+                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                            active_block_type = "text"
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(xml_block)}})}\n\n"
+                        output_tokens_accumulated += max(1, len(xml_block) // 4)
+                        active_block_type = None
+                        active_tool_tag = None
+                        continue
+
                     tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
                     emitted_tool_use_ids.append(tool_use_id)
 
@@ -1551,13 +1617,16 @@ async def openai_to_anthropic_json(
                 blocks.append({"type": "text", "text": unwrap_markdown_autolinks(pre_text)})
             xml_block = m.group(0)
             tool_name, params = _parse_invoke_xml(xml_block)
-            blocks.append({
-                "type": "tool_use",
-                "id": f"toolu_{uuid.uuid4().hex[:24]}",
-                "name": tool_name,
-                "input": params,
-            })
-            has_tool_call = True
+            if tool_name:
+                blocks.append({
+                    "type": "tool_use",
+                    "id": f"toolu_{uuid.uuid4().hex[:24]}",
+                    "name": tool_name,
+                    "input": params,
+                })
+                has_tool_call = True
+            else:
+                blocks.append({"type": "text", "text": unwrap_markdown_autolinks(xml_block)})
             last_idx = m.end()
 
         post_text = content[last_idx:]

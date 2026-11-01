@@ -1151,6 +1151,310 @@ def test_gemini_alt_close_tag_not_marked_missing():
     assert GeminiProvider._is_missing_required_tool_call(prompt, content_unclosed)
 
 
+def test_fallback_extract_arguments_escaped_quotes_and_newlines():
+    """Verify _fallback_extract_arguments preserves escaped quotes, newlines, and trailing commas."""
+    from src.core.emulation.stream_parser import _fallback_extract_arguments
+
+    # 1. Bash command with escaped quotes
+    raw_bash = '{"name": "Bash", "arguments": {"command": "git commit -m \\"initial release\\"", "timeout": 30}}'
+    args = _fallback_extract_arguments("Bash", raw_bash)
+    assert args.get("command") == 'git commit -m "initial release"'
+
+    # 2. Write tool with escaped newlines and tabs
+    raw_write = '{"name": "Write", "arguments": {"file_path": "test.py", "content": "import sys\\n\\ndef foo():\\n\\treturn True\\n"}}'
+    w_args = _fallback_extract_arguments("Write", raw_write)
+    assert w_args.get("file_path") == "test.py"
+    assert w_args.get("content") == "import sys\n\ndef foo():\n\treturn True\n"
+
+    # 3. Edit tool with trailing comma in old_string
+    raw_edit = '{"name": "Edit", "arguments": {"file_path": "a.py", "old_string": "def foo(a,", "new_string": "def foo(a, b,"}}'
+    e_args = _fallback_extract_arguments("Edit", raw_edit)
+    assert e_args.get("old_string") == "def foo(a,"
+    assert e_args.get("new_string") == "def foo(a, b,"
+
+    # 4. Grep tool with escaped quote in regex pattern
+    raw_grep = '{"name": "Grep", "arguments": {"pattern": "class \\"Foo\\"", "path": "src"}}'
+    g_args = _fallback_extract_arguments("Grep", raw_grep)
+    assert g_args.get("pattern") == 'class "Foo"'
+    assert g_args.get("path") == "src"
+
+
+@pytest.mark.anyio
+async def test_stream_parser_does_not_slice_file_at_child_tool_tags():
+    """Verify openai_to_anthropic_stream does not prematurely slice a Write tool call containing pseudo-tags."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    async def mock_stream():
+        # Stream chunks of a Write call containing <bash> and <write> inside code
+        payload_obj = {
+            "choices": [{"delta": {"content": '<tool_call>{"name": "Write", "arguments": {"file_path": "sanitizer.py", "content": "import re\\n# Example: <bash>echo 1</bash>\\ncode = \\"<write>\\""}}</tool_call>'}}]
+        }
+        yield f"data: {json.dumps(payload_obj)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    tool_blocks = []
+    async for sse in openai_to_anthropic_stream(mock_stream(), model="auto"):
+        for line in sse.splitlines():
+            if line.startswith("data: ") and not line.startswith("data: [DONE]"):
+                payload = json.loads(line[6:])
+                if payload.get("type") == "content_block_start":
+                    cb = payload.get("content_block", {})
+                    if cb.get("type") == "tool_use":
+                        tool_blocks.append(cb)
+                elif payload.get("type") == "content_block_delta":
+                    delta = payload.get("delta", {})
+                    if delta.get("type") == "input_json_delta":
+                        tool_blocks[-1]["partial_json"] = delta.get("partial_json", "")
+
+    # Exactly ONE tool_use block for Write, NOT split into a bash tool call!
+    assert len(tool_blocks) == 1
+    assert tool_blocks[0]["name"] == "Write"
+    parsed_input = json.loads(tool_blocks[0]["partial_json"])
+    assert parsed_input["file_path"] == "sanitizer.py"
+    assert "<bash>echo 1</bash>" in parsed_input["content"]
+    assert "<write>" in parsed_input["content"]
+
+
+def test_gemini_is_missing_required_tool_call_ignores_pseudo_tags_in_payload():
+    """Verify GeminiProvider._is_missing_required_tool_call ignores pseudo-tags inside closed tool calls."""
+    from src.providers.gemini.session import GeminiProvider
+
+    prompt = "[GHOST WORKSPACE DIRECTIVE]\nCRITICAL MODE: TOOL_CALL_REQUIRED.\nACTION REQUIRED — TASK INCOMPLETE"
+
+    # Closed tool call containing <bash> and <write> inside content
+    closed_with_pseudo_tags = (
+        '<tool_call>{"name": "Write", "arguments": {"file_path": "a.py", '
+        '"content": "def test():\\n    # Run <bash>ls</bash> and <write>\\n    pass"}}\n</tool_call>'
+    )
+    assert not GeminiProvider._is_missing_required_tool_call(prompt, closed_with_pseudo_tags)
+
+    # Genuinely unclosed tool call
+    unclosed = '<tool_call>{"name": "Write", "arguments": {"file_path": "a.py"'
+    assert GeminiProvider._is_missing_required_tool_call(prompt, unclosed)
+
+
+def test_chatgpt_multi_turn_tool_conversion():
+    """Verify _convert_messages converts assistant tool_calls and role: 'tool' correctly."""
+    from src.providers.chatgpt.session import _convert_messages
+
+    messages = [
+        {"role": "user", "content": "Check files"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "LS", "arguments": '{"path": "."}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "file1.py\nfile2.py",
+        },
+    ]
+    converted = _convert_messages(messages)
+    assert len(converted) == 3
+    # Assistant message contains serialized tool_call
+    asst = converted[1]
+    assert asst["author"]["role"] == "assistant"
+    assert '<tool_call id="call_1">' in asst["content"]["parts"][0]
+    assert '"name": "LS"' in asst["content"]["parts"][0]
+
+    # Tool message converted to user message with <tool_result>
+    tool_msg = converted[2]
+    assert tool_msg["author"]["role"] == "user"
+    assert '<tool_result id="call_1">' in tool_msg["content"]["parts"][0]
+    assert "file1.py" in tool_msg["content"]["parts"][0]
+
+
+def test_workflow_tracker_traceback_with_explicit_success_not_failed():
+    """Verify _analyze_coding_workflow_state does not flag test as failed when pytest outputs a traceback but passes."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    # Pytest output testing error logging
+    pytest_stdout = (
+        "tests/test_errors.py\n"
+        "Traceback (most recent call last):\n"
+        '  File "test_errors.py", line 12, in test_handled_error\n'
+        "ValueError: test error\n"
+        "============================== 1 passed in 0.05s =============================="
+    )
+    msgs = [
+        {"role": "user", "content": "Create error.py and verify via Bash with pytest."},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t_w", "name": "Write", "input": {"file_path": "error.py", "content": "pass"}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t_w", "content": "ok"}],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t_b", "name": "Bash", "input": {"command": "pytest"}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t_b", "content": pytest_stdout, "is_error": False}],
+        },
+    ]
+
+    state = _analyze_coding_workflow_state(
+        msgs, has_coding_action_tools=True, has_pending_tool_results=True, has_error_tool_results=False
+    )
+    # The tests passed! Workflow should NOT say active test failure!
+    assert "The test suite / command execution failed with errors" not in state.get("progress_directive", "")
+
+
+def test_is_valid_tool_call_validation():
+    """Verify is_valid_tool_call rejects pseudo-tags, empty commands, and missing mandatory arguments."""
+    from src.core.emulation.stream_parser import is_valid_tool_call
+
+    # 1. Write requires file_path
+    assert not is_valid_tool_call("Write", {"content": "print(1)"})
+    assert not is_valid_tool_call("write", {})
+    assert is_valid_tool_call("Write", {"file_path": "a.py", "content": "print(1)"})
+    assert is_valid_tool_call("write", {"path": "a.py"})
+
+    # 2. Edit requires file_path and old_string/content/edits
+    assert not is_valid_tool_call("Edit", {"file_path": "a.py"})
+    assert not is_valid_tool_call("Edit", {"old_string": "x", "new_string": "y"})
+    assert is_valid_tool_call("Edit", {"file_path": "a.py", "old_string": "x", "new_string": "y"})
+
+    # 3. Bash requires command that is not empty or punctuation-only
+    assert not is_valid_tool_call("Bash", {"command": ""})
+    assert not is_valid_tool_call("Bash", {"command": ","})
+    assert not is_valid_tool_call("Bash", {"command": "  ;  "})
+    assert is_valid_tool_call("Bash", {"command": "pytest"})
+
+    # 4. Unknown/empty tool
+    assert not is_valid_tool_call("unknown", {})
+    assert not is_valid_tool_call("", {})
+
+
+def test_find_opening_tool_tag_inline_code_skipping():
+    """Verify find_opening_tool_tag skips backtick-quoted inline code and matches real XML tool tags."""
+    from src.core.emulation.stream_parser import find_opening_tool_tag
+
+    # Inline markdown code spans mentioning pseudo-tags
+    text_prose = "strips pseudo-XML tags like `<bash>`, `</bash>`, `<write>`, `<invoke>`, and `<tool_call>`."
+    assert find_opening_tool_tag(text_prose) is None
+
+    # Real fenced code block with tool tag
+    text_fenced = "Here is the tool:\n```xml\n<write file_path=\"doc.py\">code</write>\n```"
+    m_fenced = find_opening_tool_tag(text_fenced)
+    assert m_fenced is not None
+    assert m_fenced.group("tag").lower() == "write"
+
+    # Raw tool tag
+    raw_tag = "<tool_call>{\"name\": \"Bash\", \"arguments\": {\"command\": \"ls\"}}</tool_call>"
+    m_raw = find_opening_tool_tag(raw_tag)
+    assert m_raw is not None
+    assert m_raw.group("tag").lower() == "tool_call"
+
+
+def test_provider_inline_code_pseudo_tag_not_unclosed():
+    """Verify Gemini and ChatGPT session validators do not treat inline code spans as unclosed tool calls."""
+    from src.providers.gemini.session import GeminiProvider
+    from src.providers.chatgpt.session import _is_chatgpt_missing_required_tool_call
+
+    prompt = "[GHOST WORKSPACE DIRECTIVE]\nCRITICAL MODE: TOOL_CALL_REQUIRED."
+    content = "1) sanitizer.py: A module that parses markdown and strips pseudo-XML tags like `<bash>`, `</bash>`, `<write>`, `<invoke>`, and `<tool_call>` while preserving their inner code."
+
+    # Gemini provider should NOT detect an unclosed tool call in prose
+    assert not GeminiProvider._is_missing_required_tool_call(prompt, content)
+
+    # ChatGPT provider should NOT detect an unclosed tool call in prose
+    messages = [{"role": "system", "content": prompt}]
+    assert not _is_chatgpt_missing_required_tool_call(messages, content)
+
+
+@pytest.mark.anyio
+async def test_stream_parser_emits_inline_tags_as_text_not_broken_tool_use():
+    """Verify stream parser treats prose mentioning `<write>` or `<bash>` as pure text without emitting invalid tool_use."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    async def mock_stream():
+        chunks = [
+            {"choices": [{"delta": {"content": "Strips pseudo-tags like `<bash>`, "}}]},
+            {"choices": [{"delta": {"content": "`</bash>`, and `<write>` while preserving content."}}]},
+        ]
+        for c in chunks:
+            yield f"data: {json.dumps(c)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    events = []
+    async for event_str in openai_to_anthropic_stream(mock_stream(), model="test"):
+        events.append(event_str)
+
+    full_output = "".join(events)
+    # Must NOT emit any tool_use event!
+    assert "tool_use" not in full_output
+    assert "content_block_start" in full_output
+    assert "text" in full_output
+    assert "Strips pseudo-tags" in full_output
+
+
+def test_workflow_state_pytest_zero_failed_with_intentional_traceback():
+    """Verify workflow state tracker does not treat '0 failed' as a failure even if logger printed handled tracebacks."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    stdout_with_handled_traceback = (
+        "tests/test_sanitizer.py::test_logger_prints_traceback Traceback (most recent call last):\n"
+        "  File \"logger.py\", line 15\n"
+        "ValueError: handled\n"
+        "8 passed, 0 failed in 0.05s\n"
+        "Running benchmark: 100,000 ops completed (850,000 ops/sec)\n"
+    )
+
+    msgs = [
+        {"role": "user", "content": "Build sanitizer.py, logger.py, tests/test_sanitizer.py, and benchmarks/bench.py with benchmark."},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t1", "name": "Write", "input": {"file_path": "sanitizer.py", "content": "pass"}}],
+        },
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t2", "name": "Write", "input": {"file_path": "logger.py", "content": "pass"}}],
+        },
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "ok"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t3", "name": "Write", "input": {"file_path": "tests/test_sanitizer.py", "content": "pass"}}],
+        },
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t3", "content": "ok"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t4", "name": "Write", "input": {"file_path": "benchmarks/bench.py", "content": "pass"}}],
+        },
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t4", "content": "ok"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tb", "name": "Bash", "input": {"command": "pytest tests/test_sanitizer.py && python benchmarks/bench.py"}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tb", "content": stdout_with_handled_traceback, "is_error": False}],
+        },
+    ]
+
+    state = _analyze_coding_workflow_state(
+        msgs, has_coding_action_tools=True, has_pending_tool_results=True, has_error_tool_results=False
+    )
+    assert not state["is_incomplete"]
+    assert "TASK INCOMPLETE" not in state.get("progress_directive", "")
+    assert "failed with errors" not in state.get("progress_directive", "")
+
+
+
+
 
 
 

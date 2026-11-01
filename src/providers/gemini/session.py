@@ -28,7 +28,7 @@ import httpx
 
 from src.core.provider import BaseProvider
 from src.core.exceptions import RateLimitError, TokenExpiredError, ProviderError
-from src.core.emulation.stream_parser import ALL_TOOL_TAGS
+from src.core.emulation.stream_parser import ALL_TOOL_TAGS, TOOL_OPEN_TAG_RE
 from .converter import (
     is_gemini_canned_refusal,
     parse_gemini_response,
@@ -512,7 +512,8 @@ class GeminiProvider(BaseProvider):
             elif role == "assistant":
                 chat_parts.append(f"[Assistant]: {text}")
             elif role == "tool":
-                chat_parts.append(f"[Tool Output]: {text}")
+                call_id = msg.get("tool_call_id") or "call"
+                chat_parts.append(f'<tool_result id="{call_id}">\n{text}\n</tool_result>')
             else:
                 chat_parts.append(f"[User]: {text}")
 
@@ -649,17 +650,18 @@ class GeminiProvider(BaseProvider):
         """Detect when Gemini ignored TOOL_CALL_REQUIRED, emitted an unclosed tool block, or dumped markdown code blocks."""
         if "CRITICAL MODE: TOOL_CALL_REQUIRED" not in prompt:
             return False
-        self_closing_count = len(re.findall(rf"<(?:" + "|".join(ALL_TOOL_TAGS) + r")\b[^>]*?\/>", content))
-        open_tags_count = sum(len(re.findall(rf"<{tag}\b", content)) for tag in ALL_TOOL_TAGS)
-        close_tags_count = sum(content.count(f"</{tag}>") for tag in ALL_TOOL_TAGS)
-        alt_close_matches = len(re.findall(r'<tool_call\b[^>]*>(?:(?!</tool_call>)[\s\S])*?\}[ \t]*>', content))
-        close_tags_count += alt_close_matches
-
-        has_closed_tool_call = (
-            close_tags_count > 0
-            or self_closing_count > 0
+        closed_pattern = re.compile(
+            r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
+            r"(<invoke\b.*?</invoke>)|"
+            r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
+            re.DOTALL | re.IGNORECASE,
         )
-        has_unclosed_tool_call = (open_tags_count - self_closing_count > close_tags_count)
+        # Strip inline single-backtick code spans so code/prose mentioning `<write>`, `<bash>`, etc. cannot trigger false unclosed tag matches
+        clean_content = re.sub(r"(?<!`)`[^`\n]+`(?!`)", "", content)
+        has_closed_tool_call = bool(closed_pattern.search(clean_content))
+        # Strip all properly closed tool calls so code/comments inside them cannot produce false unclosed tag matches
+        remaining = closed_pattern.sub("", clean_content)
+        has_unclosed_tool_call = bool(TOOL_OPEN_TAG_RE.search(remaining))
         if has_unclosed_tool_call:
             return True
         if has_closed_tool_call:
@@ -695,19 +697,46 @@ class GeminiProvider(BaseProvider):
 
     @staticmethod
     def _extract_text(msg: dict) -> str:
-        """Extract plain text from an OpenAI message (handles string or array content)."""
-        content = msg.get("content", "")
+        """Extract plain text from an OpenAI message (handles string, array content, or tool_calls)."""
+        content = msg.get("content")
+        text = ""
         if isinstance(content, str):
-            return content
-        if isinstance(content, list):
+            text = content
+        elif isinstance(content, list):
             text_parts = []
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "text":
                     text_parts.append(item.get("text", ""))
                 elif isinstance(item, str):
                     text_parts.append(item)
-            return " ".join(text_parts)
-        return str(content)
+            text = " ".join(text_parts)
+        elif content is not None:
+            text = str(content)
+
+        tool_calls = msg.get("tool_calls")
+        if tool_calls and isinstance(tool_calls, list):
+            serialized = []
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                fn_name = fn.get("name", "")
+                fn_args = fn.get("arguments", "{}")
+                tc_id = tc.get("id", "")
+                id_attr = f' id="{tc_id}"' if tc_id else ""
+                if isinstance(fn_args, str):
+                    try:
+                        parsed_args = json.loads(fn_args)
+                    except Exception:
+                        parsed_args = fn_args
+                else:
+                    parsed_args = fn_args
+                serialized.append(
+                    f'<tool_call{id_attr}>\n{{"name": "{fn_name}", "arguments": {json.dumps(parsed_args)}}}\n</tool_call>'
+                )
+            if serialized:
+                tool_block = "\n".join(serialized)
+                text = f"{text}\n{tool_block}".strip() if text else tool_block
+
+        return text
 
     @classmethod
     def _synthesize_refusal_fallback(cls, prompt: str, messages: list[dict]) -> str:

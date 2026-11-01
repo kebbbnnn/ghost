@@ -26,6 +26,24 @@ ALL_TOOL_TAGS = ("tool_call", "invoke", "update", "edit", "write", "bash", "read
 OPEN_TAGS = [f"<{t}" for t in ALL_TOOL_TAGS]
 TOOL_OPEN_TAG_RE = re.compile(rf"<(?P<tag>{'|'.join(ALL_TOOL_TAGS)})\b", re.IGNORECASE)
 
+
+def find_opening_tool_tag(text: str, start_pos: int = 0) -> re.Match | None:
+    """Find the earliest opening tool tag not immediately enclosed in inline markdown code backticks."""
+    pos = start_pos
+    while pos < len(text):
+        m = TOOL_OPEN_TAG_RE.search(text, pos)
+        if not m:
+            return None
+        start = m.start()
+        # If preceded immediately by a single inline backtick (not a fence), it's markdown code quotation
+        if start > 0 and text[start - 1] == "`":
+            is_fence = start >= 3 and text[start - 3 : start] == "```"
+            if not is_fence:
+                pos = start + 1
+                continue
+        return m
+    return None
+
 AUTOLINK_URL_PATTERN = re.compile(
     r"\[(https?://[^\s\[\]\(\)\"']+?)\]\(https?://[^\s\[\]\(\)\"']+?\)"
 )
@@ -335,6 +353,48 @@ def normalize_tool_parameters(tool_name: str, params: dict) -> dict:
     return params
 
 
+def is_valid_tool_call(tool_name: str, params: dict | None) -> bool:
+    """Validate that a candidate tool call has required parameters for known tools and is not empty or pseudo-XML."""
+    if not tool_name or tool_name.strip().lower() in ("unknown", ""):
+        return False
+    tn = tool_name.strip().lower()
+    p = params if isinstance(params, dict) else {}
+
+    if tn in ("write", "write_file"):
+        fp = p.get("file_path") or p.get("path") or p.get("file")
+        return bool(fp and str(fp).strip())
+
+    if tn in ("edit", "edit_file", "update", "update_file"):
+        fp = p.get("file_path") or p.get("path") or p.get("file")
+        has_fp = bool(fp and str(fp).strip())
+        has_change = (
+            p.get("old_string") is not None
+            or p.get("content") is not None
+            or p.get("edits") is not None
+        )
+        return has_fp and has_change
+
+    if tn in ("read", "read_file"):
+        fp = p.get("file_path") or p.get("path") or p.get("file")
+        return bool(fp and str(fp).strip())
+
+    if tn in ("bash", "sh", "execute_command", "run_command", "command"):
+        cmd = p.get("command") or p.get("cmd") or p.get("code") or p.get("script")
+        if not cmd or not str(cmd).strip():
+            return False
+        # Reject commands that only consist of punctuation or commas (e.g. from prose like "<bash>, </bash>")
+        if not re.search(r"[a-zA-Z0-9_\-\$\/\.\~\*]", str(cmd)):
+            return False
+        return True
+
+    if tn in ("glob", "grep"):
+        pat = p.get("pattern") or p.get("query") or p.get("search")
+        path = p.get("path") or p.get("dir") or p.get("directory")
+        return bool(pat and str(pat).strip()) or bool(path and str(path).strip())
+
+    return True
+
+
 def parse_parameter_xml_value(p_name: str, raw_val: str) -> Any:
     """Parse parameter text from XML, respecting string vs JSON/primitive data types."""
     if p_name in ("content", "old_string", "new_string", "old_str", "new_str"):
@@ -420,6 +480,8 @@ def _normalize_parsed_tool_dict(data: dict) -> dict | None:
 
     norm_name = normalize_tool_name(name.strip(), args)
     cleaned_args = normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(args))
+    if not is_valid_tool_call(norm_name, cleaned_args):
+        return None
     return {"name": norm_name, "arguments": cleaned_args}
 
 
@@ -429,22 +491,28 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
     args: dict = {}
 
     if fn_lower in ("write", "write_file"):
-        fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"([^"]+)"', raw_text)
+        fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if fp_match:
-            args["file_path"] = fp_match.group(1).strip()
+            args["file_path"] = fp_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
         c_match = re.search(r'"content"\s*:\s*', raw_text)
         if c_match:
             c_raw = raw_text[c_match.end() :].strip()
             if c_raw.startswith('"'):
                 c_raw = c_raw[1:]
             c_clean = re.sub(r'"?\s*\}*\s*$', "", c_raw)
-            c_clean = c_clean.replace(r'\"', '"')
+            c_clean = (
+                c_clean.replace(r'\"', '"')
+                .replace(r'\n', '\n')
+                .replace(r'\r', '\r')
+                .replace(r'\t', '\t')
+                .replace(r'\\', '\\')
+            )
             args["content"] = c_clean
 
     elif fn_lower in ("bash", "execute_command", "sh"):
-        cmd_match = re.search(r'"(?:command|cmd)"\s*:\s*"([^"]+)"', raw_text)
+        cmd_match = re.search(r'"(?:command|cmd)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if cmd_match:
-            args["command"] = cmd_match.group(1).strip()
+            args["command"] = cmd_match.group(1).replace(r'\"', '"').replace(r'\n', '\n').replace(r'\\', '\\').strip()
         else:
             c_match = re.search(r'"(?:command|cmd)"\s*:\s*', raw_text)
             if c_match:
@@ -452,52 +520,94 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
                 if c_raw.startswith('"'):
                     c_raw = c_raw[1:]
                 c_clean = re.sub(r'"?\s*\}*\s*$', "", c_raw)
-                c_clean = c_clean.replace(r'\"', '"')
+                c_clean = (
+                    c_clean.replace(r'\"', '"')
+                    .replace(r'\n', '\n')
+                    .replace(r'\r', '\r')
+                    .replace(r'\t', '\t')
+                    .replace(r'\\', '\\')
+                )
                 args["command"] = c_clean
 
     elif fn_lower in ("edit", "edit_file", "update", "update_file"):
-        fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"([^"]+)"', raw_text)
+        fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if fp_match:
-            args["file_path"] = fp_match.group(1).strip()
+            args["file_path"] = fp_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
         old_match = re.search(r'"(?:old_string|old_str)"\s*:\s*', raw_text)
         new_match = re.search(r'"(?:new_string|new_str)"\s*:\s*', raw_text)
         if old_match and new_match:
             if old_match.start() < new_match.start():
                 old_raw = raw_text[old_match.end() : new_match.start()].strip()
-                old_clean = re.sub(r'[\s",]+$', "", old_raw.lstrip('"'))
+                m_lit = re.match(r'^"((?:\\.|[^"\\])*)"\s*,?\s*$', old_raw)
+                if m_lit:
+                    old_clean = m_lit.group(1)
+                else:
+                    old_clean = re.sub(r'[\s",]+$', "", old_raw.lstrip('"'))
                 new_raw = raw_text[new_match.end() :].strip()
-                new_clean = re.sub(r'"?\s*\}*\s*$', "", new_raw.lstrip('"'))
-                args["old_string"] = old_clean.replace(r'\"', '"')
-                args["new_string"] = new_clean.replace(r'\"', '"')
+                m_new_lit = re.match(r'^"((?:\\.|[^"\\])*)"\s*\}*\s*$', new_raw)
+                if m_new_lit:
+                    new_clean = m_new_lit.group(1)
+                else:
+                    new_clean = re.sub(r'"?\s*\}*\s*$', "", new_raw.lstrip('"'))
+                args["old_string"] = (
+                    old_clean.replace(r'\"', '"')
+                    .replace(r'\n', '\n')
+                    .replace(r'\r', '\r')
+                    .replace(r'\t', '\t')
+                    .replace(r'\\', '\\')
+                )
+                args["new_string"] = (
+                    new_clean.replace(r'\"', '"')
+                    .replace(r'\n', '\n')
+                    .replace(r'\r', '\r')
+                    .replace(r'\t', '\t')
+                    .replace(r'\\', '\\')
+                )
         elif old_match:
             old_raw = raw_text[old_match.end() :].strip()
-            old_clean = re.sub(r'"?\s*\}*\s*$', "", old_raw.lstrip('"'))
-            args["old_string"] = old_clean.replace(r'\"', '"')
+            m_lit = re.match(r'^"((?:\\.|[^"\\])*)"\s*,?\s*$', old_raw)
+            if m_lit:
+                old_clean = m_lit.group(1)
+            else:
+                old_clean = re.sub(r'[\s",]+$', "", old_raw.lstrip('"'))
+            args["old_string"] = (
+                old_clean.replace(r'\"', '"')
+                .replace(r'\n', '\n')
+                .replace(r'\r', '\r')
+                .replace(r'\t', '\t')
+                .replace(r'\\', '\\')
+            )
         c_match = re.search(r'"content"\s*:\s*', raw_text)
         if c_match and "old_string" not in args:
             c_raw = raw_text[c_match.end() :].strip()
             if c_raw.startswith('"'):
                 c_raw = c_raw[1:]
             c_clean = re.sub(r'"?\s*\}*\s*$', "", c_raw)
-            c_clean = c_clean.replace(r'\"', '"')
+            c_clean = (
+                c_clean.replace(r'\"', '"')
+                .replace(r'\n', '\n')
+                .replace(r'\r', '\r')
+                .replace(r'\t', '\t')
+                .replace(r'\\', '\\')
+            )
             args["content"] = c_clean
 
     elif fn_lower in ("read", "read_file"):
-        fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"([^"]+)"', raw_text)
+        fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if fp_match:
-            args["file_path"] = fp_match.group(1).strip()
+            args["file_path"] = fp_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
         for int_field in ("offset", "limit"):
             m = re.search(rf'"{int_field}"\s*:\s*(\d+)', raw_text)
             if m:
                 args[int_field] = int(m.group(1))
 
     elif fn_lower in ("glob", "grep"):
-        pat_match = re.search(r'"pattern"\s*:\s*"([^"]+)"', raw_text)
+        pat_match = re.search(r'"pattern"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if pat_match:
-            args["pattern"] = pat_match.group(1).strip()
-        path_match = re.search(r'"(?:path|dir|directory)"\s*:\s*"([^"]+)"', raw_text)
+            args["pattern"] = pat_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
+        path_match = re.search(r'"(?:path|dir|directory)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if path_match:
-            args["path"] = path_match.group(1).strip()
+            args["path"] = path_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
 
     return args
 
@@ -581,7 +691,10 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                     break
 
         norm_name = normalize_tool_name(cand_tag, params)
-        return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(params))}
+        cleaned_params = normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(params))
+        if not is_valid_tool_call(norm_name, cleaned_params):
+            return None
+        return {"name": norm_name, "arguments": cleaned_params}
 
     # 2. Support <invoke name="...">...</invoke> XML format if present
     if "<parameter" in unwrapped or unwrapped.startswith("<invoke") or 'name="' in unwrapped[:60] or "name='" in unwrapped[:60]:
@@ -597,7 +710,10 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                     p_name = match.group(1)
                     params[p_name] = parse_parameter_xml_value(p_name, match.group(2))
                 norm_name = normalize_tool_name(tool_name, params)
-                return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, params)}
+                cleaned_params = normalize_tool_parameters(norm_name, params)
+                if not is_valid_tool_call(norm_name, cleaned_params):
+                    return None
+                return {"name": norm_name, "arguments": cleaned_params}
             # Check for raw JSON inside <invoke ...>{...}</invoke>
             brace_idx = unwrapped.find("{")
             if brace_idx != -1:
@@ -608,11 +724,17 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                             parsed_inner = json.loads(re.sub(r",\s*(\}|\])", r"\1", candidate))
                             if isinstance(parsed_inner, dict):
                                 norm_name = normalize_tool_name(tool_name, parsed_inner)
-                                return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(parsed_inner))}
+                                cleaned_params = normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(parsed_inner))
+                                if not is_valid_tool_call(norm_name, cleaned_params):
+                                    return None
+                                return {"name": norm_name, "arguments": cleaned_params}
                         except Exception:
                             pass
             norm_name = normalize_tool_name(tool_name, params)
-            return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, params)}
+            cleaned_params = normalize_tool_parameters(norm_name, params)
+            if not is_valid_tool_call(norm_name, cleaned_params):
+                return None
+            return {"name": norm_name, "arguments": cleaned_params}
 
     clean = _sanitize_json_string(unwrapped)
     decoder = json.JSONDecoder()
@@ -656,7 +778,10 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                         args_obj, _ = decoder.raw_decode(cand_clean)
                         if isinstance(args_obj, dict):
                             norm_name = normalize_tool_name(func_name, args_obj)
-                            return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(args_obj))}
+                            cleaned_params = normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(args_obj))
+                            if not is_valid_tool_call(norm_name, cleaned_params):
+                                return None
+                            return {"name": norm_name, "arguments": cleaned_params}
                     except Exception:
                         pass
             elif after_key.startswith('"'):
@@ -666,7 +791,10 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                         args_obj = json.loads(_sanitize_json_string(str_val))
                         if isinstance(args_obj, dict):
                             norm_name = normalize_tool_name(func_name, args_obj)
-                            return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(args_obj))}
+                            cleaned_params = normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(args_obj))
+                            if not is_valid_tool_call(norm_name, cleaned_params):
+                                return None
+                            return {"name": norm_name, "arguments": cleaned_params}
                 except Exception:
                     pass
 
@@ -674,10 +802,16 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
         fallback_args = _fallback_extract_arguments(func_name, clean)
         if fallback_args:
             norm_name = normalize_tool_name(func_name, fallback_args)
-            return {"name": norm_name, "arguments": normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(fallback_args))}
+            cleaned_params = normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(fallback_args))
+            if not is_valid_tool_call(norm_name, cleaned_params):
+                return None
+            return {"name": norm_name, "arguments": cleaned_params}
 
         norm_name = normalize_tool_name(func_name)
-        return {"name": norm_name, "arguments": {}}
+        cleaned_params = {}
+        if not is_valid_tool_call(norm_name, cleaned_params):
+            return None
+        return {"name": norm_name, "arguments": cleaned_params}
 
     return None
 
@@ -801,8 +935,8 @@ class StreamEmulationProcessor:
 
         while self.buffer:
             if not self.in_tool_tag:
-                # Look for earliest opening tool tag (<tool_call>, <invoke, or direct tags) with word boundary
-                m_open = TOOL_OPEN_TAG_RE.search(self.buffer)
+                # Look for earliest opening tool tag (<tool_call>, <invoke, or direct tags) not inside inline backticks
+                m_open = find_opening_tool_tag(self.buffer)
                 if m_open and m_open.end() < len(self.buffer):
                     open_idx = m_open.start()
                     matched_tag_name = m_open.group("tag").lower()
@@ -937,16 +1071,6 @@ class StreamEmulationProcessor:
                     self.tool_accumulator = ""
                     continue
 
-                # Check if an unclosed tool tag was superseded by a next tool tag
-                m_next = TOOL_OPEN_TAG_RE.search(self.buffer)
-                if m_next and m_next.start() > 0:
-                    self.tool_accumulator += self.buffer[:m_next.start()]
-                    self.buffer = self.buffer[m_next.start():]
-                    self.in_tool_tag = False
-                    async for c in self._emit_tool_call(self.tool_accumulator):
-                        yield c
-                    self.tool_accumulator = ""
-                    continue
 
                 # Not closed yet: check for potential prefix of close_tag
                 match_prefix_len = 0
@@ -1169,7 +1293,7 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
     pattern = re.compile(
         r"(<tool_call\b[^>]*>.*?(?:</tool_call>|\}[ \t]*>))|"
         r"(<invoke\b.*?</invoke>)|"
-        r"(<(?:update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?:update|edit|write|bash|read|glob|grep|ls)>))",
+        r"(<(?P<dtag>update|edit|write|bash|read|glob|grep|ls)\b[^>]*?(?:\/>|>.*?</(?P=dtag)>))",
         re.DOTALL | re.IGNORECASE,
     )
     matches = [m.group(0) for m in pattern.finditer(raw_content)]
@@ -1197,19 +1321,21 @@ def process_non_streaming_response(raw_resp: dict, context: dict) -> dict:
                     },
                 })
 
-        clean_content = pattern.sub("", raw_content).strip()
-
         if tool_calls:
+            clean_content = pattern.sub("", raw_content).strip()
             message["content"] = clean_content if clean_content else None
             message["tool_calls"] = tool_calls
             choice["finish_reason"] = "tool_calls"
             return _finalize_response(resp, choice, message)
-        elif clean_content:
-            # All tool calls were suppressed echoes; emit synthesized content
-            message["content"] = clean_content
-            message.pop("tool_calls", None)
-            choice["finish_reason"] = "stop"
-            return _finalize_response(resp, choice, message)
+        elif is_synthesis_phase and any(
+            (p := parse_tool_payload(m)) and p["name"] in executed_tools for m in matches
+        ):
+            clean_content = pattern.sub("", raw_content).strip()
+            if clean_content:
+                message["content"] = clean_content
+                message.pop("tool_calls", None)
+                choice["finish_reason"] = "stop"
+                return _finalize_response(resp, choice, message)
 
     # 3. Enforce max_tokens if no tool calls
     if max_tokens is not None:
