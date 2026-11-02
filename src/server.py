@@ -538,6 +538,13 @@ async def video_chat(
         "keyframes_count": len(keyframes),
     })
 
+    fallback_provider = get_fallback_provider(provider)
+    raw_stream = make_resilient_stream(
+        provider,
+        fallback_provider,
+        lambda p: p.stream_chat(messages, model, conversation_id, parent_message_id),
+    )
+
     # Stream the response (same SSE format as /v1/chat/completions)
     async def video_stream_generator():
         await broadcast_event("request_start", {
@@ -550,7 +557,7 @@ async def video_chat(
         })
         token_count = 0
         try:
-            async for chunk in provider.stream_chat(messages, model, conversation_id, parent_message_id):
+            async for chunk in raw_stream:
                 token_count += 1
                 trace.log_client_chunk(chunk)
                 yield chunk

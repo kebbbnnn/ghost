@@ -168,17 +168,68 @@ def test_extract_keyframes_timestamps():
     print(f"✅ test_extract_keyframes_timestamps PASSED")
 
 
+import unittest
+from fastapi.testclient import TestClient
+from src.server import app
+from src.providers import get_provider_for_model, get_fallback_provider
+
+
+class TestVideoProcessor(unittest.TestCase):
+    def test_phash_identical_frames(self):
+        test_phash_identical_frames()
+
+    def test_phash_different_frames(self):
+        test_phash_different_frames()
+
+    def test_phash_similar_frames(self):
+        test_phash_similar_frames()
+
+    def test_extract_keyframes(self):
+        test_extract_keyframes()
+
+    def test_extract_keyframes_timestamps(self):
+        test_extract_keyframes_timestamps()
+
+    def test_video_chat_endpoint_resilient_stream(self):
+        """Verify /api/video/chat fails over to fallback provider if primary stream fails on first chunk."""
+        video_bytes = create_synthetic_video(num_frames=30, fps=15)
+        primary_provider = get_provider_for_model("auto")
+        fallback_provider = get_fallback_provider(primary_provider)
+
+        orig_primary_stream = primary_provider.stream_chat
+        orig_fallback_stream = fallback_provider.stream_chat if fallback_provider else None
+
+        async def failing_primary_stream(*args, **kwargs):
+            raise RuntimeError("Primary video stream initialization failure")
+            yield  # make it a generator
+
+        async def successful_fallback_stream(*args, **kwargs):
+            yield 'data: {"id": "vid-1", "choices": [{"delta": {"role": "assistant", "content": "I see synthetic video."}}]}\n\n'
+            yield 'data: [DONE]\n\n'
+
+        primary_provider.stream_chat = failing_primary_stream
+        if fallback_provider:
+            fallback_provider.stream_chat = successful_fallback_stream
+
+        try:
+            client = TestClient(app)
+            response = client.post(
+                "/api/video/chat",
+                data={
+                    "prompt": "What is happening in this video?",
+                    "model": "auto",
+                },
+                files={
+                    "video": ("synthetic.mp4", video_bytes, "video/mp4"),
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("I see synthetic video.", response.text)
+        finally:
+            primary_provider.stream_chat = orig_primary_stream
+            if fallback_provider and orig_fallback_stream:
+                fallback_provider.stream_chat = orig_fallback_stream
+
+
 if __name__ == '__main__':
-    print("=" * 60)
-    print("Video Processor Unit Tests")
-    print("=" * 60)
-    
-    test_phash_identical_frames()
-    test_phash_different_frames()
-    test_phash_similar_frames()
-    test_extract_keyframes()
-    test_extract_keyframes_timestamps()
-    
-    print("\n" + "=" * 60)
-    print("All tests passed!")
-    print("=" * 60)
+    unittest.main()
