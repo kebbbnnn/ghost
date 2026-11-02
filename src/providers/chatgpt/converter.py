@@ -37,9 +37,10 @@ def parse_chatgpt_sse(line: str) -> dict | None:
     Parse a single SSE line from the ChatGPT backend.
     Returns the parsed JSON data dict or None if the line should be skipped.
     """
-    if not line.startswith("data: "):
+    line = line.strip()
+    if not line.startswith("data:"):
         return None
-    payload = line[6:].strip()
+    payload = line[5:].strip()
     if payload == "[DONE]":
         return {"done": True}
     try:
@@ -126,13 +127,27 @@ def chatgpt_event_to_openai_chunk(event: dict, model: str, chunk_id: str) -> dic
             }
         return None
 
+    # --- End turn marker ---
+    if event.get("p") == "/message/end_turn" and event.get("v") is True:
+        return {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+
     # Case 2: String delta:
     # Either {"p": "/message/content/parts/0", "o": "append", "v": "text"}
     # or shorthand continuation {"v": "text"}
     if event_v is not None and isinstance(event_v, str) and (event_o in ("append", None)):
+        event_p = event.get("p")
+        # Strictly ignore non-content patch operations (e.g. /message/status, /message/metadata)
+        if event_p is not None and not event_p.startswith("/message/content/parts"):
+            return None
         cleaned_v = event_v.replace("<escape>", "").replace("</escape>", "")
         if cleaned_v:
-            role = "assistant" if ("o" in event or event.get("p") == "/message/content/parts/0") else None
+            role = "assistant" if event_p == "/message/content/parts/0" else None
             delta_dict = {"content": cleaned_v}
             if role:
                 delta_dict["role"] = role
@@ -158,11 +173,12 @@ def chatgpt_event_to_openai_chunk(event: dict, model: str, chunk_id: str) -> dic
 
     content_obj = msg.get("content", {})
     parts = content_obj.get("parts", [])
-    text_delta = ""
-    for part in parts:
-        if isinstance(part, str):
-            text_delta = part.replace("<escape>", "").replace("</escape>", "")
-            break
+    text_parts = [
+        part.replace("<escape>", "").replace("</escape>", "")
+        for part in parts
+        if isinstance(part, str)
+    ]
+    text_delta = "".join(text_parts)
 
     # Only assign finish_reason if this message is addressed to the user (not an internal tool recipient)
     recipient = msg.get("recipient", "all")

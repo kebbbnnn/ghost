@@ -201,6 +201,7 @@ class ChatGPTProvider(BaseProvider):
         try:
             for attempt in range(2):
                 content_tracker.clear()
+                role_emitted = False
                 buffered_chunks: list[str] = []
                 streaming_unlocked = not (requires_tool_check and attempt == 0)
                 try:
@@ -217,7 +218,9 @@ class ChatGPTProvider(BaseProvider):
 
                         choices = chunk.get("choices", [])
                         if choices:
-                            delta_content = choices[0].get("delta", {}).get("content", "")
+                            choice = choices[0]
+                            delta = choice.get("delta", {})
+                            delta_content = delta.get("content", "")
                             if delta_content:
                                 is_snapshot = ("message" in event) or (
                                     isinstance(event.get("v"), dict) and "message" in event["v"]
@@ -232,9 +235,21 @@ class ChatGPTProvider(BaseProvider):
                                         content_tracker.append(delta_content)
 
                                 if new_text:
-                                    chunk["choices"][0]["delta"]["content"] = new_text
+                                    delta["content"] = new_text
                                 else:
-                                    chunk["choices"][0]["delta"].pop("content", None)
+                                    delta.pop("content", None)
+
+                            if "role" in delta:
+                                if role_emitted:
+                                    delta.pop("role", None)
+                                else:
+                                    role_emitted = True
+                            elif not role_emitted and delta.get("content"):
+                                delta["role"] = "assistant"
+                                role_emitted = True
+
+                            if not delta and choice.get("finish_reason") is None:
+                                continue
 
                         formatted_chunk = format_openai_chunk(chunk)
                         if streaming_unlocked:
