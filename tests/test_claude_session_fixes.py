@@ -2626,6 +2626,39 @@ def test_get_fallback_provider():
     assert get_fallback_provider(None) is None
 
 
+def test_direct_text_answer_not_falsely_marked_as_missing_tool_call():
+    """Verify that direct text responses (e.g. 'GHOST_IS_ALIVE', 'Hello world')
+    are not falsely marked as missing required tool calls by Gemini or ChatGPT."""
+    from src.providers.gemini.session import GeminiProvider
+    from src.providers.chatgpt.session import _is_chatgpt_missing_required_tool_call
+
+    prompt = (
+        "[SYSTEM: HEADLESS API GATEWAY]\n"
+        "[GHOST WORKSPACE DIRECTIVE]\n"
+        "CRITICAL MODE: TOOL_CALL_REQUIRED.\n"
+        "You are an AI coding assistant connected to a local developer workspace.\n"
+        "[ACTIVE DIRECTIVE FOR CURRENT TURN]:\n"
+        "MANDATORY: Emit fresh <tool_call> tags (or <invoke> blocks) for the current query above.\n"
+        "Output ONLY <tool_call> or <invoke> tags, nothing else."
+    )
+    messages = [{"role": "system", "content": prompt}, {"role": "user", "content": "Respond only with: GHOST_IS_ALIVE"}]
+
+    direct_answers = [
+        "GHOST_IS_ALIVE",
+        "Hello! I am ready to help you with your project.",
+        "The current server is running cleanly on port 8100.",
+    ]
+
+    for answer in direct_answers:
+        assert not GeminiProvider._is_missing_required_tool_call(prompt, answer), (
+            f"Gemini falsely flagged direct text answer: {answer}"
+        )
+        assert not _is_chatgpt_missing_required_tool_call(messages, answer), (
+            f"ChatGPT falsely flagged direct text answer: {answer}"
+        )
+
+
+
 
 
 

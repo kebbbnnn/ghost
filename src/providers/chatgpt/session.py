@@ -143,6 +143,9 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
         )
     ):
         return True
+    if "```" in response_text:
+        return True
+
     all_msgs_text = " ".join(
         str(m.get("content", "")) for m in messages
     )
@@ -150,13 +153,9 @@ def _is_chatgpt_missing_required_tool_call(messages: list[dict], response_text: 
         "IMPORTANT: You MUST call" in sys_text
         or "ACTION REQUIRED — TASK INCOMPLETE" in sys_text
         or "[MULTI-FILE CREATION PLAN]:" in sys_text
-        or "MANDATORY: Emit fresh <tool_call>" in all_msgs_text
-        or "Emit fresh <tool_call> tags" in all_msgs_text
         or 'is_error="true"' in all_msgs_text
         or "requires approval" in all_msgs_text
         or "haven't granted it yet" in all_msgs_text
-        or any(kw in all_msgs_text for kw in ("FAILED", "Traceback", "NameError", "SyntaxError", "ImportError", "AssertionError"))
-        or "```" in response_text
     ):
         return True
     return False

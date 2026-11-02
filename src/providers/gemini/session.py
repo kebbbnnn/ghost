@@ -760,23 +760,22 @@ class GeminiProvider(BaseProvider):
             )
         ):
             return True
-        # 2. Explicit tool requirement in prompt or error recovery turn
+        # 2. Model dumped a fenced markdown code block instead of calling Write / Edit / Bash
+        if "```" in content:
+            return True
+
+        # 3. Explicit incomplete multi-file plan or error recovery turn
         if (
             "MANDATORY REQUIREMENT: You MUST invoke" in prompt
             or "IMPORTANT: You MUST call" in prompt
             or "ACTION REQUIRED — TASK INCOMPLETE" in prompt
             or "[MULTI-FILE CREATION PLAN]:" in prompt
-            or "MANDATORY: Emit fresh <tool_call>" in prompt
-            or "Emit fresh <tool_call> tags" in prompt
             or 'is_error="true"' in prompt
             or "requires approval" in prompt
             or "haven't granted it yet" in prompt
-            or any(kw in prompt for kw in ("FAILED", "Traceback", "NameError", "SyntaxError", "ImportError", "AssertionError"))
         ):
             return True
-        # 3. Model dumped a fenced markdown code block instead of calling Write / Edit / Bash
-        if "```" in content:
-            return True
+
         return False
 
     @staticmethod

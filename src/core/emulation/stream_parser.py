@@ -206,8 +206,16 @@ def synthesize_workflow_recovery_tool_call(prompt: str, messages: list[dict] | N
         )
         search_text = f"{search_text}\n{msgs_text}".strip()
 
-    # 1. If a coding test failure / traceback was detected:
-    if any(kw in search_text for kw in ("FAILED", "ImportError", "SyntaxError", "AssertionError", "Traceback", "NameError", "ModuleNotFoundError")):
+    # 1. If an actual coding test failure / traceback was detected in tool results or execution:
+    has_test_or_tool_error = (
+        '<tool_result' in search_text
+        or '[tool results]' in search_text.lower()
+        or 'traceback' in search_text.lower()
+        or 'is_error="true"' in search_text
+        or 'failed ' in search_text.lower()
+        or '____' in search_text
+    )
+    if has_test_or_tool_error and any(kw in search_text for kw in ("FAILED", "ImportError", "SyntaxError", "AssertionError", "Traceback", "NameError", "ModuleNotFoundError")):
         matches = re.findall(r'(?:File "([^"]+\.py)"|([a-zA-Z0-9_\-\./]+\.py):\d+:)', search_text)
         py_files = [
             (m[0] or m[1]) for m in matches
@@ -216,7 +224,8 @@ def synthesize_workflow_recovery_tool_call(prompt: str, messages: list[dict] | N
         if py_files:
             failed_file = py_files[-1]
             return f'<invoke name="Read">\n  <parameter name="file_path">{failed_file}</parameter>\n</invoke>'
-        return '<invoke name="Bash">\n  <parameter name="command">pytest</parameter>\n</invoke>'
+        if "pytest" in search_text.lower() or "test" in search_text.lower():
+            return '<invoke name="Bash">\n  <parameter name="command">pytest</parameter>\n</invoke>'
 
     # 2. If permission error or approval requirement was returned for a file or command:
     m_perm = re.search(r"permissions to (?:write to|read|edit) ([^\s,]+)", search_text)
