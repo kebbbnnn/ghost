@@ -190,7 +190,7 @@ def chatgpt_event_to_openai_chunk(event: dict, model: str, chunk_id: str) -> dic
         elif status == "max_tokens":
             finish_reason = "length"
 
-    if not text_delta:
+    if not text_delta and not finish_reason:
         return None
 
     delta = {}

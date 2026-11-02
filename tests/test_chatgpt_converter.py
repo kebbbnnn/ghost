@@ -136,6 +136,50 @@ class TestChatGPTConverter(unittest.TestCase):
         )
         self.assertEqual(chunk["choices"][0]["finish_reason"], "stop")
 
+    def test_chatgpt_event_to_openai_chunk_legacy_empty_with_finish_reason(self):
+        # When legacy message has empty parts but finished_successfully or max_tokens,
+        # it must still return a chunk carrying the finish_reason
+        legacy_event = {
+            "message": {
+                "id": "msg-empty-finish",
+                "author": {"role": "assistant"},
+                "content": {"parts": []},
+                "status": "finished_successfully",
+                "recipient": "all",
+            }
+        }
+        chunk = chatgpt_event_to_openai_chunk(legacy_event, "auto", "chunk-1")
+        self.assertIsNotNone(chunk)
+        self.assertEqual(chunk["id"], "msg-empty-finish")
+        self.assertEqual(chunk["choices"][0]["delta"], {})
+        self.assertEqual(chunk["choices"][0]["finish_reason"], "stop")
+
+        # Test with max_tokens status
+        legacy_length = {
+            "message": {
+                "id": "msg-max-tokens",
+                "author": {"role": "assistant"},
+                "content": {"parts": []},
+                "status": "max_tokens",
+                "recipient": "all",
+            }
+        }
+        chunk_len = chatgpt_event_to_openai_chunk(legacy_length, "auto", "chunk-2")
+        self.assertIsNotNone(chunk_len)
+        self.assertEqual(chunk_len["choices"][0]["finish_reason"], "length")
+
+        # Empty parts without finish reason should return None
+        legacy_none = {
+            "message": {
+                "id": "msg-in-progress",
+                "author": {"role": "assistant"},
+                "content": {"parts": []},
+                "status": "in_progress",
+                "recipient": "all",
+            }
+        }
+        self.assertIsNone(chatgpt_event_to_openai_chunk(legacy_none, "auto", "chunk-3"))
+
     def test_build_non_streaming_response(self):
         res = build_non_streaming_response("Test output", "auto", "stop")
         self.assertEqual(res["object"], "chat.completion")
