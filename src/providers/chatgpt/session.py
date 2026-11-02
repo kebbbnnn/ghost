@@ -298,8 +298,8 @@ class ChatGPTProvider(BaseProvider):
 
                     break  # success
 
-                except TokenExpiredError:
-                    if attempt == 0:
+                except TokenExpiredError as tee:
+                    if attempt == 0 and "flagged" not in str(tee).lower():
                         log.warning("Token expired, refreshing and retrying...")
                         await self.ensure_ready()
                         content_tracker.clear()
@@ -395,8 +395,8 @@ class ChatGPTProvider(BaseProvider):
                         )
                         full_content = synthesize_workflow_recovery_tool_call("", messages)
                     break
-                except TokenExpiredError:
-                    if attempt == 0:
+                except TokenExpiredError as tee:
+                    if attempt == 0 and "flagged" not in str(tee).lower():
                         await self.ensure_ready()
                     else:
                         raise
@@ -566,7 +566,7 @@ class ChatGPTProvider(BaseProvider):
             # The anonymous device ID has been invalidated — do a full reset and retry once.
             # Wait before retrying to avoid compounding Cloudflare rate-limit triggers.
             log.warning(f"/chat-requirements returned {resp.status_code}. Waiting before reset/retry...")
-            await asyncio.sleep(random.uniform(8, 15))
+            await asyncio.sleep(random.uniform(1.0, 2.0))
             await self._reset_session(hard=True)
             await self._ensure_device_id()
             session = await self._get_session()
@@ -883,20 +883,21 @@ class ChatGPTProvider(BaseProvider):
                         )
                         hard_reset = not bool(conversation_id)
                         await self._reset_session(hard=hard_reset)
+                        if resp.status_code == 403:
+                            # Cloudflare IP/device block cannot be bypassed by immediate retry.
+                            # Fail fast so proxy can transparently fail over to Gemini without stalling client.
+                            raise TokenExpiredError("Device flagged (403 Cloudflare block)")
                         if attempt < max_retries:
-                            # Back off before retry to avoid compounding Cloudflare
-                            # rate-limit triggers from rapid successive requests.
-                            backoff = random.uniform(10, 20)
+                            # Back off briefly before retry on 401 token refresh
+                            backoff = random.uniform(1.0, 2.5)
                             log.warning(
-                                "Device flagged (%d). Backing off %.1fs before reset+retry...",
-                                resp.status_code, backoff
+                                "Session 401. Backing off %.1fs before reset+retry...",
+                                backoff
                             )
                             await asyncio.sleep(backoff)
                             continue
-                        # If retry also fails, force a hard reset to unbrick the session
-                        # for the NEXT user request (don't leave session in tainted state).
                         await self._reset_session(hard=True)
-                        raise TokenExpiredError("Device flagged — session reset failed after retry")
+                        raise TokenExpiredError("ChatGPT session authentication failed after retry")
                     if resp.status_code == 404 and conversation_id:
                         # Stale conversation — start fresh
                         log.warning("404 on conversation %s — resetting state", conversation_id)
@@ -936,9 +937,12 @@ class ChatGPTProvider(BaseProvider):
                     break
             except HTTPError as e:
                 status = getattr(getattr(e, "response", None), "status_code", None)
-                if status in (401, 403):
+                if status == 403:
+                    await self._reset_session(hard=True)
+                    raise TokenExpiredError("Device flagged (403 Cloudflare block)")
+                if status == 401:
                     if attempt < max_retries:
-                        log.warning("Device flagged (%s). Resetting session and retrying...", status)
+                        log.warning("Session 401. Resetting session and retrying...")
                         hard_reset = not bool(conversation_id)
                         await self._reset_session(hard=hard_reset)
                         await asyncio.sleep(1)

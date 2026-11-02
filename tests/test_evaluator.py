@@ -12,22 +12,23 @@ import asyncio
 import sys
 import unittest
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from agent.evaluator import ConditionEvaluator
 
 
 def make_error_modal_screenshot(width: int = 800, height: int = 600) -> Image.Image:
     """Generate a synthetic screenshot with an error modal."""
+    font = ImageFont.load_default(size=16)
     # Background "app window"
     img = Image.new("RGB", (width, height), (45, 45, 55))
     draw = ImageDraw.Draw(img)
 
     # App content area
     draw.rectangle([0, 0, width, 40], fill=(60, 60, 70))  # title bar
-    draw.text((20, 12), "My Application — editor.py", fill=(200, 200, 200))
-    draw.text((50, 100), "def hello_world():", fill=(150, 200, 150))
-    draw.text((80, 125), 'print("Hello World")', fill=(200, 200, 150))
+    draw.text((20, 12), "My Application — editor.py", fill=(200, 200, 200), font=font)
+    draw.text((50, 100), "def hello_world():", fill=(150, 200, 150), font=font)
+    draw.text((80, 125), 'print("Hello World")', fill=(200, 200, 150), font=font)
 
     # Semi-transparent overlay effect (darkened background)
     overlay = Image.new("RGB", (width, height), (20, 20, 30))
@@ -45,18 +46,20 @@ def make_error_modal_screenshot(width: int = 800, height: int = 600) -> Image.Im
     )
 
     # Modal title
-    draw.text((modal_x + 20, modal_y + 15), "Error", fill=(220, 60, 60))
+    draw.text((modal_x + 20, modal_y + 15), "Error", fill=(220, 60, 60), font=font)
 
     # Modal message
     draw.text(
         (modal_x + 20, modal_y + 55),
         "Failed to execute prompt.",
         fill=(80, 80, 80),
+        font=font,
     )
     draw.text(
         (modal_x + 20, modal_y + 80),
         "An unexpected error occurred.",
         fill=(120, 120, 120),
+        font=font,
     )
 
     # Retry button
@@ -66,7 +69,7 @@ def make_error_modal_screenshot(width: int = 800, height: int = 600) -> Image.Im
         [btn_x, btn_y, btn_x + btn_w, btn_y + btn_h],
         fill=(66, 133, 244),
     )
-    draw.text((btn_x + 35, btn_y + 10), "Retry", fill=(255, 255, 255))
+    draw.text((btn_x + 35, btn_y + 10), "Retry", fill=(255, 255, 255), font=font)
 
     # Cancel button
     cancel_x = modal_x + 110
@@ -74,7 +77,7 @@ def make_error_modal_screenshot(width: int = 800, height: int = 600) -> Image.Im
         [cancel_x, btn_y, cancel_x + btn_w, btn_y + btn_h],
         fill=(230, 230, 230),
     )
-    draw.text((cancel_x + 30, btn_y + 10), "Cancel", fill=(80, 80, 80))
+    draw.text((cancel_x + 30, btn_y + 10), "Cancel", fill=(80, 80, 80), font=font)
 
     return img
 
@@ -121,9 +124,9 @@ class TestConditionEvaluatorE2E(unittest.TestCase):
         # Run OCR
         ocr_text = ""
         try:
-            from agent.ocr import extract_text
+            from agent.ocr import extract_text, format_ocr_for_prompt
             ocr_results = extract_text(screenshot)
-            ocr_text = "\n".join(f"[{r.confidence:.0%}] {r.text}" for r in ocr_results)
+            ocr_text = format_ocr_for_prompt(ocr_results, image_size=screenshot.size)
             print(f"\nOCR extracted:\n{ocr_text}")
         except Exception as e:
             print(f"\nOCR unavailable ({e}), proceeding with screenshot only")

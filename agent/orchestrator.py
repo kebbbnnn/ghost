@@ -30,7 +30,7 @@ from agent.config import (
 )
 from agent.frame_provider import WindowFrameProvider, FrameProvider
 from agent.detector import ChangeDetector
-from agent.ocr import extract_text
+from agent.ocr import extract_text, format_ocr_for_prompt
 from agent.accessibility import get_ui_snapshot, find_window
 from agent.evaluator import ConditionEvaluator
 from agent.actions import parse_action, validate_action, compile_action
@@ -169,9 +169,7 @@ class ObservationAgent:
 
         try:
             ocr_results = extract_text(frame)
-            ocr_text = "\n".join(
-                f"[{r.confidence:.0%}] {r.text}" for r in ocr_results
-            )
+            ocr_text = format_ocr_for_prompt(ocr_results, image_size=frame.size)
         except Exception as e:
             logger.warning("OCR failed: %s", e)
             self.stats.errors += 1

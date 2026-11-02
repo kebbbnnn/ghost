@@ -7,8 +7,12 @@ No external binaries required — uses the built-in macOS Vision framework.
 from __future__ import annotations
 
 import logging
+import os
 import platform
+import shutil
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 
 from PIL import Image
@@ -70,8 +74,25 @@ class OCRResult:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+def _extract_text_tesseract(image: Image.Image, tess_bin: str) -> list[OCRResult]:
+    """Fallback OCR using tesseract CLI when macOS Vision framework bindings are unavailable."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_name = tmp.name
+    try:
+        image.save(tmp_name, format="PNG")
+        res = subprocess.run([tess_bin, tmp_name, "stdout"], capture_output=True, text=True, check=False)
+        lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        return [OCRResult(text=line, confidence=0.85, bbox=(0.0, 0.0, 1.0, 1.0)) for line in lines]
+    finally:
+        if os.path.exists(tmp_name):
+            try:
+                os.remove(tmp_name)
+            except OSError:
+                pass
+
+
 def extract_text(image: Image.Image) -> list[OCRResult]:
-    """Run macOS Vision OCR on a PIL Image and return recognised text regions.
+    """Run macOS Vision or Tesseract OCR on a PIL Image and return recognised text regions.
 
     Args:
         image: An arbitrary-mode PIL Image (will be converted to RGBA).
@@ -81,13 +102,15 @@ def extract_text(image: Image.Image) -> list[OCRResult]:
         default ordering (roughly top-to-bottom, left-to-right).
 
     Raises:
-        RuntimeError: If the Vision framework is not available on this
-            platform or the recognition request fails.
+        RuntimeError: If neither the Vision framework nor Tesseract is available.
     """
     if not _VISION_AVAILABLE:
+        tess_bin = shutil.which("tesseract") or "/opt/homebrew/bin/tesseract"
+        if os.path.exists(tess_bin):
+            return _extract_text_tesseract(image, tess_bin)
         raise RuntimeError(
-            "Vision framework is not available. "
-            "This function requires macOS with pyobjc-framework-Vision."
+            "Vision framework is not available and tesseract binary was not found. "
+            "This function requires macOS with pyobjc-framework-Vision or tesseract."
         )
 
     # ------------------------------------------------------------------
@@ -170,3 +193,45 @@ def extract_text(image: Image.Image) -> list[OCRResult]:
         height,
     )
     return results
+
+
+def format_ocr_for_prompt(
+    results: list[OCRResult],
+    image_size: tuple[int, int] | None = None,
+) -> str:
+    """Format OCR results into a structured text block for LLM evaluation prompts.
+
+    Converts Vision framework's bottom-left normalized bounding boxes into
+    top-left window coordinates (pixel center and box) when image_size is provided.
+
+    Args:
+        results: List of OCRResult instances.
+        image_size: Optional (width, height) tuple of the source image.
+
+    Returns:
+        Formatted multi-line string representing the detected text regions.
+    """
+    if not results:
+        return ""
+
+    lines: list[str] = []
+    for r in results:
+        if image_size:
+            width, height = image_size
+            origin_x, origin_y, w, h = r.bbox
+            x = int(origin_x * width)
+            y = int((1.0 - origin_y - h) * height)
+            w_px = int(w * width)
+            h_px = int(h * height)
+            center_x = x + w_px // 2
+            center_y = y + h_px // 2
+            lines.append(
+                f"[{r.confidence:.0%}] '{r.text}' at (x={center_x}, y={center_y}, box=[{x}, {y}, {w_px}, {h_px}])"
+            )
+        else:
+            lines.append(
+                f"[{r.confidence:.0%}] '{r.text}' bbox=({r.bbox[0]:.3f}, {r.bbox[1]:.3f}, {r.bbox[2]:.3f}, {r.bbox[3]:.3f})"
+            )
+
+    return "\n".join(lines)
+
