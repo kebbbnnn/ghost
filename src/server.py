@@ -16,7 +16,7 @@ import os
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import time
@@ -32,7 +32,16 @@ async def broadcast_event(event_type: str, data: dict):
     dead_listeners = []
     for queue in listeners:
         try:
-            await queue.put({"event": event_type, "data": data})
+            queue.put_nowait({"event": event_type, "data": data})
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except Exception:
+                pass
+            try:
+                queue.put_nowait({"event": event_type, "data": data})
+            except Exception:
+                dead_listeners.append(queue)
         except Exception:
             dead_listeners.append(queue)
     for q in dead_listeners:
@@ -252,6 +261,12 @@ elif os.path.exists(src_dashboard):
 
 if dashboard_path:
     app.mount("/dashboard", StaticFiles(directory=dashboard_path, html=True), name="dashboard")
+
+@app.get("/")
+async def root():
+    if dashboard_path:
+        return RedirectResponse(url="/dashboard/")
+    return {"name": "Ghost API", "status": "running"}
 
 # ---------------------------------------------------------------------------
 # Models
@@ -562,12 +577,28 @@ async def video_chat(
                 trace.log_client_chunk(chunk)
                 yield chunk
         except Exception as e:
+            log.exception("Streaming video chat error: %s", e)
             trace.log_error(e)
             await broadcast_event("request_error", {
                 "id": request_id,
                 "error": str(e),
             })
-            raise e
+            err_type = "rate_limit_error" if isinstance(e, RateLimitError) or "rate" in str(e).lower() else "server_error"
+            err_code = "rate_limit_exceeded" if err_type == "rate_limit_error" else None
+            error_payload = json.dumps({
+                "error": {
+                    "message": str(e),
+                    "type": err_type,
+                    "param": None,
+                    "code": err_code,
+                }
+            })
+            error_chunk = f"data: {error_payload}\n\n"
+            trace.log_client_chunk(error_chunk)
+            yield error_chunk
+            done_chunk = "data: [DONE]\n\n"
+            trace.log_client_chunk(done_chunk)
+            yield done_chunk
         finally:
             trace.finish()
             await broadcast_event("request_end", {
@@ -875,7 +906,7 @@ async def get_threads_api():
     if not os.path.exists(THREADS_FILE):
         return []
     try:
-        with open(THREADS_FILE, "r") as f:
+        with open(THREADS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         log.error(f"Error loading threads: {e}")
@@ -888,18 +919,29 @@ async def save_threads_api(req: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
     
+    if not isinstance(threads, (list, dict)):
+        raise HTTPException(status_code=400, detail="Payload must be a list or dict")
+
+    temp_file = f"{THREADS_FILE}.tmp.{os.getpid()}"
     try:
-        with open(THREADS_FILE, "w") as f:
-            json.dump(threads, f, indent=2)
+        os.makedirs(os.path.dirname(THREADS_FILE), exist_ok=True)
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(threads, f, indent=2, ensure_ascii=False)
+        os.replace(temp_file, THREADS_FILE)
         return {"status": "success"}
     except Exception as e:
         log.error(f"Error saving threads: {e}")
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
         raise HTTPException(status_code=500, detail=f"Failed to save threads: {e}")
 
 
 @app.get("/api/events")
 async def sse_events(request: Request):
-    queue = asyncio.Queue()
+    queue = asyncio.Queue(maxsize=500)
     listeners.append(queue)
 
     async def event_generator():

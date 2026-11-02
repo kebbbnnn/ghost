@@ -54,5 +54,37 @@ class TestThreadsPersistence(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), dummy_threads)
 
+    def test_persistence_utf8_and_validation(self):
+        # Test UTF-8 emojis and multi-byte unicode
+        utf8_threads = [
+            {
+                "id": "thread_utf8",
+                "title": "Quantum Physics 🚀 & 東京 weather ☀️",
+                "messages": [
+                    {"role": "user", "content": "Bonjour le monde! こんにちは 🚀"}
+                ]
+            }
+        ]
+        res = self.client.post("/api/threads", json=utf8_threads)
+        self.assertEqual(res.status_code, 200)
+
+        # Read directly using utf-8
+        with open(THREADS_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual(saved[0]["title"], "Quantum Physics 🚀 & 東京 weather ☀️")
+
+        # Test rejecting non-list/dict payloads
+        res_invalid = self.client.post("/api/threads", json="just a string")
+        self.assertEqual(res_invalid.status_code, 400)
+
+        res_invalid_num = self.client.post("/api/threads", json=12345)
+        self.assertEqual(res_invalid_num.status_code, 400)
+
+    def test_root_redirect(self):
+        # Root GET / should redirect to /dashboard/
+        res = self.client.get("/", follow_redirects=False)
+        self.assertIn(res.status_code, (302, 307))
+        self.assertEqual(res.headers.get("location"), "/dashboard/")
+
 if __name__ == "__main__":
     unittest.main()
