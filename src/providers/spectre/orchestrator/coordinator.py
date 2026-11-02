@@ -85,9 +85,13 @@ class Coordinator:
             return decision
 
         except Exception as e:
-            log.warning("Coordinator routing failed (%s), falling back to first worker", e)
+            log.warning("Coordinator routing failed (%s), falling back to alternate worker", e)
+            fallback_model = next(
+                (w for w in self._available_workers if w != self._model),
+                self._available_workers[0],
+            )
             return RoutingDecision(
-                selected_model=self._available_workers[0],
+                selected_model=fallback_model,
                 confidence=0.0,
                 reasoning=f"Fallback due to coordinator error: {e}",
             )
@@ -280,5 +284,14 @@ class Coordinator:
                 return json.loads(text[start:end + 1])
             except json.JSONDecodeError:
                 pass
+
+        # Try json_repair fallback for malformed LLM outputs
+        try:
+            import json_repair
+            repaired = json_repair.repair_json(text, return_objects=True)
+            if isinstance(repaired, dict):
+                return repaired
+        except Exception:
+            pass
 
         raise ValueError(f"Could not parse JSON from coordinator response: {text[:200]}")

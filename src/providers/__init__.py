@@ -63,6 +63,8 @@ def get_fallback_provider(current_provider):
         return _chatgpt
     if current_provider is _chatgpt:
         return _gemini
+    if current_provider is _spectre:
+        return _gemini
     return None
 
 

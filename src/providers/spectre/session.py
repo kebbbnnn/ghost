@@ -92,6 +92,7 @@ class SpectreProvider(BaseProvider):
 
         self._executor = WorkflowExecutor(
             provider_resolver=get_provider_for_model,
+            available_workers=workers,
         )
 
         self._initialized = True
@@ -182,32 +183,65 @@ class SpectreProvider(BaseProvider):
     # ------------------------------------------------------------------
 
     async def _execute_fast(self, messages: list[dict]) -> str:
-        """Fast mode: route to a single worker and return its response."""
+        """Fast mode: route to a single worker and return its response with fallback."""
         from src.providers import get_provider_for_model
 
         decision = await self._coordinator.route(messages)
-        provider = get_provider_for_model(decision.selected_model)
-        if not provider:
-            raise RuntimeError(f"No provider for routed model '{decision.selected_model}'")
+        log.info("Spectre fast-mode: routed to %s", decision.selected_model)
 
-        response = await provider.non_streaming_chat(messages, decision.selected_model)
-        choices = response.get("choices", [])
-        if choices:
-            return choices[0].get("message", {}).get("content", "")
-        return ""
+        workers_to_try = [decision.selected_model] + [
+            w for w in self._coordinator._available_workers if w != decision.selected_model
+        ]
+        last_exc = None
+        for model_name in workers_to_try:
+            provider = get_provider_for_model(model_name)
+            if not provider:
+                continue
+            try:
+                response = await provider.non_streaming_chat(messages, model_name)
+                choices = response.get("choices", [])
+                if choices:
+                    return choices[0].get("message", {}).get("content", "")
+            except Exception as e:
+                log.warning("Spectre worker '%s' failed (%s); trying fallback worker...", model_name, e)
+                last_exc = e
+                continue
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError(f"No available provider for routed models {workers_to_try}")
 
     async def _stream_fast(self, messages: list[dict], chunk_id: str):
-        """Fast mode streaming: route to a single worker and stream its output."""
+        """Fast mode streaming: route to a single worker and stream its output with fallback."""
         from src.providers import get_provider_for_model
 
         decision = await self._coordinator.route(messages)
-        provider = get_provider_for_model(decision.selected_model)
-        if not provider:
-            raise RuntimeError(f"No provider for routed model '{decision.selected_model}'")
-
         log.info("Spectre fast-mode: routing to %s", decision.selected_model)
-        async for chunk in provider.stream_chat(messages, decision.selected_model):
-            yield chunk
+
+        workers_to_try = [decision.selected_model] + [
+            w for w in self._coordinator._available_workers if w != decision.selected_model
+        ]
+        last_exc = None
+        for model_name in workers_to_try:
+            provider = get_provider_for_model(model_name)
+            if not provider:
+                continue
+            try:
+                stream_started = False
+                async for chunk in provider.stream_chat(messages, model_name):
+                    stream_started = True
+                    yield chunk
+                return
+            except Exception as e:
+                log.warning("Spectre streaming worker '%s' failed (%s)...", model_name, e)
+                last_exc = e
+                if stream_started:
+                    raise
+                continue
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError(f"No available provider for routed models {workers_to_try}")
 
     # ------------------------------------------------------------------
     # Ultra mode (Spectre-Ultra)

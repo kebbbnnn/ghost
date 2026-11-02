@@ -35,14 +35,16 @@ class WorkflowExecutor:
     the dependency structure defined by access_lists.
     """
 
-    def __init__(self, provider_resolver):
+    def __init__(self, provider_resolver, available_workers: list[str] | None = None):
         """
         Args:
             provider_resolver: Callable that maps a model name to a
                                BaseProvider instance.
                                Signature: (model_name: str) -> BaseProvider | None
+            available_workers: Optional list of fallback worker model IDs.
         """
         self._resolve_provider = provider_resolver
+        self._available_workers = available_workers or []
 
     async def execute(self, workflow: Workflow) -> str:
         """
@@ -172,12 +174,8 @@ class WorkflowExecutor:
         original_query: str,
         prior_results: dict[int, WorkerResult],
     ) -> WorkerResult:
-        """Execute a single workflow step (non-streaming)."""
+        """Execute a single workflow step (non-streaming) with fallback to alternate workers."""
         start = time.monotonic()
-
-        provider = self._resolve_provider(step.worker_model)
-        if not provider:
-            raise ValueError(f"No provider found for model '{step.worker_model}'")
 
         # Assemble context from access list (intra-workflow agent isolation)
         prior_outputs = {}
@@ -192,17 +190,33 @@ class WorkflowExecutor:
             prior_outputs=prior_outputs if prior_outputs else None,
         )
 
-        response = await provider.non_streaming_chat(messages, step.worker_model)
-        content = self._extract_content(response)
-        elapsed = (time.monotonic() - start) * 1000
+        workers_to_try = [step.worker_model] + [
+            w for w in self._available_workers if w != step.worker_model
+        ]
+        last_exc = None
+        for model in workers_to_try:
+            provider = self._resolve_provider(model)
+            if not provider:
+                continue
+            try:
+                response = await provider.non_streaming_chat(messages, model)
+                content = self._extract_content(response)
+                elapsed = (time.monotonic() - start) * 1000
+                return WorkerResult(
+                    step_id=step.step_id,
+                    worker_model=model,
+                    content=content,
+                    latency_ms=elapsed,
+                    success=True,
+                )
+            except Exception as e:
+                log.warning("Step %d on worker '%s' failed (%s); trying fallback worker...", step.step_id, model, e)
+                last_exc = e
+                continue
 
-        return WorkerResult(
-            step_id=step.step_id,
-            worker_model=step.worker_model,
-            content=content,
-            latency_ms=elapsed,
-            success=True,
-        )
+        if last_exc:
+            raise last_exc
+        raise ValueError(f"No provider found for model '{step.worker_model}'")
 
     async def _stream_step(
         self,
@@ -211,13 +225,7 @@ class WorkflowExecutor:
         prior_results: dict[int, WorkerResult],
         chunk_id: str,
     ):
-        """Execute a workflow step with streaming output."""
-        provider = self._resolve_provider(step.worker_model)
-        if not provider:
-            yield f"data: {json.dumps({'error': {'message': f'No provider for {step.worker_model}'}})}\n\n"
-            yield "data: [DONE]\n\n"
-            return
-
+        """Execute a workflow step with streaming output and worker fallback."""
         # Assemble context from access list
         prior_outputs = {}
         for dep_id in step.access_list:
@@ -231,8 +239,32 @@ class WorkflowExecutor:
             prior_outputs=prior_outputs if prior_outputs else None,
         )
 
-        async for chunk in provider.stream_chat(messages, step.worker_model):
-            yield chunk
+        workers_to_try = [step.worker_model] + [
+            w for w in self._available_workers if w != step.worker_model
+        ]
+        last_exc = None
+        for model in workers_to_try:
+            provider = self._resolve_provider(model)
+            if not provider:
+                continue
+            try:
+                stream_started = False
+                async for chunk in provider.stream_chat(messages, model):
+                    stream_started = True
+                    yield chunk
+                return
+            except Exception as e:
+                log.warning("Final step streaming on worker '%s' failed (%s)...", model, e)
+                last_exc = e
+                if stream_started:
+                    raise
+                continue
+
+        if last_exc:
+            yield f"data: {json.dumps({'error': {'message': str(last_exc)}})}\n\n"
+        else:
+            yield f"data: {json.dumps({'error': {'message': f'No provider for {step.worker_model}'}})}\n\n"
+        yield "data: [DONE]\n\n"
 
     # ------------------------------------------------------------------
     # Utility
