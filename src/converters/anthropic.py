@@ -683,9 +683,12 @@ def _analyze_coding_workflow_state(
                         has_explicit_success = (
                             not has_failures
                             and (
-                                any(
-                                    kw in res_text.lower()
-                                    for kw in ("passed", "success", "test result: ok", "0 failed")
+                                bool(
+                                    re.search(
+                                        r"\b(?:[0-9]+\s+passed|test result:\s*ok|0 failed|all tests passed)\b",
+                                        res_text,
+                                        re.I,
+                                    )
                                 )
                                 or bool(re.search(r"(?:Ran \d+ tests? in [0-9.]+s\s*\n+|(?:\r?\n|^))\s*OK\b", res_text))
                             )
@@ -729,10 +732,10 @@ def _analyze_coding_workflow_state(
                             else:
                                 if is_test_runner:
                                     needs_test_run_after_modify = False
-                                if has_explicit_success:
-                                    last_test_failed = False
-                                    modified_since_last_test_failure = False
-                                    last_test_failure_excerpt = ""
+                                    if has_explicit_success:
+                                        last_test_failed = False
+                                        modified_since_last_test_failure = False
+                                        last_test_failure_excerpt = ""
 
                         if (
                             requires_benchmark
@@ -756,9 +759,12 @@ def _analyze_coding_workflow_state(
                 has_explicit_success = (
                     not has_failures
                     and (
-                        any(
-                            kw in content_lower
-                            for kw in ("passed", "success", "test result: ok", "0 failed")
+                        bool(
+                            re.search(
+                                r"\b(?:[0-9]+\s+passed|test result:\s*ok|0 failed|all tests passed)\b",
+                                content,
+                                re.I,
+                            )
                         )
                         or bool(re.search(r"(?:Ran \d+ tests? in [0-9.]+s\s*\n+|(?:\r?\n|^))\s*OK\b", content))
                     )

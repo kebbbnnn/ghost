@@ -2658,6 +2658,80 @@ def test_direct_text_answer_not_falsely_marked_as_missing_tool_call():
         )
 
 
+def test_adhoc_bash_success_does_not_clear_test_failure():
+    """Verify ad-hoc script printing 'Loaded successfully' does not clear last_test_failed in workflow state."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    # 1. User asks to fix bloom_filter.py, assistant edits it, and runs pytest which fails
+    messages = [
+        {"role": "user", "content": "Fix the bug in bloom_filter.py and run pytest."},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t0", "name": "Write", "input": {"file_path": "bloom_filter.py", "content": "class BloomFilter: pass"}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t0", "content": "Wrote 24 bytes"}
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "pytest test_lsm_tree.py"}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "FAILED test_lsm_tree.py::test_compaction - assert None == b'val5'\n1 failed in 0.12s"}
+            ],
+        },
+        # 2. Assistant runs an ad-hoc python command that prints 'Loaded lsm_engine.py successfully'
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "python3 -c 'print(\"Loaded lsm_engine.py successfully\")'"}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t2", "content": "Loaded lsm_engine.py successfully\n"}
+            ],
+        },
+    ]
+
+    state = _analyze_coding_workflow_state(messages, has_coding_action_tools=True, has_pending_tool_results=False, has_error_tool_results=False)
+    assert state.get("is_incomplete") is True
+    assert "The test suite / command execution failed with errors" in state.get("progress_directive", "")
+    assert "FAILED test_lsm_tree.py::test_compaction" in state.get("progress_directive", "")
+
+
+def test_procrastination_phrases_marked_as_missing_tool_call():
+    """Verify canned reassurance/procrastination phrases without tool calls are detected as missing tool calls."""
+    from src.providers.gemini.session import GeminiProvider
+    from src.providers.chatgpt.session import _is_chatgpt_missing_required_tool_call
+
+    prompt = "CRITICAL MODE: TOOL_CALL_REQUIRED\nFix the test failure."
+    messages = [{"role": "system", "content": prompt}, {"role": "user", "content": "Fix the test failure."}]
+
+    canned_phrases = [
+        "Just a moment — I am investigating the test failure...",
+        "I'm investigating the issue with BloomFilter serialization.",
+        "Let me check the implementation of BloomFilter.",
+        "Let me run pytest now to see the errors.",
+        "Let me fix this bug right away.",
+    ]
+
+    for phrase in canned_phrases:
+        assert GeminiProvider._is_missing_required_tool_call(prompt, phrase) is True
+        assert _is_chatgpt_missing_required_tool_call(messages, phrase) is True
+
+
+
 
 
 
