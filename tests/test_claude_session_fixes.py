@@ -2135,6 +2135,50 @@ def test_analyze_coding_workflow_state_clears_edit_error_on_subsequent_success()
     assert "Your previous `Edit` tool call on `micro_db/btree.py` failed" not in state["progress_directive"]
 
 
+def test_analyze_coding_workflow_state_preserves_edit_error_across_read_turns():
+    """An earlier successful write must not hide a later unresolved Edit failure."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    non_system_msgs = [
+        {"role": "user", "content": "Fix parser.py and run tests"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu_1", "name": "Write", "input": {"file_path": "parser.py", "content": "old"}},
+                {"type": "tool_use", "id": "tu_2", "name": "Edit", "input": {"file_path": "parser.py", "old_string": "missing", "new_string": "new"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "File created."},
+                {"type": "tool_result", "tool_use_id": "tu_2", "is_error": True, "content": "String to replace not found."},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu_3", "name": "Read", "input": {"file_path": "parser.py"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_3", "content": "old"},
+            ],
+        },
+    ]
+
+    state = _analyze_coding_workflow_state(
+        non_system_msgs=non_system_msgs,
+        has_coding_action_tools=True,
+        has_pending_tool_results=True,
+        has_error_tool_results=False,
+    )
+
+    assert "Your previous `Edit` tool call on `parser.py` failed" in state["progress_directive"]
+
+
 def test_analyze_coding_workflow_state_no_false_positive_failure_on_type_annotations():
     """Verify that type annotations or logs containing 'error: none' or 'error: int' do not trigger test failure."""
     from src.converters.anthropic import _analyze_coding_workflow_state
@@ -2549,6 +2593,28 @@ async def test_make_resilient_stream_failover():
     assert len(chunks) == 2
     assert "Fallback active" in chunks[0]
     assert "[DONE]" in chunks[1]
+
+
+@pytest.mark.anyio
+async def test_make_resilient_stream_preserves_initial_rate_limit():
+    """A provider 429 must reach the API error handler rather than fail over."""
+    from src.core.exceptions import RateLimitError
+    from src.server import make_resilient_stream
+
+    class MockRateLimitedProvider:
+        async def stream_chat(self, *args, **kwargs):
+            raise RateLimitError("Guest session throttled")
+            yield  # pragma: no cover - keeps this an async generator
+
+    class MockWorkingProvider:
+        async def stream_chat(self, *args, **kwargs):
+            yield 'data: {"choices": [{"delta": {"content": "Should not run"}}]}\n\n'
+
+    stream = make_resilient_stream(
+        MockRateLimitedProvider(), MockWorkingProvider(), lambda p: p.stream_chat()
+    )
+    with pytest.raises(RateLimitError, match="Guest session throttled"):
+        await anext(stream)
 
 
 def test_get_fallback_provider():

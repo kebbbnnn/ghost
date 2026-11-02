@@ -78,6 +78,11 @@ async def make_resilient_stream(primary_provider, fallback_provider, stream_fn):
         first_chunk = await anext(primary_stream)
         if '"error":' in first_chunk:
             has_failed = True
+    except RateLimitError:
+        # A 429 is part of the public API contract.  Failing over here would
+        # make clients see a successful response from a different provider
+        # instead of being able to apply their normal backoff policy.
+        raise
     except Exception as e:
         log.warning("Primary provider %s stream initialization failed: %s", primary_provider.__class__.__name__, e)
         has_failed = True
@@ -420,22 +425,26 @@ async def chat_completions(req: ChatCompletionRequest):
             "messages_count": len(messages),
         })
         try:
-            raw_resp = await provider.non_streaming_chat(
-                messages, req.model, req.conversation_id, req.parent_message_id
-            )
-        except Exception as e:
-            if fallback_provider:
-                log.warning("Primary provider %s non-streaming failed (%s); failing over to %s...", provider.__class__.__name__, e, fallback_provider.__class__.__name__)
-                try:
-                    raw_resp = await fallback_provider.non_streaming_chat(
-                        messages, req.model, req.conversation_id, req.parent_message_id
-                    )
-                except Exception:
+            try:
+                raw_resp = await provider.non_streaming_chat(
+                    messages, req.model, req.conversation_id, req.parent_message_id
+                )
+            except RateLimitError:
+                # Preserve provider throttling for the OpenAI-compatible error
+                # handler below rather than masking it with a fallback response.
+                raise
+            except Exception as e:
+                if fallback_provider:
+                    log.warning("Primary provider %s non-streaming failed (%s); failing over to %s...", provider.__class__.__name__, e, fallback_provider.__class__.__name__)
+                    try:
+                        raw_resp = await fallback_provider.non_streaming_chat(
+                            messages, req.model, req.conversation_id, req.parent_message_id
+                        )
+                    except Exception:
+                        raise e
+                else:
                     raise e
-            else:
-                raise e
 
-        try:
             resp_dict = EmulationPipeline.wrap_non_streaming(raw_resp, emulation_ctx)
             trace.log_client_response(resp_dict)
             await broadcast_event("request_end", {
@@ -789,6 +798,11 @@ async def anthropic_messages(req: Request):
                 resp_dict = await provider.non_streaming_chat(
                     messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id
                 )
+            except RateLimitError:
+                # Claude Code relies on a true 429 to apply its own retry and
+                # backoff policy.  Do not turn that into a successful response
+                # from an unrelated provider.
+                raise
             except Exception as e:
                 if fallback_provider:
                     log.warning("Anthropic non-streaming primary provider %s failed (%s); failing over to %s...", provider.__class__.__name__, e, fallback_provider.__class__.__name__)

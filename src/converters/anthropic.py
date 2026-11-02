@@ -551,7 +551,7 @@ def _analyze_coding_workflow_state(
     last_test_failed = False
     modified_since_last_test_failure = False
     last_test_failure_excerpt = ""
-    latest_turn_edit_error_file = ""
+    unresolved_edit_error_file = ""
     has_run_benchmark = False
     tool_use_by_id: dict[str, dict] = {}
     last_assistant_tool_uses: list[dict] = []
@@ -612,7 +612,6 @@ def _analyze_coding_workflow_state(
                             if fp and fp not in read_files:
                                 read_files.append(fp)
         elif role == "user":
-            latest_turn_edit_error_file = ""
             if isinstance(content, list):
                 for idx_b, b in enumerate(content):
                     if not isinstance(b, dict) or b.get("type") != "tool_result":
@@ -642,12 +641,12 @@ def _analyze_coding_workflow_state(
                         fp = str(t_in.get("file_path") or t_in.get("path") or t_in.get("notebook_path") or "").strip()
                         if is_err or "<tool_use_error>" in res_text:
                             if tl in ("edit", "multiedit"):
-                                latest_turn_edit_error_file = fp or "target file"
+                                unresolved_edit_error_file = fp or "target file"
                         else:
                             if fp and fp not in modified_files:
                                 modified_files.append(fp)
-                            if fp and latest_turn_edit_error_file and _file_matches_any(fp, [latest_turn_edit_error_file]):
-                                latest_turn_edit_error_file = ""
+                            if fp and unresolved_edit_error_file and _file_matches_any(fp, [unresolved_edit_error_file]):
+                                unresolved_edit_error_file = ""
                             modified_since_last_test_failure = True
                             if requires_test_execution:
                                 needs_test_run_after_modify = True
@@ -831,10 +830,7 @@ def _analyze_coding_workflow_state(
         )
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 
-    if latest_turn_edit_error_file and _file_matches_any(latest_turn_edit_error_file, modified_files):
-        latest_turn_edit_error_file = ""
-
-    if latest_turn_edit_error_file:
+    if unresolved_edit_error_file:
         excerpt_note = (
             f"\n- Active test failure to fix:\n{last_test_failure_excerpt}"
             if last_test_failed and last_test_failure_excerpt
@@ -842,9 +838,9 @@ def _analyze_coding_workflow_state(
         )
         directive = (
             "\n\n[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n"
-            f"- Your previous `Edit` tool call on `{latest_turn_edit_error_file}` failed with `<tool_use_error>`."
+            f"- Your previous `Edit` tool call on `{unresolved_edit_error_file}` failed with `<tool_use_error>`."
             f"{excerpt_note}\n"
-            f"- MANDATORY NEXT STEP FOR THIS TURN: Do NOT retry `Edit` with partial snippets. Instead, emit an `<invoke name=\"Write\">` (or `<tool_call>`) block for the `Write` tool to overwrite `{latest_turn_edit_error_file}` with its complete, corrected file contents, and then emit `<invoke name=\"Bash\">` to re-run the test suite!"
+            f"- MANDATORY NEXT STEP FOR THIS TURN: Do NOT retry `Edit` with partial snippets. Instead, emit an `<invoke name=\"Write\">` (or `<tool_call>`) block for the `Write` tool to overwrite `{unresolved_edit_error_file}` with its complete, corrected file contents, and then emit `<invoke name=\"Bash\">` to re-run the test suite!"
         )
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 
