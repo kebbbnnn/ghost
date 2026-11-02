@@ -205,6 +205,14 @@ class TestCompileAction(unittest.TestCase):
         fn()
         mock_time.sleep.assert_called_once_with(2.0)
 
+    @patch("agent.actions.pyautogui")
+    def test_compile_action_propagates_exception(self, mock_pyautogui):
+        mock_pyautogui.click.side_effect = RuntimeError("PyAutoGUI device access error")
+        action = ClickAction(action="click", x=100, y=200)
+        fn = compile_action(action, window_x=0, window_y=0)
+        with self.assertRaises(RuntimeError):
+            fn()
+
 
 if __name__ == "__main__":
     unittest.main()

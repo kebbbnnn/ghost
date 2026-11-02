@@ -191,9 +191,31 @@ class ConditionEvaluator:
                 lines = [
                     l for l in lines if not l.strip().startswith("```")
                 ]
-                content = "\n".join(lines)
+                content = "\n".join(lines).strip()
 
-            result = json.loads(content)
+            result = None
+            try:
+                result = json.loads(content)
+            except Exception:
+                try:
+                    import json_repair
+                    result = json_repair.repair_json(content, return_objects=True)
+                except Exception:
+                    pass
+
+            if not isinstance(result, dict):
+                start = content.find("{")
+                end = content.rfind("}")
+                if start != -1 and end != -1:
+                    cand = content[start:end + 1]
+                    try:
+                        import json_repair
+                        result = json_repair.repair_json(cand, return_objects=True)
+                    except Exception:
+                        pass
+
+            if not isinstance(result, dict):
+                raise json.JSONDecodeError("Could not parse or repair JSON", content, 0)
 
             if result.get("condition_matched"):
                 return EvalResult(

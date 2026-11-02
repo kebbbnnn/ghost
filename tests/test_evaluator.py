@@ -99,6 +99,60 @@ def make_normal_screenshot(width: int = 800, height: int = 600) -> Image.Image:
 
 import socket
 
+from unittest.mock import patch, AsyncMock
+import httpx
+
+
+class TestConditionEvaluatorUnit(unittest.TestCase):
+    """Unit tests for ConditionEvaluator response parsing and json_repair tolerance."""
+
+    def setUp(self):
+        self.evaluator = ConditionEvaluator(instructions=["Click Retry on error"])
+        self.dummy_img = Image.new("RGB", (100, 100), (0, 0, 0))
+
+    def _mock_response(self, text: str):
+        mock_resp = httpx.Response(
+            status_code=200,
+            json={"choices": [{"message": {"content": text}}]},
+            request=httpx.Request("POST", "http://127.0.0.1:8100/v1/chat/completions"),
+        )
+        return patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp)
+
+    def test_parse_clean_json(self):
+        raw = '{"condition_matched": true, "matched_instruction_index": 0, "reasoning": "Error modal visible", "action": {"action": "click", "x": 100, "y": 200}}'
+        with self._mock_response(raw):
+            res = asyncio.run(self.evaluator.evaluate(self.dummy_img))
+            self.assertTrue(res.condition_matched)
+            self.assertEqual(res.matched_instruction_index, 0)
+            self.assertEqual(res.action_json, {"action": "click", "x": 100, "y": 200})
+
+    def test_parse_markdown_fenced_json(self):
+        raw = '```json\n{"condition_matched": false, "reasoning": "Normal code editor"}\n```'
+        with self._mock_response(raw):
+            res = asyncio.run(self.evaluator.evaluate(self.dummy_img))
+            self.assertFalse(res.condition_matched)
+            self.assertEqual(res.reasoning, "Normal code editor")
+
+    def test_parse_malformed_json_with_json_repair(self):
+        # Malformed: trailing commas and conversational prefix
+        raw = (
+            "Here is the evaluation result:\n"
+            "```json\n"
+            "{\n"
+            '  "condition_matched": true,\n'
+            '  "matched_instruction_index": 0,\n'
+            '  "reasoning": "Found retry button",\n'
+            '  "action": {"action": "click", "x": 510, "y": 340,},\n'
+            "}\n"
+            "```"
+        )
+        with self._mock_response(raw):
+            res = asyncio.run(self.evaluator.evaluate(self.dummy_img))
+            self.assertTrue(res.condition_matched)
+            self.assertEqual(res.matched_instruction_index, 0)
+            self.assertEqual(res.action_json, {"action": "click", "x": 510, "y": 340})
+
+
 def is_proxy_running(host="127.0.0.1", port=8100):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

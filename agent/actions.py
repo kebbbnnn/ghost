@@ -188,13 +188,14 @@ def compile_action(
     """
 
     def _safe(fn: Callable[[], None]) -> Callable[[], None]:
-        """Wrap *fn* so that exceptions are logged instead of propagated."""
+        """Wrap *fn* to log execution failures while propagating to the caller."""
 
         def _wrapper() -> None:
             try:
                 fn()
             except Exception:
                 logger.exception("Failed to execute action %s", action)
+                raise
 
         return _wrapper
 
