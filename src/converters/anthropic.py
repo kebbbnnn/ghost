@@ -1619,6 +1619,35 @@ async def openai_to_anthropic_stream(
                                     tag_len = m_gt.end()
 
                     if end_idx == -1:
+                        # Check if a new tool tag starts in buffer while inside unclosed tool tag
+                        m_next = find_opening_tool_tag(buffer, 1)
+                        if m_next and m_next.start() > 0:
+                            open_pos = m_next.start()
+                            unclosed_prefix = buffer[:open_pos]
+                            t_name, t_params = _parse_invoke_xml(unclosed_prefix)
+                            if t_name and t_name.lower() != "unknown":
+                                tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                                emitted_tool_use_ids.append(tool_use_id)
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'tool_use', 'id': tool_use_id, 'name': t_name, 'input': {}}})}\n\n"
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(t_params)}})}\n\n"
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                                block_index += 1
+                                tool_called = True
+                                output_tokens_accumulated += max(1, len(unclosed_prefix) // 4)
+                            else:
+                                if unclosed_prefix.strip():
+                                    if active_block_type != "text":
+                                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                        active_block_type = "text"
+                                    clean_text = unwrap_markdown_autolinks(unclosed_prefix)
+                                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': clean_text}})}\n\n"
+                                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                                    block_index += 1
+                                    output_tokens_accumulated += max(1, len(clean_text) // 4)
+                            buffer = buffer[open_pos:]
+                            active_block_type = None
+                            active_tool_tag = None
+                            continue
                         break
 
                     xml_block = buffer[:end_idx + tag_len]
@@ -1676,16 +1705,51 @@ async def openai_to_anthropic_stream(
                 tool_called = True
                 active_block_type = None
             else:
-                clean_buf = unwrap_markdown_autolinks(buffer)
-                if clean_buf.strip():
-                    if active_block_type == "thinking":
+                matches = list(CLOSED_TOOL_CALL_RE.finditer(buffer))
+                if matches:
+                    last_idx = 0
+                    for m in matches:
+                        pre_text = buffer[last_idx : m.start()]
+                        if pre_text.strip():
+                            if active_block_type == "thinking":
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                                active_block_type = None
+                                block_index += 1
+                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(pre_text)}})}\n\n"
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                            block_index += 1
+
+                        matched_xml = m.group(0)
+                        t_name, t_params = _parse_invoke_xml(matched_xml)
+                        if t_name and t_name.lower() != "unknown":
+                            tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                            emitted_tool_use_ids.append(tool_use_id)
+                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'tool_use', 'id': tool_use_id, 'name': t_name, 'input': {}}})}\n\n"
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(t_params)}})}\n\n"
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                            block_index += 1
+                            tool_called = True
+                        last_idx = m.end()
+
+                    post_text = buffer[last_idx:]
+                    if post_text.strip():
+                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(post_text)}})}\n\n"
                         yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
-                        active_block_type = None
                         block_index += 1
-                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': clean_buf}})}\n\n"
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
-                active_block_type = None
+                    active_block_type = None
+                else:
+                    clean_buf = unwrap_markdown_autolinks(buffer)
+                    if clean_buf.strip():
+                        if active_block_type == "thinking":
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                            active_block_type = None
+                            block_index += 1
+                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': clean_buf}})}\n\n"
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                    active_block_type = None
         else:
             clean_rem = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", buffer)
             clean_rem = re.sub(r"^\s*```\s*$", "", clean_rem)

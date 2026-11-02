@@ -98,6 +98,25 @@ def find_json_end_in_tag(text: str, start_pos: int = 0) -> int:
     return -1
 
 
+def is_inside_inline_code(text: str, start: int) -> bool:
+    """Check if pos start in text is enclosed in an unclosed inline single backtick span."""
+    if "`" not in text[:start]:
+        return False
+    # Inline code spans cannot span across blank lines / paragraphs
+    last_par = text.rfind("\n\n", 0, start)
+    par_prefix = text[last_par + 2 : start] if last_par != -1 else text[:start]
+
+    # Strip full triple-backtick fences
+    clean = re.sub(r"```[\s\S]*?```", "", par_prefix)
+    clean = re.sub(r"```.*$", "", clean)
+
+    # Check within the current line
+    last_nl = clean.rfind("\n")
+    line_prefix = clean[last_nl + 1 :] if last_nl != -1 else clean
+
+    return line_prefix.count("`") % 2 == 1
+
+
 def find_opening_tool_tag(text: str, start_pos: int = 0) -> re.Match | None:
     """Find the earliest opening tool tag not immediately enclosed in inline markdown code backticks."""
     pos = start_pos
@@ -106,10 +125,20 @@ def find_opening_tool_tag(text: str, start_pos: int = 0) -> re.Match | None:
         if not m:
             return None
         start = m.start()
-        # If preceded immediately by a single inline backtick (not a fence), it's markdown code quotation
+        # 1. If preceded immediately or within the current span by an unclosed inline backtick (not a fence)
         if start > 0 and text[start - 1] == "`":
             is_fence = start >= 3 and text[start - 3 : start] == "```"
             if not is_fence:
+                pos = start + 1
+                continue
+        if is_inside_inline_code(text, start):
+            pos = start + 1
+            continue
+        # 2. If the tag closing '>' is followed immediately by an inline backtick (quoted tag e.g. `<invoke>` or `<Read>`)
+        gt_pos = text.find(">", start)
+        if gt_pos != -1:
+            after_gt = text[gt_pos + 1 :]
+            if re.match(r"^[ \t]*`([^`]|$)", after_gt):
                 pos = start + 1
                 continue
         return m

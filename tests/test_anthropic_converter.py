@@ -862,5 +862,38 @@ def test_claude_code_in_flight_user_silence_nudge():
     assert "The user hasn't heard from you in a while" in user_content
 
 
+def test_stream_code_quoted_tool_tags_do_not_trap_parser():
+    """Bug 68 regression: inline code-quoted tool tags in prose split across chunk boundaries
+
+    must not trap stream parser into unclosed tool block or swallow subsequent valid tool calls.
+    """
+    chunks = [
+        "I was thinking. The previous assistant turn tried to emit `",
+        """<invoke name="Bash">` and `<Read>` which failed because the tool declarations used in the system prompt are different.
+
+<tool_call>
+{"name": "Bash", "arguments": {"command": "pytest tests/test_mvcc.py"}}
+</tool_call>""",
+    ]
+    events = []
+
+    async def run():
+        async for evt in openai_to_anthropic_stream(
+            _fake_openai_stream(chunks),
+            model="claude-3-5-sonnet",
+        ):
+            events.append(evt)
+
+    asyncio.run(run())
+    full_output = "".join(events)
+
+    # Must contain both text block with prose and tool_use block
+    assert '"type": "tool_use"' in full_output
+    assert '"name": "Bash"' in full_output
+    assert 'pytest tests/test_mvcc.py' in full_output
+    assert '"stop_reason": "tool_use"' in full_output
+    assert "tried to emit" in full_output
+
+
 
 
