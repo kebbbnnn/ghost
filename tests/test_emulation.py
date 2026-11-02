@@ -1065,4 +1065,52 @@ def test_transpile_gemini_code_reference_and_unclosed_tool_detection():
     assert GeminiProvider._is_missing_required_tool_call(prompt, closed_invoke) is False
 
 
+def test_strip_gemini_html_artifacts_and_parameter_unwrapping():
+    """Verify strip_gemini_html_artifacts unwraps math-inline and math-display spans and decodes LaTeX escapes."""
+    from src.core.emulation.stream_parser import (
+        strip_gemini_html_artifacts,
+        parse_parameter_xml_value,
+        parse_tool_payload,
+    )
+
+    # 1. Test direct unwrapping and LaTeX escape decoding
+    mangled_code = (
+        '<span class="math-inline">            if msg.data["success"]\\:\n'
+        'self\\.match_index[follower] = msg\\.data["match_index"]\n'
+        'self\\.next_index[follower] = self\\.match_index[follower] + 1\n'
+        'for n in range\\(len\\(self\\.log\\) - 1, self\\.commit\\_index, -1\\)\\:\n'
+        'if self\\.log[n]\\.term == self\\.current\\_term\\:\n'
+        'if matches > \\(1 \\+ len\\(self\\.peer\\_ids\\)\\) // 2\\:\n'
+        'self\\.commit\\_index = n\n'
+        'await self\\._apply\\_logs\\(\\)\n'
+        '</span>'
+    )
+    cleaned = strip_gemini_html_artifacts(mangled_code)
+    assert '<span class="math-inline">' not in cleaned
+    assert '</span>' not in cleaned
+    assert 'self.match_index[follower]' in cleaned
+    assert 'self.commit_index = n' in cleaned
+    assert 'await self._apply_logs()' in cleaned
+    assert 'range(len(self.log) - 1, self.commit_index, -1):' in cleaned
+
+    # 2. Test parameter XML value parsing automatically unwraps math-inline
+    parsed_param = parse_parameter_xml_value("old_string", mangled_code)
+    assert '<span class="math-inline">' not in parsed_param
+    assert 'self.commit_index = n' in parsed_param
+
+    # 3. Test full XML tool call payload parsing
+    xml_call = (
+        '<invoke name="Edit">\n'
+        '  <parameter name="file_path">raft.py</parameter>\n'
+        f'  <parameter name="old_string">{mangled_code}</parameter>\n'
+        '  <parameter name="new_string">self.commit_index = n\nawait self._apply_logs()</parameter>\n'
+        '</invoke>'
+    )
+    parsed_tool = parse_tool_payload(xml_call)
+    assert parsed_tool is not None
+    assert parsed_tool["name"] == "Edit"
+    assert '<span class="math-inline">' not in parsed_tool["arguments"]["old_string"]
+    assert 'self.commit_index = n' in parsed_tool["arguments"]["old_string"]
+
+
 

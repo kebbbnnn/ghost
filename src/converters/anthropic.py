@@ -2,7 +2,7 @@ import html
 import json
 import re
 import uuid
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple, Union
 
 from src.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,

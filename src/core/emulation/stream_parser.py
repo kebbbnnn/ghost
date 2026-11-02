@@ -151,6 +151,51 @@ def strip_googleusercontent_artifacts(text: str) -> str:
     return GOOGLEUSERCONTENT_PATTERN.sub("", text)
 
 
+GEMINI_MATH_SPAN_RE = re.compile(r"<span class=[\"']math-(?:inline|display)[\"']>(.*?)</span>", re.DOTALL)
+GEMINI_STRAY_SPAN_RE = re.compile(r"</?span(?:\s+class=[\"'][^\"']*[\"'])?\s*/?>")
+
+GEMINI_LATEX_REPLACEMENTS = [
+    (r"\\_", "_"),
+    (r"\\\(", "("),
+    (r"\\\)", ")"),
+    (r"\\\[", "["),
+    (r"\\\]", "]"),
+    (r"\\\{", "{"),
+    (r"\\\}", "}"),
+    (r"\\\.", "."),
+    (r"\\\:", ":"),
+    (r"\\\+", "+"),
+    (r"\\\-", "-"),
+    (r"\\\*", "*"),
+    (r"\\=", "="),
+    (r"\\>", ">"),
+    (r"\\<", "<"),
+    (r"\\,", ","),
+    (r"\\ge\b", ">="),
+    (r"\\le\b", "<="),
+    (r"\\ne\b", "!="),
+    (r"\\times\b", "*"),
+]
+
+
+def strip_gemini_html_artifacts(text: str) -> str:
+    """Unwrap and strip Gemini web UI HTML artifacts like math-inline spans leaking into text/code."""
+    if not text or ("math-" not in text and "\\_" not in text):
+        return text
+
+    def unwrap(match):
+        inner = match.group(1)
+        for pat, repl in GEMINI_LATEX_REPLACEMENTS:
+            inner = re.sub(pat, repl, inner)
+        return inner
+
+    res = GEMINI_MATH_SPAN_RE.sub(unwrap, text)
+    res = GEMINI_STRAY_SPAN_RE.sub("", res)
+    for pat, repl in GEMINI_LATEX_REPLACEMENTS:
+        res = re.sub(pat, repl, res)
+    return res
+
+
 def synthesize_workflow_recovery_tool_call(prompt: str, messages: list[dict] | None = None) -> str:
     """Synthesize a safe recovery tool call when upstream persistently returns a refusal or misses a required tool call."""
     search_text = prompt or ""
@@ -341,6 +386,8 @@ def _extract_balanced_braces(text: str, start_idx: int) -> str | None:
 def _sanitize_json_string(raw: str) -> str:
     """Tolerant cleaner for LLM JSON outputs (unwraps auto-links, strips fences, fixes trailing commas)."""
     clean = unwrap_markdown_autolinks(raw).strip()
+    if "math-" in clean or "\\_" in clean:
+        clean = strip_gemini_html_artifacts(clean)
     # Remove markdown code fences if wrapped
     if clean.startswith("```json"):
         clean = clean[7:]
@@ -567,6 +614,8 @@ def parse_parameter_xml_value(p_name: str, raw_val: str) -> Any:
     unwrapped = unwrap_markdown_autolinks(trimmed)
     if "&" in unwrapped:
         unwrapped = html.unescape(unwrapped)
+    if "math-" in unwrapped or "\\_" in unwrapped:
+        unwrapped = strip_gemini_html_artifacts(unwrapped)
 
     p_name_lower = p_name.lower()
     is_code = p_name_lower in ("content", "old_string", "new_string", "old_str", "new_str")

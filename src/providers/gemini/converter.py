@@ -17,7 +17,11 @@ import re
 import time
 import uuid
 
-from src.core.emulation.stream_parser import ALL_TOOL_TAGS, strip_googleusercontent_artifacts
+from src.core.emulation.stream_parser import (
+    ALL_TOOL_TAGS,
+    strip_gemini_html_artifacts,
+    strip_googleusercontent_artifacts,
+)
 
 log = logging.getLogger(__name__)
 
@@ -328,6 +332,7 @@ def _extract_content(inner) -> str:
                 if text_segments:
                     text = "".join(text_segments)
                     text = strip_googleusercontent_artifacts(text)
+                    text = strip_gemini_html_artifacts(text)
                     if "[http" in text:
                         text = AUTOLINK_URL_PATTERN.sub(r"\1", text)
                     return text
