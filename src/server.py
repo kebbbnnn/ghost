@@ -42,7 +42,7 @@ async def broadcast_event(event_type: str, data: dict):
 
 import typing
 from contextlib import asynccontextmanager
-from src.providers import get_all_models, get_provider_for_model, PROVIDERS
+from src.providers import get_all_models, get_provider_for_model, get_fallback_provider, PROVIDERS
 from src.core.exceptions import RateLimitError
 from src.core.video_processor import extract_keyframes
 from src.core.emulation import EmulationPipeline
@@ -58,6 +58,39 @@ from src.core.debug_logger import start_trace, get_current_trace
 # ---------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+
+async def make_resilient_stream(primary_provider, fallback_provider, stream_fn):
+    """Streams from primary_provider; if primary fails or yields an error chunk before any valid content, fails over to fallback_provider."""
+    primary_stream = stream_fn(primary_provider)
+    first_chunk = None
+    has_failed = False
+    try:
+        first_chunk = await anext(primary_stream)
+        if '"error":' in first_chunk:
+            has_failed = True
+    except Exception as e:
+        log.warning("Primary provider %s stream initialization failed: %s", primary_provider.__class__.__name__, e)
+        has_failed = True
+
+    if not has_failed and first_chunk is not None:
+        yield first_chunk
+        async for chunk in primary_stream:
+            yield chunk
+        return
+
+    if fallback_provider:
+        log.warning("Failing over stream to fallback provider %s...", fallback_provider.__class__.__name__)
+        try:
+            fallback_stream = stream_fn(fallback_provider)
+            async for chunk in fallback_stream:
+                yield chunk
+            return
+        except Exception as fe:
+            log.warning("Fallback provider %s also failed: %s", fallback_provider.__class__.__name__, fe)
+
+    if first_chunk is not None:
+        yield first_chunk
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -300,10 +333,13 @@ async def chat_completions(req: ChatCompletionRequest):
         )
 
     messages, emulation_ctx = EmulationPipeline.prepare_request(req)
+    fallback_provider = get_fallback_provider(provider)
 
     if req.stream:
-        raw_stream = provider.stream_chat(
-            messages, req.model, req.conversation_id, req.parent_message_id
+        raw_stream = make_resilient_stream(
+            provider,
+            fallback_provider,
+            lambda p: p.stream_chat(messages, req.model, req.conversation_id, req.parent_message_id),
         )
         emulated_stream = EmulationPipeline.wrap_stream(raw_stream, emulation_ctx)
 
@@ -372,6 +408,19 @@ async def chat_completions(req: ChatCompletionRequest):
             raw_resp = await provider.non_streaming_chat(
                 messages, req.model, req.conversation_id, req.parent_message_id
             )
+        except Exception as e:
+            if fallback_provider:
+                log.warning("Primary provider %s non-streaming failed (%s); failing over to %s...", provider.__class__.__name__, e, fallback_provider.__class__.__name__)
+                try:
+                    raw_resp = await fallback_provider.non_streaming_chat(
+                        messages, req.model, req.conversation_id, req.parent_message_id
+                    )
+                except Exception:
+                    raise e
+            else:
+                raise e
+
+        try:
             resp_dict = EmulationPipeline.wrap_non_streaming(raw_resp, emulation_ctx)
             trace.log_client_response(resp_dict)
             await broadcast_event("request_end", {
@@ -619,10 +668,13 @@ async def anthropic_messages(req: Request):
     conversation_id = body.get("conversation_id")
     parent_message_id = body.get("parent_message_id")
     expose_session_metadata_in_body = body.get("expose_session_metadata_in_body", False)
+    fallback_provider = get_fallback_provider(provider)
 
     if stream:
-        raw_stream = provider.stream_chat(
-            messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id
+        raw_stream = make_resilient_stream(
+            provider,
+            fallback_provider,
+            lambda p: p.stream_chat(messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id),
         )
         session_metadata = {}
 
@@ -695,9 +747,21 @@ async def anthropic_messages(req: Request):
                 "messages_count": len(messages),
             })
             session_metadata = {}
-            resp_dict = await provider.non_streaming_chat(
-                messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id
-            )
+            try:
+                resp_dict = await provider.non_streaming_chat(
+                    messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id
+                )
+            except Exception as e:
+                if fallback_provider:
+                    log.warning("Anthropic non-streaming primary provider %s failed (%s); failing over to %s...", provider.__class__.__name__, e, fallback_provider.__class__.__name__)
+                    try:
+                        resp_dict = await fallback_provider.non_streaming_chat(
+                            messages, model, conversation_id=conversation_id, parent_message_id=parent_message_id
+                        )
+                    except Exception:
+                        raise e
+                else:
+                    raise e
             anthropic_resp = await openai_to_anthropic_json(
                 resp_dict,
                 model=model,

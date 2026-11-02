@@ -790,6 +790,26 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
     return args
 
 
+def _is_reliable_json_repair(norm: dict | None, source_str: str) -> bool:
+    """Ensure json_repair did not mangle unescaped quotes into empty parameters and phantom keys."""
+    if not norm or not isinstance(norm, dict):
+        return False
+    name = (norm.get("name") or "").lower()
+    args = norm.get("arguments") or {}
+    if name in ("write", "write_file", "create_file"):
+        if '"content"' in source_str and not args.get("content"):
+            return False
+    elif name in ("edit", "edit_file", "update", "update_file"):
+        if '"old_string"' in source_str and not args.get("old_string"):
+            return False
+        if '"new_string"' in source_str and not args.get("new_string"):
+            return False
+    elif name in ("bash", "cmd", "sh", "terminal", "execute_command", "run_command"):
+        if '"command"' in source_str and not args.get("command"):
+            return False
+    return True
+
+
 def parse_tool_payload(raw_payload: str) -> dict | None:
     """Safely parse a string payload (JSON, <invoke> XML, or direct tool XML tags) into a tool call dict with 'name' and 'arguments'."""
     if not raw_payload or not raw_payload.strip():
@@ -963,6 +983,22 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
         except Exception:
             pass
 
+    # 2b. Attempt repair with json_repair for malformed JSON before regex fallbacks
+    for cand in candidates:
+        if not cand.startswith("{"):
+            continue
+        try:
+            import json_repair
+            repaired = json_repair.repair_json(cand)
+            if repaired and repaired.startswith("{"):
+                data = json.loads(repaired)
+                if isinstance(data, dict):
+                    norm = _normalize_parsed_tool_dict(data)
+                    if _is_reliable_json_repair(norm, cand):
+                        return norm
+        except Exception:
+            pass
+
     # 3. Fallback: extract "name" and balanced "{...}" for "arguments" / "input" / "parameters"
     name_match = re.search(r'"(?:name|tool|function)"\s*:\s*"([^"]+)"', clean)
     if name_match:
@@ -983,6 +1019,19 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
                             if not is_valid_tool_call(norm_name, cleaned_params):
                                 return None
                             return {"name": norm_name, "arguments": cleaned_params}
+                    except Exception:
+                        pass
+                    try:
+                        import json_repair
+                        repaired_args = json_repair.repair_json(cand_clean)
+                        if repaired_args and repaired_args.startswith("{"):
+                            args_obj = json.loads(repaired_args)
+                            if isinstance(args_obj, dict):
+                                norm_name = normalize_tool_name(func_name, args_obj)
+                                cleaned_params = normalize_tool_parameters(norm_name, _unwrap_autolinks_in_obj(args_obj))
+                                norm_dict = {"name": norm_name, "arguments": cleaned_params}
+                                if _is_reliable_json_repair(norm_dict, cand_clean) and is_valid_tool_call(norm_name, cleaned_params):
+                                    return norm_dict
                     except Exception:
                         pass
             elif after_key.startswith('"'):

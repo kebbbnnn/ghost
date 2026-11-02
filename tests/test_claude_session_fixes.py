@@ -2409,6 +2409,157 @@ def test_unescape_json_string_preserves_escaped_backslashes():
     assert unescape_json_string(r"\u0048\u0069") == "Hi"
 
 
+def test_safe_parse_json_args_with_json_repair():
+    """Verify _safe_parse_json_args repairs malformed JSON arguments (single quotes, trailing comma, unquoted keys)."""
+    from src.converters.anthropic import _safe_parse_json_args
+
+    # Single quotes and trailing comma
+    malformed_1 = "{'file_path': 'src/app.py', 'content': 'print(\"hello\")',}"
+    parsed_1 = _safe_parse_json_args(malformed_1)
+    assert parsed_1.get("file_path") == "src/app.py"
+    assert parsed_1.get("content") == 'print("hello")'
+
+    # Unquoted keys
+    malformed_2 = '{command: "pytest tests/", timeout: 30}'
+    parsed_2 = _safe_parse_json_args(malformed_2)
+    assert parsed_2.get("command") == "pytest tests/"
+    assert parsed_2.get("timeout") == 30
+
+
+def test_parse_tool_payload_rescued_by_json_repair():
+    """Verify parse_tool_payload uses json_repair to recover malformed JSON payloads."""
+    from src.core.emulation.stream_parser import parse_tool_payload
+
+    # Malformed payload with unquoted keys and unclosed outer brace
+    malformed_payload = '{name: "Write", arguments: {file_path: "main.py", content: "def main(): pass"'
+    parsed = parse_tool_payload(malformed_payload)
+    assert parsed is not None
+    assert parsed["name"] == "Write"
+    assert parsed["arguments"]["file_path"] == "main.py"
+    assert parsed["arguments"]["content"] == "def main(): pass"
+
+
+@pytest.mark.anyio
+async def test_gemini_http_client_timeout_and_error_formatting():
+    """Verify GeminiProvider initializes httpx client with 180s read timeout and formats exceptions cleanly."""
+    from src.providers.gemini.session import GeminiProvider
+    import httpx
+
+    provider = GeminiProvider()
+    client = await provider._get_http()
+    assert client.timeout.read == 180.0
+    assert client.timeout.connect == 30.0
+
+    # Ensure close works
+    await provider.close()
+
+
+@pytest.mark.anyio
+async def test_gemini_provider_error_retry_in_stream_chat(monkeypatch):
+    """Verify stream_chat retries on transient ProviderError rather than immediately failing on attempt 1."""
+    from src.providers.gemini.session import GeminiProvider
+    from src.core.exceptions import ProviderError
+
+    provider = GeminiProvider()
+    call_count = 0
+
+    async def mock_send_message(prompt, conv_id, parent_id):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ProviderError("HTTP request to Gemini failed: ReadTimeout")
+        # Second attempt succeeds
+        return [
+            None,
+            ["c_test", "r_test"],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]
+
+    monkeypatch.setattr(provider, "_send_message", mock_send_message)
+    monkeypatch.setattr("src.providers.gemini.session.parse_gemini_response", lambda raw: {"content": "Success!"})
+
+    chunks = []
+    async for c in provider.stream_chat([{"role": "user", "content": "hi"}], model="gemini-2.5-pro"):
+        chunks.append(c)
+
+    # Must have retried and called twice
+    assert call_count == 2
+    full_output = "".join(chunks)
+    assert "Success!" in full_output
+    assert "error" not in full_output.lower()
+
+
+@pytest.mark.anyio
+async def test_make_resilient_stream_failover():
+    """Verify make_resilient_stream seamlessly switches to fallback_provider if primary emits error or fails."""
+    from src.server import make_resilient_stream
+
+    class MockFailingProvider:
+        async def stream_chat(self, *args, **kwargs):
+            yield 'data: {"error": {"message": "Service unavailable", "type": "server_error"}}\n\n'
+
+    class MockWorkingProvider:
+        async def stream_chat(self, *args, **kwargs):
+            yield 'data: {"choices": [{"delta": {"content": "Fallback active"}}]}\n\n'
+            yield 'data: [DONE]\n\n'
+
+    primary = MockFailingProvider()
+    fallback = MockWorkingProvider()
+
+    stream = make_resilient_stream(primary, fallback, lambda p: p.stream_chat())
+    chunks = [c async for c in stream]
+
+    assert len(chunks) == 2
+    assert "Fallback active" in chunks[0]
+    assert "[DONE]" in chunks[1]
+
+
+def test_get_fallback_provider():
+    """Verify get_fallback_provider alternates correctly between Gemini and ChatGPT."""
+    from src.providers import get_fallback_provider, _gemini, _chatgpt
+
+    assert get_fallback_provider(_gemini) is _chatgpt
+    assert get_fallback_provider(_chatgpt) is _gemini
+    assert get_fallback_provider(None) is None
+
+
 
 
 

@@ -57,3 +57,13 @@ def get_provider_for_model(model_name: str):
     return _PROVIDER_MAP.get(ChatGPTProvider)
 
 
+def get_fallback_provider(current_provider):
+    """Return an alternate provider when current_provider encounters an error or rate limit."""
+    if current_provider is _gemini:
+        return _chatgpt
+    if current_provider is _chatgpt:
+        return _gemini
+    return None
+
+
+

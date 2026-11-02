@@ -64,6 +64,35 @@ AUXILIARY_META_PATTERNS = (
 )
 
 
+def _safe_parse_json_args(args_str: Any) -> dict:
+    """Safely parse JSON tool arguments string, attempting json_repair if standard json.loads fails."""
+    if isinstance(args_str, dict):
+        return args_str
+    if not isinstance(args_str, str) or not args_str.strip():
+        return {}
+    try:
+        parsed = json.loads(args_str)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    try:
+        import json_repair
+        repaired = json_repair.repair_json(args_str)
+        if repaired and isinstance(repaired, str):
+            parsed = json.loads(repaired)
+            if isinstance(parsed, dict):
+                if '"content"' in args_str and not parsed.get("content"):
+                    pass
+                elif '"command"' in args_str and not parsed.get("command"):
+                    pass
+                else:
+                    return parsed
+    except Exception:
+        pass
+    return {}
+
+
 def _compact_description(text: str, max_len: int = 420) -> str:
     """Compact verbose multi-page tool/parameter descriptions while preserving core schema semantics."""
     if not text or not isinstance(text, str):
@@ -1273,10 +1302,7 @@ async def openai_to_anthropic_stream(
                 func = tc.get("function", {})
                 raw_fn = func.get("name", "unknown")
                 args_str = func.get("arguments", "{}")
-                try:
-                    args_obj = json.loads(args_str) if isinstance(args_str, str) else args_str
-                except Exception:
-                    args_obj = {}
+                args_obj = _safe_parse_json_args(args_str)
                 fn_name = normalize_tool_name(raw_fn, args_obj)
                 args_obj = _normalize_code_tool_params(fn_name, _unwrap_autolinks_in_obj(args_obj))
 
@@ -1691,10 +1717,7 @@ async def openai_to_anthropic_json(
             fn = tc.get("function", {})
             raw_fn = fn.get("name", "unknown")
             args_str = fn.get("arguments", "{}")
-            try:
-                parsed_args = json.loads(args_str) if isinstance(args_str, str) else args_str
-            except Exception:
-                parsed_args = {}
+            parsed_args = _safe_parse_json_args(args_str)
             fn_name = normalize_tool_name(raw_fn, parsed_args)
             parsed_args = _normalize_code_tool_params(fn_name, _unwrap_autolinks_in_obj(parsed_args))
             blocks.append({

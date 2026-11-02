@@ -186,6 +186,17 @@ class GeminiProvider(BaseProvider):
                         await self._reset_session(hard=False)
                         continue
                     raise
+                except ProviderError as pe:
+                    if attempt < 2:
+                        log.warning(
+                            "Gemini provider error (attempt %d/3): %s. Resetting session and retrying...",
+                            attempt + 1,
+                            pe,
+                        )
+                        await self._reset_session(hard=(attempt > 0))
+                        await asyncio.sleep(1.0)
+                        continue
+                    raise
 
         except RateLimitError:
             error_chunk = {
@@ -270,6 +281,17 @@ class GeminiProvider(BaseProvider):
                     await self._reset_session(hard=False)
                     continue
                 raise
+            except ProviderError as pe:
+                if attempt < 2:
+                    log.warning(
+                        "Gemini provider error (attempt %d/3): %s. Resetting session and retrying...",
+                        attempt + 1,
+                        pe,
+                    )
+                    await self._reset_session(hard=(attempt > 0))
+                    await asyncio.sleep(1.0)
+                    continue
+                raise
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -277,16 +299,17 @@ class GeminiProvider(BaseProvider):
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
+            client_timeout = httpx.Timeout(180.0, connect=30.0)
             try:
                 self._http = httpx.AsyncClient(
-                    timeout=60.0,
+                    timeout=client_timeout,
                     follow_redirects=True,
                     http2=True,
                 )
             except ImportError:
                 log.warning("Gemini: HTTP/2 support not available ('h2' package not installed); falling back to HTTP/1.1")
                 self._http = httpx.AsyncClient(
-                    timeout=60.0,
+                    timeout=client_timeout,
                     follow_redirects=True,
                     http2=False,
                 )
@@ -470,7 +493,8 @@ class GeminiProvider(BaseProvider):
         except httpx.HTTPError as e:
             if trace:
                 trace.log_error(e)
-            raise ProviderError(f"HTTP request to Gemini failed: {e}")
+            err_msg = str(e) or type(e).__name__
+            raise ProviderError(f"HTTP request to Gemini failed: {err_msg}")
 
         # Increment request ID for next call
         self._reqid += 100000
