@@ -63,6 +63,12 @@ AUXILIARY_META_PATTERNS = (
     "grade harm only",
 )
 
+PROGRESS_NUDGE_PATTERNS = (
+    "the user hasn't heard from you in a while",
+    "user hasn't heard from you in a while",
+    "say in a few words what you're doing",
+)
+
 
 def _safe_parse_json_args(args_str: Any) -> dict:
     """Safely parse JSON tool arguments string, attempting json_repair if standard json.loads fails."""
@@ -924,8 +930,29 @@ def anthropic_to_openai_request(req: dict) -> dict:
         if m.get("role") == "system":
             sys_m_text = _extract_msg_text(m).strip()
             if sys_m_text:
-                system_text = f"{system_text}\n\n{sys_m_text}".strip() if system_text else sys_m_text
-                total_input_chars += len(sys_m_text)
+                is_static_env_block = (
+                    not non_system_msgs
+                    or sys_m_text.startswith("# System Prompt")
+                    or "# Environment" in sys_m_text
+                    or "Working directory:" in sys_m_text
+                )
+                if is_static_env_block:
+                    system_text = f"{system_text}\n\n{sys_m_text}".strip() if system_text else sys_m_text
+                    total_input_chars += len(sys_m_text)
+                else:
+                    reminder_text = f"<system-reminder>\n{sys_m_text}\n</system-reminder>"
+                    if non_system_msgs and non_system_msgs[-1].get("role") == "user":
+                        prev_c = non_system_msgs[-1].get("content")
+                        if isinstance(prev_c, list):
+                            non_system_msgs[-1]["content"] = list(prev_c) + [{"type": "text", "text": f"\n\n{reminder_text}"}]
+                        elif isinstance(prev_c, str):
+                            non_system_msgs[-1]["content"] = f"{prev_c}\n\n{reminder_text}"
+                    else:
+                        non_system_msgs.append({
+                            "role": "user",
+                            "content": reminder_text,
+                        })
+                    total_input_chars += len(sys_m_text) + 38
         else:
             non_system_msgs.append(m)
 
@@ -980,9 +1007,13 @@ def anthropic_to_openai_request(req: dict) -> dict:
 
     tool_choice = req.get("tool_choice", {})
     t_choice_type = tool_choice.get("type") if isinstance(tool_choice, dict) else None
+    is_progress_nudge = bool(
+        any(pat in last_user_text.lower() for pat in PROGRESS_NUDGE_PATTERNS)
+    )
     is_auxiliary_turn = bool(
         _is_auxiliary_meta_prompt(last_user_text, system_text)
         and not has_pending_tool_results
+        and not is_progress_nudge
         and t_choice_type not in ("any", "tool")
     )
     is_synthesis_phase = bool(
@@ -1048,6 +1079,14 @@ def anthropic_to_openai_request(req: dict) -> dict:
                 tool_prompt += workflow_state["initial_plan"]
             if workflow_state["progress_directive"]:
                 tool_prompt += workflow_state["progress_directive"]
+            if is_progress_nudge:
+                tool_prompt += (
+                    "\n\n[IN-FLIGHT STATUS & ACTION DIRECTIVE]:\n"
+                    "The user requested an in-flight status update ('say in a few words what you're doing, then continue').\n"
+                    "1. First, say in 1 concise sentence what you are doing or investigating.\n"
+                    "2. In the SAME response, immediately emit the next <tool_call> or <invoke> block (e.g. Read, Edit, Write, Bash) to continue the work.\n"
+                    "You MUST include the tool call so execution does not terminate."
+                )
             if t_choice_type == "any":
                 tool_prompt += "\nIMPORTANT: You MUST call at least one of the available tools."
             elif t_choice_type == "tool":

@@ -823,4 +823,44 @@ def test_parse_invoke_xml_stray_bracket_and_autolink_unwrapping():
     assert "[Documentation](https://threejs.org/docs)" in w_args["content"]
 
 
+def test_claude_code_in_flight_user_silence_nudge():
+    """Verify in-flight role=='system' nudges ('The user hasn't heard from you in a while')
+    are merged into the active user turn with [IN-FLIGHT STATUS & ACTION DIRECTIVE] without
+    forcing [AUXILIARY TEXT MODE] (which strips tools and aborts Claude Code)."""
+    tools = [
+        {"name": "Write", "description": "Write file", "input_schema": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}},
+        {"name": "Bash", "description": "Run bash", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+    ]
+    req = {
+        "model": "gemini",
+        "system": "Base system prompt.",
+        "messages": [
+            {"role": "user", "content": "Fix the compaction test."},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "pytest"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "FAILED test_compaction", "is_error": True}]},
+            {"role": "system", "content": "The user hasn't heard from you in a while — say in a few words what you're doing, then continue."},
+        ],
+        "tools": tools,
+    }
+    openai_req = anthropic_to_openai_request(req)
+    sys_content = openai_req["messages"][0]["content"]
+
+    # Must NOT be in auxiliary text mode (which forbids tools)
+    assert "[AUXILIARY TEXT MODE]" not in sys_content
+    # Must have in-flight status & action directive instructing model to state what it's doing and call tool
+    assert "[IN-FLIGHT STATUS & ACTION DIRECTIVE]" in sys_content
+    assert "CRITICAL MODE: TOOL_CALL_REQUIRED" in sys_content
+
+    # The dynamic nudge must NOT be merged into static system prompt permanently
+    assert sys_content.startswith("Base system prompt.")
+
+    # The dynamic nudge must be merged into the active user turn containing tool results
+    last_msg = openai_req["messages"][-1]
+    assert last_msg["role"] == "user"
+    user_content = last_msg["content"]
+    assert "tool_result" in user_content and "FAILED test_compaction" in user_content
+    assert "The user hasn't heard from you in a while" in user_content
+
+
+
 

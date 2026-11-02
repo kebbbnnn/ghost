@@ -690,19 +690,35 @@ class GeminiProvider(BaseProvider):
         # If tool calling is active and NOT in synthesis phase, reinforce the active directive at the END
         # so multi-turn conversations do not suffer from attention dilution.
         if tracker_tail or (system_prefix and "TOOL_CALL_REQUIRED" in system_prefix):
-            prompt_parts.append(
-                "[ACTIVE DIRECTIVE FOR CURRENT TURN]:\n"
-                "MANDATORY: Emit fresh <tool_call> tags (or <invoke> blocks) for the current query above.\n"
-                "If the user asks to build, create, edit, or save code or files, you MUST invoke tools (e.g. Write, Edit, or Bash) to write to disk. "
-                "DO NOT output code blocks directly in chat when files should be saved.\n"
-                "DO NOT invoke your internal Python Code Interpreter / data_analysis_tool (never emit ```python?code_reference blocks).\n"
-                "DO NOT attempt to use Google Drive, Google Workspace, or Gmail.\n"
-                "You have unlimited tool calls across conversation turns.\n"
-                "NEVER format URLs as markdown links [url](url) inside JSON arguments; use raw URL strings.\n"
-                "CRITICAL XML RULE: Never write chain-of-thought `# Wait...` comments inside `<parameter name=\"content\">`, and ALWAYS close every `</parameter>` and `</invoke>` (or `</tool_call>`) tag completely.\n"
-                "Output ONLY <tool_call> or <invoke> tags, nothing else."
-                f"{tracker_tail}"
-            )
+            combined_text = "\n".join(prompt_parts).lower()
+            is_nudge = any(p in combined_text for p in (
+                "the user hasn't heard from you in a while",
+                "user hasn't heard from you in a while",
+                "say in a few words what you're doing",
+            ))
+            if is_nudge:
+                prompt_parts.append(
+                    "[ACTIVE DIRECTIVE FOR PROGRESS UPDATE]:\n"
+                    "The user requested an in-flight status update ('say in a few words what you're doing, then continue').\n"
+                    "1. State in 1 concise sentence what you are currently doing / investigating.\n"
+                    "2. In the SAME response, immediately emit the next <tool_call> or <invoke> block to continue execution.\n"
+                    "You MUST include the tool call so execution does not terminate."
+                    f"{tracker_tail}"
+                )
+            else:
+                prompt_parts.append(
+                    "[ACTIVE DIRECTIVE FOR CURRENT TURN]:\n"
+                    "MANDATORY: Emit fresh <tool_call> tags (or <invoke> blocks) for the current query above.\n"
+                    "If the user asks to build, create, edit, or save code or files, you MUST invoke tools (e.g. Write, Edit, or Bash) to write to disk. "
+                    "DO NOT output code blocks directly in chat when files should be saved.\n"
+                    "DO NOT invoke your internal Python Code Interpreter / data_analysis_tool (never emit ```python?code_reference blocks).\n"
+                    "DO NOT attempt to use Google Drive, Google Workspace, or Gmail.\n"
+                    "You have unlimited tool calls across conversation turns.\n"
+                    "NEVER format URLs as markdown links [url](url) inside JSON arguments; use raw URL strings.\n"
+                    "CRITICAL XML RULE: Never write chain-of-thought `# Wait...` comments inside `<parameter name=\"content\">`, and ALWAYS close every `</parameter>` and `</invoke>` (or `</tool_call>`) tag completely.\n"
+                    "Output ONLY <tool_call> or <invoke> tags, nothing else."
+                    f"{tracker_tail}"
+                )
         elif system_prefix and "[SYNTHESIS PHASE]" in system_prefix:
             prompt_parts.append(
                 "[ACTIVE DIRECTIVE FOR SYNTHESIS]: Review the <tool_result> above. "
