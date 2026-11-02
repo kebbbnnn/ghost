@@ -647,117 +647,133 @@ def _normalize_parsed_tool_dict(data: dict) -> dict | None:
     return {"name": norm_name, "arguments": cleaned_args}
 
 
+ESCAPE_MAP = {
+    "\\": "\\",
+    '"': '"',
+    "/": "/",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
+
+
+def unescape_json_string(s: str) -> str:
+    """Safely unescape JSON escape sequences without corrupting escaped backslashes (e.g. \\\\n)."""
+    def _replace(m: re.Match) -> str:
+        seq = m.group(1)
+        if seq in ESCAPE_MAP:
+            return ESCAPE_MAP[seq]
+        if seq.startswith("u") and len(seq) == 5:
+            try:
+                return chr(int(seq[1:], 16))
+            except ValueError:
+                return m.group(0)
+        return m.group(0)
+
+    return re.sub(r'\\([\\"/bfnrt]|u[0-9a-fA-F]{4})', _replace, s)
+
+
+def _clean_fallback_string_value(val: str, is_tail: bool = True) -> str:
+    """Clean and unescape an extracted JSON string literal value."""
+    val = val.strip()
+    if val.startswith('"'):
+        pat = r'(?<!\\)"\s*(?:\}\s*)*$' if is_tail else r'(?<!\\)"\s*,?\s*$'
+        m = re.search(pat, val)
+        if m:
+            clean = val[1 : m.start()]
+        else:
+            clean = re.sub(r'"?\s*\}*\s*$' if is_tail else r'[\s",]+$', "", val[1:])
+    else:
+        clean = re.sub(r'"?\s*\}*\s*$' if is_tail else r'[\s",]+$', "", val)
+    return unescape_json_string(clean)
+
+
 def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
     """Robust fallback parameter extractor for LLM JSON outputs containing raw code, unescaped quotes, or newlines."""
     fn_lower = func_name.lower()
     args: dict = {}
 
-    if fn_lower in ("write", "write_file"):
+    if fn_lower in ("write", "write_file", "create_file"):
         fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if fp_match:
-            args["file_path"] = fp_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
+            args["file_path"] = unescape_json_string(fp_match.group(1)).strip()
         c_match = re.search(r'"content"\s*:\s*', raw_text)
         if c_match:
-            c_raw = raw_text[c_match.end() :].strip()
-            if c_raw.startswith('"'):
-                c_raw = c_raw[1:]
-            c_clean = re.sub(r'"?\s*\}*\s*$', "", c_raw)
-            c_clean = (
-                c_clean.replace(r'\"', '"')
-                .replace(r'\n', '\n')
-                .replace(r'\r', '\r')
-                .replace(r'\t', '\t')
-                .replace(r'\\', '\\')
-            )
-            args["content"] = c_clean
+            is_tail = True
+            end_boundary = len(raw_text)
+            if fp_match and c_match.start() < fp_match.start():
+                is_tail = False
+                end_boundary = fp_match.start()
+            val_segment = raw_text[c_match.end() : end_boundary]
+            args["content"] = _clean_fallback_string_value(val_segment, is_tail=is_tail)
 
-    elif fn_lower in ("bash", "execute_command", "sh"):
+    elif fn_lower in ("bash", "execute_command", "sh", "cmd", "terminal", "run_command"):
         cmd_match = re.search(r'"(?:command|cmd)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if cmd_match:
-            args["command"] = cmd_match.group(1).replace(r'\"', '"').replace(r'\n', '\n').replace(r'\\', '\\').strip()
+            args["command"] = unescape_json_string(cmd_match.group(1)).strip()
         else:
             c_match = re.search(r'"(?:command|cmd)"\s*:\s*', raw_text)
             if c_match:
-                c_raw = raw_text[c_match.end() :].strip()
-                if c_raw.startswith('"'):
-                    c_raw = c_raw[1:]
-                c_clean = re.sub(r'"?\s*\}*\s*$', "", c_raw)
-                c_clean = (
-                    c_clean.replace(r'\"', '"')
-                    .replace(r'\n', '\n')
-                    .replace(r'\r', '\r')
-                    .replace(r'\t', '\t')
-                    .replace(r'\\', '\\')
-                )
-                args["command"] = c_clean
+                end_boundary = len(raw_text)
+                is_tail = True
+                next_k = re.search(r",\s*\"(?:timeout|restart|description|dir|cwd)\"\s*:\s*", raw_text[c_match.end() :])
+                if next_k:
+                    end_boundary = c_match.end() + next_k.start()
+                    is_tail = False
+                val_segment = raw_text[c_match.end() : end_boundary]
+                args["command"] = _clean_fallback_string_value(val_segment, is_tail=is_tail)
 
     elif fn_lower in ("edit", "edit_file", "update", "update_file"):
         fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if fp_match:
-            args["file_path"] = fp_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
+            args["file_path"] = unescape_json_string(fp_match.group(1)).strip()
         old_match = re.search(r'"(?:old_string|old_str)"\s*:\s*', raw_text)
         new_match = re.search(r'"(?:new_string|new_str)"\s*:\s*', raw_text)
         if old_match and new_match:
-            if old_match.start() < new_match.start():
-                old_raw = raw_text[old_match.end() : new_match.start()].strip()
-                m_lit = re.match(r'^"((?:\\.|[^"\\])*)"\s*,?\s*$', old_raw)
-                if m_lit:
-                    old_clean = m_lit.group(1)
-                else:
-                    old_clean = re.sub(r'[\s",]+$', "", old_raw.lstrip('"'))
-                new_raw = raw_text[new_match.end() :].strip()
-                m_new_lit = re.match(r'^"((?:\\.|[^"\\])*)"\s*\}*\s*$', new_raw)
-                if m_new_lit:
-                    new_clean = m_new_lit.group(1)
-                else:
-                    new_clean = re.sub(r'"?\s*\}*\s*$', "", new_raw.lstrip('"'))
-                args["old_string"] = (
-                    old_clean.replace(r'\"', '"')
-                    .replace(r'\n', '\n')
-                    .replace(r'\r', '\r')
-                    .replace(r'\t', '\t')
-                    .replace(r'\\', '\\')
-                )
-                args["new_string"] = (
-                    new_clean.replace(r'\"', '"')
-                    .replace(r'\n', '\n')
-                    .replace(r'\r', '\r')
-                    .replace(r'\t', '\t')
-                    .replace(r'\\', '\\')
-                )
+            first_m, second_m = (old_match, new_match) if old_match.start() < new_match.start() else (new_match, old_match)
+            first_key = "old_string" if first_m is old_match else "new_string"
+            second_key = "new_string" if first_key == "old_string" else "old_string"
+
+            first_boundary = second_m.start()
+            if fp_match and first_m.start() < fp_match.start() < second_m.start():
+                first_boundary = fp_match.start()
+            args[first_key] = _clean_fallback_string_value(raw_text[first_m.end() : first_boundary], is_tail=False)
+
+            second_boundary = len(raw_text)
+            is_second_tail = True
+            if fp_match and second_m.start() < fp_match.start():
+                second_boundary = fp_match.start()
+                is_second_tail = False
+            args[second_key] = _clean_fallback_string_value(raw_text[second_m.end() : second_boundary], is_tail=is_second_tail)
         elif old_match:
-            old_raw = raw_text[old_match.end() :].strip()
-            m_lit = re.match(r'^"((?:\\.|[^"\\])*)"\s*,?\s*$', old_raw)
-            if m_lit:
-                old_clean = m_lit.group(1)
-            else:
-                old_clean = re.sub(r'[\s",]+$', "", old_raw.lstrip('"'))
-            args["old_string"] = (
-                old_clean.replace(r'\"', '"')
-                .replace(r'\n', '\n')
-                .replace(r'\r', '\r')
-                .replace(r'\t', '\t')
-                .replace(r'\\', '\\')
-            )
+            is_tail = True
+            end_boundary = len(raw_text)
+            if fp_match and old_match.start() < fp_match.start():
+                is_tail = False
+                end_boundary = fp_match.start()
+            args["old_string"] = _clean_fallback_string_value(raw_text[old_match.end() : end_boundary], is_tail=is_tail)
+        elif new_match:
+            is_tail = True
+            end_boundary = len(raw_text)
+            if fp_match and new_match.start() < fp_match.start():
+                is_tail = False
+                end_boundary = fp_match.start()
+            args["new_string"] = _clean_fallback_string_value(raw_text[new_match.end() : end_boundary], is_tail=is_tail)
         c_match = re.search(r'"content"\s*:\s*', raw_text)
         if c_match and "old_string" not in args:
-            c_raw = raw_text[c_match.end() :].strip()
-            if c_raw.startswith('"'):
-                c_raw = c_raw[1:]
-            c_clean = re.sub(r'"?\s*\}*\s*$', "", c_raw)
-            c_clean = (
-                c_clean.replace(r'\"', '"')
-                .replace(r'\n', '\n')
-                .replace(r'\r', '\r')
-                .replace(r'\t', '\t')
-                .replace(r'\\', '\\')
-            )
-            args["content"] = c_clean
+            is_tail = True
+            end_boundary = len(raw_text)
+            if fp_match and c_match.start() < fp_match.start():
+                is_tail = False
+                end_boundary = fp_match.start()
+            args["content"] = _clean_fallback_string_value(raw_text[c_match.end() : end_boundary], is_tail=is_tail)
 
     elif fn_lower in ("read", "read_file"):
         fp_match = re.search(r'"(?:file_path|path|file)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if fp_match:
-            args["file_path"] = fp_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
+            args["file_path"] = unescape_json_string(fp_match.group(1)).strip()
         for int_field in ("offset", "limit"):
             m = re.search(rf'"{int_field}"\s*:\s*(\d+)', raw_text)
             if m:
@@ -766,10 +782,10 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
     elif fn_lower in ("glob", "grep"):
         pat_match = re.search(r'"pattern"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if pat_match:
-            args["pattern"] = pat_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
+            args["pattern"] = unescape_json_string(pat_match.group(1)).strip()
         path_match = re.search(r'"(?:path|dir|directory)"\s*:\s*"((?:\\.|[^"\\])*)"', raw_text)
         if path_match:
-            args["path"] = path_match.group(1).replace(r'\"', '"').replace(r'\\', '\\').strip()
+            args["path"] = unescape_json_string(path_match.group(1)).strip()
 
     return args
 

@@ -2346,6 +2346,69 @@ def test_gemini_code_reference_sanitized_in_non_tool_prompts():
     assert sanitized == "Here is the calculation:\n```python\nprint(42)\n```\nDone."
 
 
+def test_fallback_extract_arguments_order_permutations_and_no_leak():
+    """Verify _fallback_extract_arguments handles any key permutation for Edit, Write, and Bash
+    without parameter leakage or dropped fields."""
+    from src.core.emulation.stream_parser import _fallback_extract_arguments, parse_tool_payload
+
+    # 1. Edit with new_string before old_string before file_path
+    raw_edit = """{
+  "name": "Edit",
+  "arguments": {
+    "new_string": "def bar():\n    return {\"val\": 2}",
+    "old_string": "def bar():\n    return {\"val\": 1}",
+    "file_path": "app.py"
+  }
+}"""
+    parsed_edit = _fallback_extract_arguments("Edit", raw_edit)
+    assert parsed_edit.get("file_path") == "app.py"
+    assert parsed_edit.get("old_string") == 'def bar():\n    return {"val": 1}'
+    assert parsed_edit.get("new_string") == 'def bar():\n    return {"val": 2}'
+
+    # Ensure parse_tool_payload also succeeds
+    p_tool = parse_tool_payload(raw_edit)
+    assert p_tool is not None
+    assert p_tool["name"] == "Edit"
+    assert p_tool["arguments"]["file_path"] == "app.py"
+    assert p_tool["arguments"]["old_string"] == 'def bar():\n    return {"val": 1}'
+    assert p_tool["arguments"]["new_string"] == 'def bar():\n    return {"val": 2}'
+
+    # 2. Write with content before file_path
+    raw_write = """{
+  "name": "Write",
+  "arguments": {
+    "content": "def run():\n    return {\"status\": \"ok\"}",
+    "file_path": "server.py"
+  }
+}"""
+    parsed_write = _fallback_extract_arguments("Write", raw_write)
+    assert parsed_write.get("file_path") == "server.py"
+    assert parsed_write.get("content") == 'def run():\n    return {"status": "ok"}'
+    assert "file_path" not in parsed_write.get("content", "")
+
+    # 3. Bash with timeout following command
+    raw_bash = """{
+  "name": "Bash",
+  "arguments": {
+    "command": "cat << 'EOF'\nhello\nEOF",
+    "timeout": 120
+  }
+}"""
+    parsed_bash = _fallback_extract_arguments("Bash", raw_bash)
+    assert parsed_bash.get("command") == "cat << 'EOF'\nhello\nEOF"
+    assert "timeout" not in parsed_bash.get("command", "")
+
+
+def test_unescape_json_string_preserves_escaped_backslashes():
+    """Verify unescape_json_string does not corrupt regex escaped backslashes (\\\\n) into real newlines."""
+    from src.core.emulation.stream_parser import unescape_json_string
+
+    assert unescape_json_string(r"line1\nline2") == "line1\nline2"
+    assert unescape_json_string(r"pattern = r\"\\n\"") == 'pattern = r"\\n"'
+    assert unescape_json_string(r"print(\"hello\")") == 'print("hello")'
+    assert unescape_json_string(r"\u0048\u0069") == "Hi"
+
+
 
 
 
