@@ -555,6 +555,9 @@ def _analyze_coding_workflow_state(
     executed_files: list[str] = []
     needs_test_run_after_modify = False
     last_test_failed = False
+    is_runner_failure = False
+    consecutive_identical_cmd_count = 0
+    last_cmd = ""
     modified_since_last_test_failure = False
     last_test_failure_excerpt = ""
     unresolved_edit_error_file = ""
@@ -732,16 +735,32 @@ def _analyze_coding_workflow_state(
                         if is_test_cmd:
                             if bash_failed:
                                 last_test_failed = True
+                                is_runner_failure = is_test_runner
                                 modified_since_last_test_failure = False
                                 last_test_failure_excerpt = res_text.strip()[-1500:]
                                 needs_test_run_after_modify = False
+                                consecutive_identical_cmd_count = 0
+                                last_cmd = ""
                             else:
-                                if is_test_runner:
+                                if is_test_runner or has_explicit_success:
+                                    last_test_failed = False
+                                    is_runner_failure = False
+                                    modified_since_last_test_failure = False
+                                    last_test_failure_excerpt = ""
                                     needs_test_run_after_modify = False
-                                    if has_explicit_success:
-                                        last_test_failed = False
-                                        modified_since_last_test_failure = False
-                                        last_test_failure_excerpt = ""
+                                elif not is_runner_failure:
+                                    # Successful build or execution command clears prior non-runner build failure
+                                    last_test_failed = False
+                                    modified_since_last_test_failure = False
+                                    last_test_failure_excerpt = ""
+                                    if not requires_test_execution:
+                                        needs_test_run_after_modify = False
+
+                                if cmd and cmd == last_cmd:
+                                    consecutive_identical_cmd_count += 1
+                                else:
+                                    last_cmd = cmd
+                                    consecutive_identical_cmd_count = 1 if cmd else 0
 
                         if (
                             requires_benchmark
@@ -775,18 +794,41 @@ def _analyze_coding_workflow_state(
                         or bool(re.search(r"(?:Ran \d+ tests? in [0-9.]+s\s*\n+|(?:\r?\n|^))\s*OK\b", content))
                     )
                 )
+                is_runner_in_uses = any(
+                    any(
+                        k in str(tu.get("input", {}).get("command", "")).lower()
+                        for k in (
+                            "pytest", "unittest", "discover", "cargo test", "go test",
+                            "npm test", "vitest", "jest", "mocha", "ctest", "make test", "test_", "_test"
+                        )
+                    )
+                    for tu in last_assistant_tool_uses
+                    if tu.get("name") == "bash"
+                )
                 if has_failures or (
                     "Traceback (most recent call last):" in content
                     and "\nok" not in content_lower
                     and not has_explicit_success
                 ):
                     last_test_failed = True
+                    is_runner_failure = is_runner_in_uses
                     modified_since_last_test_failure = False
                     last_test_failure_excerpt = content.strip()[-1500:]
-                elif has_explicit_success:
-                    last_test_failed = False
-                    modified_since_last_test_failure = False
-                    last_test_failure_excerpt = ""
+                    consecutive_identical_cmd_count = 0
+                    last_cmd = ""
+                else:
+                    if is_runner_in_uses or has_explicit_success:
+                        last_test_failed = False
+                        is_runner_failure = False
+                        modified_since_last_test_failure = False
+                        last_test_failure_excerpt = ""
+                        needs_test_run_after_modify = False
+                    elif not is_runner_failure:
+                        last_test_failed = False
+                        modified_since_last_test_failure = False
+                        last_test_failure_excerpt = ""
+                        if not requires_test_execution:
+                            needs_test_run_after_modify = False
 
                 if (
                     requires_benchmark
@@ -856,23 +898,37 @@ def _analyze_coding_workflow_state(
         )
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 
+    # Loop safety guard: if the model has executed the same verification command successfully 2+ times in a row without file changes, consider verification done
+    if consecutive_identical_cmd_count >= 2 and len(modified_files) > 0 and not unresolved_edit_error_file:
+        last_test_failed = False
+        needs_test_run_after_modify = False
+
     if last_test_failed and not modified_since_last_test_failure:
         excerpt_block = f"\n- Most recent test failure output:\n{last_test_failure_excerpt}\n" if last_test_failure_excerpt else "\n"
+        re_run_target = "the test suite until 100% of tests pass" if is_runner_failure else "and verify the command or build successfully"
         directive = (
             "\n\n[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n"
             "- The test suite / command execution failed with errors and the buggy code has NOT yet been modified since that failure."
             f"{excerpt_block}"
-            "- MANDATORY NEXT STEP FOR THIS TURN: Inspect the failure traceback above, emit `<invoke name=\"Write\">` (preferred, to cleanly overwrite the entire module without string-match issues) or `<invoke name=\"Edit\">` to fix the offending module(s), and then emit `<invoke name=\"Bash\">` to re-run the test suite until 100% of tests pass!\n"
+            f"- MANDATORY NEXT STEP FOR THIS TURN: Inspect the failure traceback above, emit `<invoke name=\"Write\">` (preferred, to cleanly overwrite the entire module without string-match issues) or `<invoke name=\"Edit\">` to fix the offending module(s), and then emit `<invoke name=\"Bash\">` to re-run {re_run_target}!\n"
             "- CRITICAL XML RULE: Do NOT write chain-of-thought `# Wait...` comments inside `<parameter name=\"content\">` — keep file content strictly to clean code, and ALWAYS close every `</parameter>` and `</invoke>` tag completely!"
         )
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 
-    if (requires_test_execution or last_test_failed) and (needs_test_run_after_modify or last_test_failed):
+    if requires_test_execution and (needs_test_run_after_modify or last_test_failed):
         directive = (
             "\n\n[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n"
             f"- Files created/modified so far ({len(modified_files)}): {completed_display}\n"
             "- You have modified code files, and now you MUST run the test suite via `Bash` to verify that 100% of tests pass!\n"
             "- MANDATORY NEXT STEP FOR THIS TURN: Emit a `<tool_call>` or `<invoke name=\"Bash\">` block for the `Bash` tool right now to execute the test suite and verify your changes."
+        )
+        return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
+
+    if last_test_failed and modified_since_last_test_failure:
+        directive = (
+            "\n\n[CODING WORKFLOW PROGRESS TRACKER — ACTION REQUIRED — TASK INCOMPLETE]\n"
+            f"- Files modified since previous command/build failure ({len(modified_files)}): {completed_display}\n"
+            "- You have updated the code to address the failure. Now emit a `<tool_call>` or `<invoke name=\"Bash\">` block for the `Bash` tool to re-run and verify the build or command execution."
         )
         return {"is_incomplete": True, "progress_directive": directive, "initial_plan": ""}
 

@@ -2731,6 +2731,63 @@ def test_procrastination_phrases_marked_as_missing_tool_call():
         assert _is_chatgpt_missing_required_tool_call(messages, phrase) is True
 
 
+def test_build_success_clears_prior_build_failure_when_no_tests_required():
+    """Verify successful build command clears prior build error in projects without test suite requirement."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    messages = [
+        {"role": "user", "content": "let's build a Fall Guy game clone built using threejs"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Write", "input": {"file_path": "package.json", "content": "{}"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "File created"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Write", "input": {"file_path": "index.html", "content": "<html></html>"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "File created"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t3", "name": "Write", "input": {"file_path": "main.js", "content": "console.log('game')"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t3", "content": "File created"}]},
+        # 1. Initial build fails because dependencies not installed yet
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t4", "name": "Bash", "input": {"command": "npm run build"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t4", "is_error": True, "content": "Exit code 127\nsh: vite: command not found"}]},
+        # 2. Assistant installs dependencies and builds successfully
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t5", "name": "Bash", "input": {"command": "npm install && npm run build"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t5", "content": "added 12 packages\nbuilt in 600ms"}]},
+        # 3. Assistant launches dev server
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t6", "name": "Bash", "input": {"command": "npm run dev -- --port 3000 &"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t6", "content": "VITE ready at http://localhost:3000"}]},
+    ]
+
+    state = _analyze_coding_workflow_state(
+        messages,
+        has_coding_action_tools=True,
+        has_pending_tool_results=True,
+        has_error_tool_results=False,
+    )
+    assert state.get("is_incomplete") is False
+    assert state.get("progress_directive") == ""
+
+
+def test_consecutive_identical_build_commands_break_loop():
+    """Verify loop safety guard prevents infinite execution when assistant executes same verification command consecutively."""
+    from src.converters.anthropic import _analyze_coding_workflow_state
+
+    messages = [
+        {"role": "user", "content": "Create game in main.js and verify build."},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Write", "input": {"file_path": "main.js", "content": "console.log(1)"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "File written"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "npm run build"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "built in 500ms"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t3", "name": "Bash", "input": {"command": "npm run build"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t3", "content": "built in 500ms"}]},
+    ]
+
+    state = _analyze_coding_workflow_state(
+        messages,
+        has_coding_action_tools=True,
+        has_pending_tool_results=True,
+        has_error_tool_results=False,
+    )
+    assert state.get("is_incomplete") is False
+
+
+
 
 
 
