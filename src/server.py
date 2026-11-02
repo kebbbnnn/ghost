@@ -262,7 +262,7 @@ elif os.path.exists(src_dashboard):
 if dashboard_path:
     app.mount("/dashboard", StaticFiles(directory=dashboard_path, html=True), name="dashboard")
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     if dashboard_path:
         return RedirectResponse(url="/dashboard/")
@@ -879,7 +879,7 @@ async def anthropic_event_logging_batch():
 # Health & Status check
 # ---------------------------------------------------------------------------
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "ok"}
 
