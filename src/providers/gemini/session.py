@@ -222,6 +222,28 @@ class GeminiProvider(BaseProvider):
         conversation_id: str | None = None,
         parent_message_id: str | None = None,
     ) -> dict:
+        if model == "gemini-tree-of-thoughts":
+            engine = TreeOfThoughtsEngine(send_func=self._send_message)
+            full_content: list[str] = []
+            chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+            async for sse_chunk in engine.run(messages, chunk_id, model=model):
+                line = sse_chunk.strip()
+                if line.startswith("data: ") and not line.endswith("[DONE]"):
+                    try:
+                        d = json.loads(line[6:])
+                        choices = d.get("choices", [])
+                        if choices:
+                            c = choices[0].get("delta", {}).get("content", "")
+                            if c:
+                                full_content.append(c)
+                    except Exception:
+                        pass
+            return build_non_streaming_response(
+                "".join(full_content),
+                model,
+                "stop",
+            )
+
         retry_sanitized = False
         active_conv_id = conversation_id
         active_parent_id = parent_message_id

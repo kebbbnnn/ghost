@@ -243,7 +243,7 @@ def parse_streaming_chunks(raw_text: str):
     """
     lines = raw_text.split("\n")
     prev_content = ""
-    last_result = None
+    pending_result = None
 
     for line in lines:
         stripped = line.strip()
@@ -300,13 +300,15 @@ def parse_streaming_chunks(raw_text: str):
             if cid:
                 result["choice_id"] = cid
 
-            prev_content = content
-            last_result = result
-            yield result
+            if pending_result is not None:
+                yield pending_result
 
-    # Mark the last yielded result as final
-    if last_result:
-        last_result["is_final"] = True
+            prev_content = content
+            pending_result = result
+
+    if pending_result is not None:
+        pending_result["is_final"] = True
+        yield pending_result
 
 
 def _extract_content(inner) -> str:
@@ -317,12 +319,18 @@ def _extract_content(inner) -> str:
             first = candidates[0]
             parts = first[1]
             if isinstance(parts, list) and len(parts) > 0:
-                content = parts[0]
-                text = content if isinstance(content, str) else str(content)
-                text = strip_googleusercontent_artifacts(text)
-                if "[http" in text:
-                    text = AUTOLINK_URL_PATTERN.sub(r"\1", text)
-                return text
+                text_segments = []
+                for p in parts:
+                    if isinstance(p, str):
+                        text_segments.append(p)
+                    elif isinstance(p, list) and len(p) > 0 and isinstance(p[0], str):
+                        text_segments.append(p[0])
+                if text_segments:
+                    text = "".join(text_segments)
+                    text = strip_googleusercontent_artifacts(text)
+                    if "[http" in text:
+                        text = AUTOLINK_URL_PATTERN.sub(r"\1", text)
+                    return text
     except (IndexError, TypeError):
         pass
     return ""
