@@ -1968,14 +1968,14 @@ async def openai_to_anthropic_json(
             "signature": "",
         })
     elif "<thought>" in content or "<think>" in content:
-        thought_match = re.search(r"<(?:thought|think)>(.*?)</(?:thought|think)>", content, re.DOTALL)
-        if thought_match:
-            th_str = thought_match.group(1).strip()
-            content = (content[:thought_match.start()] + content[thought_match.end():]).strip()
-            if th_str:
+        thought_matches = list(re.finditer(r"<(?:thought|think)>(.*?)(?:</(?:thought|think)>|$)", content, re.DOTALL))
+        if thought_matches:
+            th_parts = [m.group(1).strip() for m in thought_matches if m.group(1).strip()]
+            content = re.sub(r"<(?:thought|think)>(.*?)(?:</(?:thought|think)>|$)", "", content, flags=re.DOTALL).strip()
+            if th_parts:
                 blocks.append({
                     "type": "thinking",
-                    "thinking": th_str,
+                    "thinking": "\n\n".join(th_parts),
                     "signature": "",
                 })
 
@@ -2067,7 +2067,8 @@ async def openai_to_anthropic_json(
                 text_resp = text_resp[:max_tokens * 4]
                 length_triggered = True
 
-        blocks.append({"type": "text", "text": text_resp})
+        if text_resp or not blocks:
+            blocks.append({"type": "text", "text": text_resp})
 
     if not blocks:
         blocks.append({"type": "text", "text": ""})

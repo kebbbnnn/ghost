@@ -3205,3 +3205,61 @@ async def test_genui_strip_preserves_fenced_code_and_tool_calls():
     assert "Done!" in combined
 
 
+@pytest.mark.anyio
+async def test_openai_to_anthropic_json_multi_thought_blocks():
+    """Verify multiple thought blocks from reasoning models or ToT are extracted into thinking block and stripped from text."""
+    from src.converters.anthropic import openai_to_anthropic_json
+
+    openai_resp = {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "model": "gemini-tree-of-thoughts",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": (
+                    "<thought>\n[Step 1/3] Candidate Thoughts: Thought 1, 2, 3\n</thought>\n\n"
+                    "<thought>\n[Step 1/3] Evaluation: Candidate 1 is best\n</thought>\n\n"
+                    "<thought>\n[Step 2/3] Partial thought that got cut off..."
+                )
+            },
+            "finish_reason": "max_tokens",
+        }]
+    }
+
+    res = await openai_to_anthropic_json(openai_resp)
+    assert len(res["content"]) == 1
+    assert res["content"][0]["type"] == "thinking"
+    thinking_text = res["content"][0]["thinking"]
+    assert "[Step 1/3] Candidate Thoughts" in thinking_text
+    assert "[Step 1/3] Evaluation" in thinking_text
+    assert "Partial thought that got cut off" in thinking_text
+    assert "<thought>" not in thinking_text
+    assert "</thought>" not in thinking_text
+
+    # With final synthesis answer
+    openai_resp_with_answer = {
+        "id": "chatcmpl-test-2",
+        "object": "chat.completion",
+        "model": "gemini-tree-of-thoughts",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": (
+                    "<thought>\nStep 1: Explore\n</thought>\n"
+                    "<thought>\nStep 2: Synthesize\n</thought>\n\n"
+                    "The final optimal answer is Multi-Paxos."
+                )
+            },
+            "finish_reason": "stop",
+        }]
+    }
+    res2 = await openai_to_anthropic_json(openai_resp_with_answer)
+    assert len(res2["content"]) == 2
+    assert res2["content"][0]["type"] == "thinking"
+    assert "Step 1: Explore\n\nStep 2: Synthesize" == res2["content"][0]["thinking"]
+    assert res2["content"][1]["type"] == "text"
+    assert res2["content"][1]["text"] == "The final optimal answer is Multi-Paxos."
+
+
+
