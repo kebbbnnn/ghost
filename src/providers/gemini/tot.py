@@ -67,30 +67,28 @@ class TreeOfThoughtsEngine:
                     candidates_text = parsed_gen.get("content", "").strip()
                 except RateLimitError:
                     if depth > 1:
-                        msg = f"<thought>\n[ToT] Rate limit reached at step {depth}. Synthesizing best partial solution...\n</thought>\n\n"
-                        async for chunk in self._stream_text(msg, chunk_id, model):
+                        msg = f"[ToT] Rate limit reached at step {depth}. Synthesizing best partial solution...\n\n"
+                        async for chunk in self._stream_thought(msg, chunk_id, model):
                             yield chunk
                         break
                     raise
                 except Exception as exc:
                     if depth > 1:
                         log.warning("ToT step %d gen failed (%s), proceeding to synthesis", depth, exc)
-                        msg = f"<thought>\n[ToT] Encountered error at step {depth}. Synthesizing partial solution...\n</thought>\n\n"
-                        async for chunk in self._stream_text(msg, chunk_id, model):
+                        msg = f"[ToT] Encountered error at step {depth}. Synthesizing partial solution...\n\n"
+                        async for chunk in self._stream_thought(msg, chunk_id, model):
                             yield chunk
                         break
                     raise ProviderError(f"ToT step {depth} generation failed: {exc}")
 
                 candidates = self._parse_candidates(candidates_text)
 
-                # Stream candidate thoughts live inside <thought> block
+                # Stream candidate thoughts live as reasoning_content
                 thought_gen_text = (
-                    f"<thought>\n"
                     f"[Step {depth}/{self.max_depth}] Candidate Thoughts:\n"
-                    f"{candidates_text}\n"
-                    f"</thought>\n\n"
+                    f"{candidates_text}\n\n"
                 )
-                async for chunk in self._stream_text(thought_gen_text, chunk_id, model):
+                async for chunk in self._stream_thought(thought_gen_text, chunk_id, model):
                     yield chunk
 
                 # --- 2. Candidate Evaluation Phase ---
@@ -107,8 +105,8 @@ class TreeOfThoughtsEngine:
                         # Fallback to the first parsed candidate
                         best_candidate = candidates[0] if candidates else candidates_text
                         selected_path.append(f"Step {depth}: {best_candidate}")
-                        msg = f"<thought>\n[ToT] Rate limit on step {depth} evaluation. Defaulting to top candidate.\n</thought>\n\n"
-                        async for chunk in self._stream_text(msg, chunk_id, model):
+                        msg = f"[ToT] Rate limit on step {depth} evaluation. Defaulting to top candidate.\n\n"
+                        async for chunk in self._stream_thought(msg, chunk_id, model):
                             yield chunk
                         break
                     raise
@@ -121,15 +119,13 @@ class TreeOfThoughtsEngine:
                 )
                 selected_path.append(f"Step {depth}: {best_thought}")
 
-                # Stream evaluation live inside <thought> block
+                # Stream evaluation live as reasoning_content
                 thought_eval_text = (
-                    f"<thought>\n"
                     f"[Step {depth}/{self.max_depth}] Evaluation & Selection:\n"
                     f"{eval_text}\n\n"
-                    f"Selected Branch: {best_thought}\n"
-                    f"</thought>\n\n"
+                    f"Selected Branch: {best_thought}\n\n"
                 )
-                async for chunk in self._stream_text(thought_eval_text, chunk_id, model):
+                async for chunk in self._stream_thought(thought_eval_text, chunk_id, model):
                     yield chunk
 
             # --- 3. Final Answer Synthesis Phase ---
@@ -283,17 +279,25 @@ class TreeOfThoughtsEngine:
         for token in tokens:
             yield self._make_chunk(chunk_id, model, content=token)
 
+    async def _stream_thought(
+        self, text: str, chunk_id: str, model: str
+    ) -> typing.AsyncGenerator[str, None]:
+        """Yield word-by-word streaming chunks with reasoning_content."""
+        tokens = _split_into_tokens(text)
+        for token in tokens:
+            yield self._make_chunk(chunk_id, model, reasoning_content=token)
+
     def _stream_thought_header(
         self, chunk_id: str, model: str, message: str
     ) -> str:
-        text = f"<thought>\n{message}\n</thought>\n\n"
-        return self._make_chunk(chunk_id, model, content=text)
+        return self._make_chunk(chunk_id, model, reasoning_content=f"{message}\n\n")
 
     def _make_chunk(
         self,
         chunk_id: str,
         model: str,
         content: str | None = None,
+        reasoning_content: str | None = None,
         role: str | None = None,
         finish_reason: str | None = None,
     ) -> str:
@@ -302,6 +306,8 @@ class TreeOfThoughtsEngine:
             delta["role"] = role
         if content is not None:
             delta["content"] = content
+        if reasoning_content is not None:
+            delta["reasoning_content"] = reasoning_content
 
         chunk_dict = {
             "id": chunk_id,

@@ -228,6 +228,7 @@ class GeminiProvider(BaseProvider):
         if model == "gemini-tree-of-thoughts":
             engine = TreeOfThoughtsEngine(send_func=self._send_message)
             full_content: list[str] = []
+            full_reasoning: list[str] = []
             chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
             async for sse_chunk in engine.run(messages, chunk_id, model=model):
                 line = sse_chunk.strip()
@@ -236,15 +237,20 @@ class GeminiProvider(BaseProvider):
                         d = json.loads(line[6:])
                         choices = d.get("choices", [])
                         if choices:
-                            c = choices[0].get("delta", {}).get("content", "")
+                            delta = choices[0].get("delta", {})
+                            c = delta.get("content", "")
                             if c:
                                 full_content.append(c)
+                            rc = delta.get("reasoning_content", "")
+                            if rc:
+                                full_reasoning.append(rc)
                     except Exception:
                         pass
             return build_non_streaming_response(
                 "".join(full_content),
                 model,
                 "stop",
+                reasoning_content="".join(full_reasoning),
             )
 
         retry_sanitized = False

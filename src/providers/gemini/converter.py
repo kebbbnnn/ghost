@@ -417,8 +417,12 @@ def build_non_streaming_response(
     finish_reason: str = "stop",
     conversation_id: str = "",
     response_id: str = "",
+    reasoning_content: str = "",
 ) -> dict:
     """Build a complete (non-streaming) OpenAI chat completion response."""
+    msg: dict[str, Any] = {"role": "assistant", "content": content}
+    if reasoning_content:
+        msg["reasoning_content"] = reasoning_content
     resp = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
@@ -426,7 +430,7 @@ def build_non_streaming_response(
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": content},
+            "message": msg,
             "finish_reason": finish_reason,
         }],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
