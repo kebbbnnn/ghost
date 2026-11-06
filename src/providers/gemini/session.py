@@ -136,6 +136,9 @@ class GeminiProvider(BaseProvider):
                     )
                     parsed = parse_gemini_response(raw)
                     content_str = parsed.get("content", "")
+                    trace = get_current_trace()
+                    if trace and content_str:
+                        trace.upstream_accumulated_text = [content_str]
                     content_str = transpile_fenced_json_tool_calls(content_str)
                     if "CRITICAL MODE: TOOL_CALL_REQUIRED" in prompt and "```python?code_reference" in content_str:
                         content_str = transpile_gemini_code_reference(content_str, prompt)
@@ -257,6 +260,9 @@ class GeminiProvider(BaseProvider):
                 )
                 parsed = parse_gemini_response(raw)
                 content_str = parsed.get("content", "")
+                trace = get_current_trace()
+                if trace and content_str:
+                    trace.upstream_accumulated_text = [content_str]
                 content_str = transpile_fenced_json_tool_calls(content_str)
                 if "CRITICAL MODE: TOOL_CALL_REQUIRED" in prompt and "```python?code_reference" in content_str:
                     content_str = transpile_gemini_code_reference(content_str, prompt)

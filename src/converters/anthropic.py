@@ -10,8 +10,10 @@ from src.core.emulation.stream_parser import (
     CLOSED_TOOL_CALL_RE,
     DEFAULT_ROLE_STOP_SEQUENCES,
     DIRECT_TOOL_TAGS,
+    GENUI_PARTIAL_TAIL_RE,
     TOOL_OPEN_TAG_RE,
     _unwrap_autolinks_in_obj,
+    ensure_closed_json_tool_calls,
     find_json_end_in_tag,
     find_opening_tool_tag,
     is_valid_tool_call,
@@ -19,6 +21,7 @@ from src.core.emulation.stream_parser import (
     normalize_tool_parameters,
     parse_parameter_xml_value,
     parse_tool_payload,
+    strip_genui_inline_tags,
     unwrap_markdown_autolinks,
 )
 from src.providers.gemini.converter import is_gemini_canned_refusal
@@ -214,6 +217,13 @@ def _sanitize_claude_code_assistant_text(text: str) -> str:
         return ""
     if is_gemini_canned_refusal(text):
         return "Understood. Ready to proceed with the workspace task."
+    text = re.sub(r"^\s*</(?:tool_call|invoke|function_call|tool)>\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\s*\[Assistant\]:\s*", "", text, flags=re.IGNORECASE)
+    # Strip any hallucinated role continuation markers ([Access]:, [User]:, [Assistant]:, <tool_result>)
+    m_role = re.search(r"\n[ \t]*(?:\[(?:User|Human|Assistant|Access)\]:|<tool_result\b)", text, flags=re.IGNORECASE)
+    if m_role:
+        text = text[:m_role.start()].rstrip()
+    text = strip_genui_inline_tags(text)
     # Strip isolated closing syntax debris like '}' or '```' or '>' with no letters or digits
     if not re.search(r"[a-zA-Z0-9]", text):
         return ""
@@ -417,6 +427,14 @@ def _extract_msg_text(msg: dict) -> str:
 NON_FILE_TOKENS = {
     "node.js", "next.js", "vue.js", "nuxt.js", "react.js", "express.js",
     "three.js", "d3.js", "chart.js", "plotly.js", "p5.js", "babylon.js",
+    "cannon.js", "matter.js", "pixi.js", "phaser.js", "tone.js", "anime.js",
+    "paper.js", "fabric.js", "konva.js", "leaflet.js", "moment.js", "day.js",
+    "fuse.js", "prism.js", "highlight.js", "marked.js", "mermaid.js", "nest.js",
+    "solid.js", "svelte.js", "bun.js", "deno.js", "electron.js", "ammo.js",
+    "rapier.js", "oimo.js", "planck.js", "box2d.js", "tween.js", "howler.js",
+    "hammer.js", "popper.js", "tippy.js", "swiper.js", "sortable.js", "quill.js",
+    "slate.js", "draft.js", "codemirror.js", "monaco.js", "xterm.js", "pdf.js",
+    "tesseract.js", "tensorflow.js", "brain.js", "transformers.js", "onnx.js",
     "alpine.js", "ember.js", "backbone.js", "jquery.js", "settings.json",
     "settings.local.json", "keybindings.json", "memory.md", "claude.md",
     "json.py", "http.server",
@@ -456,11 +474,14 @@ def _extract_requested_files(task_text: str) -> list[str]:
     text_no_urls = re.sub(r"https?://\S+", "", task_text)
     found: list[str] = []
     basename_to_idx: dict[str, int] = {}
-    raw_matches = [m.group(1).strip().lstrip("./") for m in FILE_REF_PATTERN.finditer(text_no_urls)]
-    for candidate in raw_matches:
+    for m in FILE_REF_PATTERN.finditer(text_no_urls):
+        candidate = m.group(1).strip().lstrip("./")
         clower = candidate.lower()
         base_lower = clower.split("/")[-1]
         if clower in NON_FILE_TOKENS or base_lower in NON_FILE_TOKENS:
+            continue
+        is_backticked = text_no_urls[m.start()] == "`" and text_no_urls[m.end() - 1] == "`"
+        if not is_backticked and "/" not in candidate and re.match(r"^[A-Z][a-zA-Z0-9]*\.js$", candidate):
             continue
         if base_lower not in basename_to_idx:
             basename_to_idx[base_lower] = len(found)
@@ -538,11 +559,27 @@ def _analyze_coding_workflow_state(
     initial_plan = ""
     if not has_pending_tool_results and has_modification_verbs and len(requested_files) >= 3:
         first_batch = requested_files[:6]
+        has_inspection_verbs = any(
+            w in task_lower
+            for w in ("inspect", "read", "examine", "fix", "debug", "refactor", "patch")
+        )
+        has_creation_verbs = any(
+            w in task_lower
+            for w in ("create", "build", "generate", "scaffold", "from scratch", "new ")
+        )
+        if has_inspection_verbs and not has_creation_verbs:
+            action_step = (
+                f"- Start immediately in this turn by emitting `<invoke name=\"Read\">` or `<tool_call>` blocks for the `Read` tool to inspect the existing target files in parallel (starting with: {', '.join(first_batch)}), or `Write` if creating new files!"
+            )
+        else:
+            action_step = (
+                f"- Start immediately in this turn by emitting `<invoke name=\"Write\">` or `<tool_call>` blocks for the `Write` tool to create the files in order (starting with: {', '.join(first_batch)}). Write complete, working code for every file!"
+            )
         initial_plan = (
             "\n\n[MULTI-FILE CREATION PLAN]:\n"
             f"- Target files required ({len(requested_files)}): {', '.join(requested_files)}\n"
             "- NOTE: The `Write` tool automatically creates parent directories (`mkdir -p` via `Bash` is not required before `Write`).\n"
-            f"- Start immediately in this turn by emitting `<invoke name=\"Write\">` or `<tool_call>` blocks for the `Write` tool to create the files in order (starting with: {', '.join(first_batch)}). Write complete, working code for every file!"
+            f"{action_step}"
         )
 
     is_initial_task_turn = (task_start_idx == len(non_system_msgs) - 1)
@@ -848,7 +885,7 @@ def _analyze_coding_workflow_state(
         req_lower = req_f.lower()
         is_test_or_bench = any(
             t in req_lower
-            for t in ("test_", "_test", "tests/", "/test", "bench_", "_bench", "benchmarks/")
+            for t in ("test_", "_test", "tests/", "/test", "bench_", "_bench", "benchmarks/", "verify_", "_verify")
         )
         if is_test_or_bench and (is_exec or is_read or is_mod or len(modified_files) > 0):
             continue
@@ -1462,11 +1499,13 @@ async def openai_to_anthropic_stream(
                                         matched_stop_sequence = s
                                         break
                                 if text_before and text_before.strip():
-                                    if active_block_type != "text":
-                                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                                        active_block_type = "text"
-                                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(text_before)}})}\n\n"
-                                    output_tokens_accumulated += max(1, len(text_before) // 4)
+                                    clean_before = strip_genui_inline_tags(unwrap_markdown_autolinks(text_before))
+                                    if clean_before:
+                                        if active_block_type != "text":
+                                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                            active_block_type = "text"
+                                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': clean_before}})}\n\n"
+                                        output_tokens_accumulated += max(1, len(clean_before) // 4)
                             if active_block_type == "text":
                                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                                 active_block_type = None
@@ -1516,11 +1555,13 @@ async def openai_to_anthropic_stream(
                                     length_triggered = True
 
                             if text_before and text_before.strip():
-                                if active_block_type != "text":
-                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                                    active_block_type = "text"
-                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(text_before)}})}\n\n"
-                                output_tokens_accumulated += max(1, len(text_before) // 4)
+                                clean_before = strip_genui_inline_tags(unwrap_markdown_autolinks(text_before))
+                                if clean_before:
+                                    if active_block_type != "text":
+                                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                        active_block_type = "text"
+                                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': clean_before}})}\n\n"
+                                    output_tokens_accumulated += max(1, len(clean_before) // 4)
 
                         if active_block_type == "text":
                             yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
@@ -1535,7 +1576,11 @@ async def openai_to_anthropic_stream(
                         active_block_type = "tool_use"
                         active_tool_tag = matched_tag_name
                     else:
-                        # Check lookahead prefix match across all open tags
+                        # Strip any complete opGenui inline tags (<badge...>, </badge>, <icon.../>)
+                        buffer = strip_genui_inline_tags(buffer)
+                        if not buffer:
+                            break
+                        # Check lookahead prefix match across all open tags and partial opGenui tags
                         max_prefix_len = 0
                         for candidate_tag in ALL_TOOL_TAGS:
                             full_open = f"<{candidate_tag}"
@@ -1544,6 +1589,11 @@ async def openai_to_anthropic_stream(
                                     if l > max_prefix_len:
                                         max_prefix_len = l
                                     break
+                        m_genui_tail = GENUI_PARTIAL_TAIL_RE.search(buffer)
+                        if m_genui_tail:
+                            genui_prefix_len = len(buffer) - m_genui_tail.start()
+                            if genui_prefix_len > max_prefix_len:
+                                max_prefix_len = genui_prefix_len
 
                         if max_prefix_len > 0:
                             safe_text = buffer[:-max_prefix_len]
@@ -1570,6 +1620,7 @@ async def openai_to_anthropic_stream(
                                     safe_text = safe_text[:rem * 4]
                                     length_triggered = True
 
+                            safe_text = strip_genui_inline_tags(unwrap_markdown_autolinks(safe_text))
                             if safe_text:
                                 if active_block_type != "text":
                                     yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
@@ -1600,30 +1651,72 @@ async def openai_to_anthropic_stream(
                                 close_tag = f"</{t}>"
                                 break
 
-                    end_idx = buffer.find(close_tag)
-                    tag_len = len(close_tag) if end_idx != -1 else 0
+                    end_idx = -1
+                    tag_len = 0
+                    handled_by_json_end = False
+                    if active_tool_tag == "tool_call" and re.match(r"^<tool_call\b[^>]*>\s*\{", buffer, re.IGNORECASE):
+                        brace_start = buffer.find("{")
+                        json_end = find_json_end_in_tag(buffer, brace_start)
+                        if json_end != -1:
+                            try:
+                                parsed_obj = json.loads(buffer[brace_start:json_end])
+                                if isinstance(parsed_obj, dict) and ("name" in parsed_obj or "tool" in parsed_obj or "function" in parsed_obj):
+                                    handled_by_json_end = True
+                                    after = buffer[json_end:]
+                                    after_lstrip = re.sub(r"^[\s}]+", "", after)
+                                    ws_len = len(after) - len(after_lstrip)
+                                    if after_lstrip.lower().startswith("</tool_call>"):
+                                        end_idx = json_end
+                                        tag_len = ws_len + len("</tool_call>")
+                                    elif not after_lstrip or "</tool_call>".startswith(after_lstrip.lower()):
+                                        end_idx = -1
+                                        tag_len = 0
+                                    elif m_gt := re.match(r"^[\s}]*>", after):
+                                        end_idx = json_end
+                                        tag_len = m_gt.end()
+                                    else:
+                                        end_idx = json_end
+                                        tag_len = ws_len
+                            except Exception:
+                                pass
 
-                    # Check for self-closing tag or malformed closing tag
-                    if end_idx == -1:
-                        m_self = re.match(r"^<[a-zA-Z0-9_-]+\b[^>]*?\/>", buffer)
-                        if m_self:
-                            end_idx = 0
-                            tag_len = len(m_self.group(0))
-                        elif buffer.startswith("<tool_call"):
-                            json_end = find_json_end_in_tag(buffer)
-                            if json_end != -1:
-                                after = buffer[json_end:]
-                                m_gt = re.match(r"^\s*>", after)
-                                if m_gt:
-                                    end_idx = json_end
-                                    tag_len = m_gt.end()
+                    if not handled_by_json_end:
+                        end_idx = buffer.find(close_tag)
+                        tag_len = len(close_tag) if end_idx != -1 else 0
+
+                        # Check for self-closing tag or malformed closing tag
+                        if end_idx == -1:
+                            m_self = re.match(r"^<[a-zA-Z0-9_-]+\b[^>]*?\/>", buffer)
+                            if m_self:
+                                end_idx = 0
+                                tag_len = len(m_self.group(0))
+                            elif buffer.startswith("<tool_call"):
+                                json_end = find_json_end_in_tag(buffer)
+                                if json_end != -1:
+                                    after = buffer[json_end:]
+                                    m_gt = re.match(r"^\s*>", after)
+                                    if m_gt:
+                                        end_idx = json_end
+                                        tag_len = m_gt.end()
 
                     if end_idx == -1:
+                        if handled_by_json_end:
+                            break
                         # Check if a new tool tag starts in buffer while inside unclosed tool tag
                         m_next = find_opening_tool_tag(buffer, 1)
                         if m_next and m_next.start() > 0:
                             open_pos = m_next.start()
                             unclosed_prefix = buffer[:open_pos]
+                            # Do not slice if open_pos is inside an unclosed JSON payload or unclosed <parameter> body
+                            inside_unclosed_body = False
+                            if re.match(r"^<tool_call\b[^>]*>\s*\{", unclosed_prefix, re.IGNORECASE):
+                                if find_json_end_in_tag(unclosed_prefix) == -1:
+                                    inside_unclosed_body = True
+                            elif re.match(r"^<invoke\b", unclosed_prefix, re.IGNORECASE):
+                                if len(re.findall(r"<parameter\b", unclosed_prefix, re.IGNORECASE)) > len(re.findall(r"</parameter>", unclosed_prefix, re.IGNORECASE)):
+                                    inside_unclosed_body = True
+                            if inside_unclosed_body:
+                                break
                             t_name, t_params = _parse_invoke_xml(unclosed_prefix)
                             if t_name and t_name.lower() != "unknown":
                                 tool_use_id = f"toolu_{uuid.uuid4().hex[:24]}"
@@ -1652,8 +1745,13 @@ async def openai_to_anthropic_stream(
 
                     xml_block = buffer[:end_idx + tag_len]
                     buffer = buffer[end_idx + tag_len:]
-                    # Strip any immediate trailing rogue braces/fences after closing tag (e.g. </tool_call>})
-                    buffer = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", buffer)
+                    # Strip any immediate trailing rogue braces/fences or orphan closing tags after closing tag
+                    buffer = re.sub(
+                        r"^(?:\s*(?:[\}\]\>\`]+|</(?:tool_call|invoke|function_call|tool)>)\s*)+",
+                        "",
+                        buffer,
+                        flags=re.IGNORECASE,
+                    )
 
                     tool_name, params = _parse_invoke_xml(xml_block)
                     if not tool_name:
@@ -1751,7 +1849,8 @@ async def openai_to_anthropic_stream(
                         yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                     active_block_type = None
         else:
-            clean_rem = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", buffer)
+            clean_rem = strip_genui_inline_tags(unwrap_markdown_autolinks(buffer))
+            clean_rem = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", clean_rem)
             clean_rem = re.sub(r"^\s*```\s*$", "", clean_rem)
             has_substance = bool(re.search(r"[a-zA-Z0-9]", clean_rem))
             if clean_rem and (not tool_called or has_substance):
@@ -1762,7 +1861,10 @@ async def openai_to_anthropic_stream(
                 if active_block_type != "text":
                     yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
                     active_block_type = "text"
-                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': unwrap_markdown_autolinks(clean_rem)}})}\n\n"
+                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': clean_rem}})}\n\n"
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                active_block_type = None
+            elif active_block_type in ("text", "thinking"):
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                 active_block_type = None
     elif active_block_type in ("text", "thinking"):
@@ -1771,8 +1873,13 @@ async def openai_to_anthropic_stream(
 
     if tool_called:
         stop_reason = "tool_use"
+        matched_stop_sequence = None
     elif stop_triggered:
-        stop_reason = "stop_sequence"
+        if stop_sequences and matched_stop_sequence in stop_sequences:
+            stop_reason = "stop_sequence"
+        else:
+            stop_reason = "end_turn"
+            matched_stop_sequence = None
     elif length_triggered:
         stop_reason = "max_tokens"
     else:
@@ -1835,7 +1942,7 @@ async def openai_to_anthropic_json(
         return {"type": "error", "error": {"type": "api_error", "message": "No choices returned"}}
 
     msg_obj = choices[0].get("message", {})
-    content = msg_obj.get("content", "") or ""
+    content = ensure_closed_json_tool_calls(msg_obj.get("content", "") or "")
     tool_calls = msg_obj.get("tool_calls", [])
 
     blocks = []
@@ -1940,10 +2047,10 @@ async def openai_to_anthropic_json(
                 break
         has_substance = bool(re.search(r"[a-zA-Z0-9]", post_text))
         if post_text and (not has_tool_call or has_substance):
-            blocks.append({"type": "text", "text": unwrap_markdown_autolinks(post_text)})
+            blocks.append({"type": "text", "text": strip_genui_inline_tags(unwrap_markdown_autolinks(post_text))})
     else:
         # Normal text response: check stop_sequences and max_tokens
-        text_resp = content
+        text_resp = strip_genui_inline_tags(unwrap_markdown_autolinks(content))
         for s in normalized_stops:
             if s in text_resp:
                 idx = text_resp.find(s)
@@ -1964,8 +2071,13 @@ async def openai_to_anthropic_json(
 
     if has_tool_call:
         stop_reason = "tool_use"
+        matched_stop_sequence = None
     elif stop_triggered:
-        stop_reason = "stop_sequence"
+        if stop_sequences and matched_stop_sequence in stop_sequences:
+            stop_reason = "stop_sequence"
+        else:
+            stop_reason = "end_turn"
+            matched_stop_sequence = None
     elif length_triggered:
         stop_reason = "max_tokens"
     else:

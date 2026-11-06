@@ -170,6 +170,13 @@ DEFAULT_ROLE_STOP_SEQUENCES: tuple[str, ...] = (
     "\n\n[Human]:",
     "\n[Human]:",
     "[Human]:",
+    "\n\n[Assistant]:",
+    "\n[Assistant]:",
+    "\n\n[Access]:",
+    "\n[Access]:",
+    "[Access]:",
+    "\n\n<tool_result",
+    "\n<tool_result",
 )
 
 
@@ -182,6 +189,7 @@ def strip_googleusercontent_artifacts(text: str) -> str:
 
 GEMINI_MATH_SPAN_RE = re.compile(r"<span class=[\"']math-(?:inline|display)[\"']>(.*?)</span>", re.DOTALL)
 GEMINI_STRAY_SPAN_RE = re.compile(r"</?span(?:\s+class=[\"'][^\"']*[\"'])?\s*/?>")
+GEMINI_GENERATE_WIDGET_RE = re.compile(r"</?GenerateWidget\b[^>]*?>", re.IGNORECASE)
 
 GEMINI_LATEX_REPLACEMENTS = [
     (r"\\_", "_"),
@@ -208,8 +216,8 @@ GEMINI_LATEX_REPLACEMENTS = [
 
 
 def strip_gemini_html_artifacts(text: str) -> str:
-    """Unwrap and strip Gemini web UI HTML artifacts like math-inline spans leaking into text/code."""
-    if not text or ("math-" not in text and "\\_" not in text):
+    """Unwrap and strip Gemini web UI HTML artifacts like math-inline spans and GenerateWidget placeholders leaking into text/code."""
+    if not text or ("math-" not in text and "\\_" not in text and "GenerateWidget" not in text):
         return text
 
     def unwrap(match):
@@ -218,7 +226,8 @@ def strip_gemini_html_artifacts(text: str) -> str:
             inner = re.sub(pat, repl, inner)
         return inner
 
-    res = GEMINI_MATH_SPAN_RE.sub(unwrap, text)
+    res = GEMINI_GENERATE_WIDGET_RE.sub("", text)
+    res = GEMINI_MATH_SPAN_RE.sub(unwrap, res)
     res = GEMINI_STRAY_SPAN_RE.sub("", res)
     for pat, repl in GEMINI_LATEX_REPLACEMENTS:
         res = re.sub(pat, repl, res)
@@ -308,10 +317,39 @@ def _unwrap_autolinks_in_obj(obj: Any) -> Any:
     return obj
 
 
+GENUI_INLINE_TAG_RE = re.compile(
+    r"</?(?:badge|box|row|callout)(?:\s+[^>]*)?>|<(?:title|text)\s+[^>]*>|</(?:title|text)>|<(?:icon|divider)(?:\s+[^>]*)?/>\s*",
+    re.IGNORECASE,
+)
+_GENUI_TAG_NAMES = ("badge", "box", "row", "callout", "title", "text", "icon", "divider")
+_GENUI_PREFIX_ALTERNATIVES = "|".join(
+    sorted(
+        {name[:i] for name in _GENUI_TAG_NAMES for i in range(1, len(name) + 1)},
+        key=len,
+        reverse=True,
+    )
+)
+GENUI_PARTIAL_TAIL_RE = re.compile(
+    rf"</?(?:(?:{'|'.join(_GENUI_TAG_NAMES)})(?:\s+[^>]*)?|{_GENUI_PREFIX_ALTERNATIVES})?$",
+    re.IGNORECASE,
+)
+
+
+def strip_genui_inline_tags(text: str) -> str:
+    """Strip ChatGPT opGenui (model_dil_v2) inline/layout tags (<badge>, <box>, <row>, <title>, <text>, <icon/>, <divider/>) outside code blocks."""
+    if not text or "<" not in text:
+        return text
+    lower = text.lower()
+    if not any(t in lower for t in ("<badge", "</badge", "<box", "</box", "<row", "</row", "<callout", "</callout", "<title ", "</title>", "<text ", "</text>", "<icon", "<divider")):
+        return text
+    return GENUI_INLINE_TAG_RE.sub("", text)
+
+
 def sanitize_genui_tags(text: str) -> str:
     """Sanitize GenUI React widget tags into human-readable text."""
     if not text:
         return ""
+    text = strip_genui_inline_tags(text)
 
     framework_attrs = {
         'mode', 'duration', 'locale', 'key', 'resolutionid', '__resolutionid',
@@ -424,7 +462,7 @@ def _extract_balanced_braces(text: str, start_idx: int) -> str | None:
 def _sanitize_json_string(raw: str) -> str:
     """Tolerant cleaner for LLM JSON outputs (unwraps auto-links, strips fences, fixes trailing commas)."""
     clean = unwrap_markdown_autolinks(raw).strip()
-    if "math-" in clean or "\\_" in clean:
+    if "math-" in clean or "\\_" in clean or "GenerateWidget" in clean:
         clean = strip_gemini_html_artifacts(clean)
     # Remove markdown code fences if wrapped
     if clean.startswith("```json"):
@@ -536,6 +574,9 @@ def normalize_tool_parameters(tool_name: str, params: dict) -> dict:
             params["content"] = json.dumps(val, indent=2)
         elif not isinstance(val, str):
             params["content"] = "" if val is None else str(val)
+        m_cdata = re.match(r"^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$", params["content"])
+        if m_cdata:
+            params["content"] = re.sub(r"^\r?\n|\r?\n$", "", m_cdata.group(1))
         params["content"] = re.sub(r"[ \t]+(?=\r?\n)", "", params["content"])
 
     for key in ("old_string", "new_string"):
@@ -549,6 +590,9 @@ def normalize_tool_parameters(tool_name: str, params: dict) -> dict:
                 params[key] = json.dumps(val, indent=2)
             elif not isinstance(val, str):
                 params[key] = "" if val is None else str(val)
+            m_cdata = re.match(r"^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$", params[key])
+            if m_cdata:
+                params[key] = re.sub(r"^\r?\n|\r?\n$", "", m_cdata.group(1))
             params[key] = re.sub(r"[ \t]+(?=\r?\n)", "", params[key])
 
     if tl == "multiedit" and isinstance(params.get("edits"), list):
@@ -644,6 +688,9 @@ def is_valid_tool_call(tool_name: str, params: dict | None) -> bool:
 
 def parse_parameter_xml_value(p_name: str, raw_val: str) -> Any:
     """Parse parameter text from XML, respecting string vs JSON/primitive data types."""
+    m_cdata = re.match(r"^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$", raw_val)
+    if m_cdata:
+        raw_val = m_cdata.group(1)
     if p_name in ("content", "old_string", "new_string", "old_str", "new_str"):
         trimmed = re.sub(r"^\r?\n|\r?\n$", "", raw_val)
     else:
@@ -652,7 +699,7 @@ def parse_parameter_xml_value(p_name: str, raw_val: str) -> Any:
     unwrapped = unwrap_markdown_autolinks(trimmed)
     if "&" in unwrapped:
         unwrapped = html.unescape(unwrapped)
-    if "math-" in unwrapped or "\\_" in unwrapped:
+    if "math-" in unwrapped or "\\_" in unwrapped or "GenerateWidget" in unwrapped:
         unwrapped = strip_gemini_html_artifacts(unwrapped)
 
     p_name_lower = p_name.lower()
@@ -877,15 +924,44 @@ def _fallback_extract_arguments(func_name: str, raw_text: str) -> dict:
     return args
 
 
+_STRICT_TOOL_ALLOWED_KEYS: dict[str, set[str]] = {
+    "write": {"file_path", "content", "path", "file", "filename", "filepath", "description"},
+    "write_file": {"file_path", "content", "path", "file", "filename", "filepath", "description"},
+    "create_file": {"file_path", "content", "path", "file", "filename", "filepath", "description"},
+    "edit": {"file_path", "old_string", "new_string", "replace_all", "content", "edits", "path", "file", "old_str", "new_str", "description"},
+    "edit_file": {"file_path", "old_string", "new_string", "replace_all", "content", "edits", "path", "file", "old_str", "new_str", "description"},
+    "update": {"file_path", "old_string", "new_string", "replace_all", "content", "edits", "path", "file", "old_str", "new_str", "description"},
+    "update_file": {"file_path", "old_string", "new_string", "replace_all", "content", "edits", "path", "file", "old_str", "new_str", "description"},
+    "read": {"file_path", "offset", "limit", "pages", "path", "file"},
+    "read_file": {"file_path", "offset", "limit", "pages", "path", "file"},
+    "bash": {"command", "timeout", "description", "run_in_background", "dangerouslyDisableSandbox", "restart", "dir", "cwd", "cmd", "code", "script"},
+    "cmd": {"command", "timeout", "description", "run_in_background", "dangerouslyDisableSandbox", "restart", "dir", "cwd", "cmd", "code", "script"},
+    "sh": {"command", "timeout", "description", "run_in_background", "dangerouslyDisableSandbox", "restart", "dir", "cwd", "cmd", "code", "script"},
+    "terminal": {"command", "timeout", "description", "run_in_background", "dangerouslyDisableSandbox", "restart", "dir", "cwd", "cmd", "code", "script"},
+    "execute_command": {"command", "timeout", "description", "run_in_background", "dangerouslyDisableSandbox", "restart", "dir", "cwd", "cmd", "code", "script"},
+    "run_command": {"command", "timeout", "description", "run_in_background", "dangerouslyDisableSandbox", "restart", "dir", "cwd", "cmd", "code", "script"},
+    "glob": {"pattern", "path", "dir", "directory"},
+}
+
+
 def _is_reliable_json_repair(norm: dict | None, source_str: str) -> bool:
-    """Ensure json_repair did not mangle unescaped quotes into empty parameters and phantom keys."""
+    """Ensure json_repair did not mangle unescaped quotes into empty parameters, truncated content, or phantom keys."""
     if not norm or not isinstance(norm, dict):
         return False
     name = (norm.get("name") or "").lower()
     args = norm.get("arguments") or {}
+    if not isinstance(args, dict):
+        return False
+    allowed = _STRICT_TOOL_ALLOWED_KEYS.get(name)
+    if allowed is not None and any(k not in allowed for k in args):
+        return False
     if name in ("write", "write_file", "create_file"):
-        if '"content"' in source_str and not args.get("content"):
-            return False
+        if '"content"' in source_str:
+            content_val = args.get("content")
+            if not content_val:
+                return False
+            if len(source_str) > 300 and len(str(content_val)) < len(source_str) * 0.5:
+                return False
     elif name in ("edit", "edit_file", "update", "update_file"):
         if '"old_string"' in source_str and not args.get("old_string"):
             return False
@@ -1153,6 +1229,61 @@ def parse_tool_payload(raw_payload: str) -> dict | None:
     return None
 
 
+def ensure_closed_json_tool_calls(text: str) -> str:
+    """Ensure `<tool_call>{...}` blocks with a valid complete JSON payload have a closing `</tool_call>` tag.
+
+    ChatGPT's Harmony harness (`gpt-6`) sometimes swallows `</tool_call>` as a stop sequence
+    when splitting multi-tool responses across message fragments.
+    """
+    if not text or "<tool_call" not in text.lower():
+        return text
+    out = []
+    pos = 0
+    open_re = re.compile(r"<tool_call\b[^>]*>\s*\{", re.IGNORECASE)
+    while pos < len(text):
+        m = open_re.search(text, pos)
+        if not m:
+            out.append(text[pos:])
+            break
+        if is_inside_inline_code(text, m.start()):
+            out.append(text[pos : m.end()])
+            pos = m.end()
+            continue
+        brace_start = m.end() - 1
+        json_end = find_json_end_in_tag(text, brace_start)
+        if json_end == -1:
+            out.append(text[pos:])
+            break
+        json_str = text[brace_start:json_end]
+        is_valid_json_tool = False
+        try:
+            parsed_obj = json.loads(json_str)
+            if isinstance(parsed_obj, dict) and ("name" in parsed_obj or "tool" in parsed_obj or "function" in parsed_obj):
+                is_valid_json_tool = True
+        except Exception:
+            pass
+        if not is_valid_json_tool:
+            out.append(text[pos : m.end()])
+            pos = m.end()
+            continue
+        after = text[json_end:]
+        m_close = re.match(r"^[\s}]*</tool_call>", after, re.IGNORECASE)
+        if m_close:
+            out.append(text[pos:json_end])
+            out.append("</tool_call>")
+            pos = json_end + m_close.end()
+        elif not re.match(r"^\s*>", after):
+            m_extra = re.match(r"^[\s}]*", after)
+            extra_len = m_extra.end() if m_extra and "}" in m_extra.group(0) else 0
+            out.append(text[pos:json_end])
+            out.append("</tool_call>")
+            pos = json_end + extra_len
+        else:
+            out.append(text[pos:json_end])
+            pos = json_end
+    return "".join(out)
+
+
 def transpile_fenced_json_tool_calls(content: str) -> str:
     """
     Detect fenced markdown code blocks (or bare JSON) containing tool calls
@@ -1204,7 +1335,7 @@ def transpile_fenced_json_tool_calls(content: str) -> str:
             if parsed and parsed.get("name"):
                 return f"<tool_call>\n{json.dumps(parsed)}\n</tool_call>"
 
-    return result
+    return ensure_closed_json_tool_calls(result)
 
 
 class StreamEmulationProcessor:

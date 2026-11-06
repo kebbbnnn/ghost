@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 
 # File write lock to prevent interleaved writes from concurrent requests
 _FILE_LOCK = threading.Lock()
+_DEFAULT_RAW_LOG_FILE = RAW_LOG_FILE
 
 
 def _sanitize_for_logging(obj: Any, max_str_len: int = 1000) -> Any:
@@ -195,6 +196,9 @@ class RequestTrace:
         self.upstream_url = url
         self.upstream_payload = payload
         self.upstream_attempt = attempt
+        self.upstream_status = 200
+        self.upstream_raw_lines.clear()
+        self.upstream_accumulated_text.clear()
 
     def log_upstream_chunk(self, line: str):
         """Record raw line/chunk received from upstream provider."""
@@ -343,6 +347,8 @@ class RequestTrace:
         self.end_time = time.time()
 
         if not RAW_LOGGING_ENABLED:
+            return
+        if "PYTEST_CURRENT_TEST" in os.environ and RAW_LOG_FILE == _DEFAULT_RAW_LOG_FILE:
             return
 
         trace_text = self.build_trace_text()

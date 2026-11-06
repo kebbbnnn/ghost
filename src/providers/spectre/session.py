@@ -136,7 +136,12 @@ class SpectreProvider(BaseProvider):
 
         try:
             if mode == OrchestratorMode.FAST:
-                async for chunk in self._stream_fast(messages, chunk_id):
+                async for chunk in self._stream_fast(
+                    messages,
+                    chunk_id,
+                    conversation_id=conversation_id,
+                    parent_message_id=parent_message_id,
+                ):
                     yield chunk
             else:
                 async for chunk in self._stream_ultra(messages, chunk_id):
@@ -161,7 +166,11 @@ class SpectreProvider(BaseProvider):
         mode = self._resolve_mode(model)
 
         if mode == OrchestratorMode.FAST:
-            content = await self._execute_fast(messages)
+            content = await self._execute_fast(
+                messages,
+                conversation_id=conversation_id,
+                parent_message_id=parent_message_id,
+            )
         else:
             content = await self._execute_ultra(messages)
 
@@ -182,7 +191,12 @@ class SpectreProvider(BaseProvider):
     # Fast mode (Spectre)
     # ------------------------------------------------------------------
 
-    async def _execute_fast(self, messages: list[dict]) -> str:
+    async def _execute_fast(
+        self,
+        messages: list[dict],
+        conversation_id: str | None = None,
+        parent_message_id: str | None = None,
+    ) -> str:
         """Fast mode: route to a single worker and return its response with fallback."""
         from src.providers import get_provider_for_model
 
@@ -193,12 +207,19 @@ class SpectreProvider(BaseProvider):
             w for w in self._coordinator._available_workers if w != decision.selected_model
         ]
         last_exc = None
-        for model_name in workers_to_try:
+        for idx, model_name in enumerate(workers_to_try):
             provider = get_provider_for_model(model_name)
             if not provider:
                 continue
             try:
-                response = await provider.non_streaming_chat(messages, model_name)
+                conv_id = conversation_id if idx == 0 else None
+                parent_id = parent_message_id if idx == 0 else None
+                response = await provider.non_streaming_chat(
+                    messages,
+                    model_name,
+                    conversation_id=conv_id,
+                    parent_message_id=parent_id,
+                )
                 choices = response.get("choices", [])
                 if choices:
                     return choices[0].get("message", {}).get("content", "")
@@ -211,7 +232,13 @@ class SpectreProvider(BaseProvider):
             raise last_exc
         raise RuntimeError(f"No available provider for routed models {workers_to_try}")
 
-    async def _stream_fast(self, messages: list[dict], chunk_id: str):
+    async def _stream_fast(
+        self,
+        messages: list[dict],
+        chunk_id: str,
+        conversation_id: str | None = None,
+        parent_message_id: str | None = None,
+    ):
         """Fast mode streaming: route to a single worker and stream its output with fallback."""
         from src.providers import get_provider_for_model
 
@@ -222,13 +249,20 @@ class SpectreProvider(BaseProvider):
             w for w in self._coordinator._available_workers if w != decision.selected_model
         ]
         last_exc = None
-        for model_name in workers_to_try:
+        for idx, model_name in enumerate(workers_to_try):
             provider = get_provider_for_model(model_name)
             if not provider:
                 continue
             try:
                 stream_started = False
-                async for chunk in provider.stream_chat(messages, model_name):
+                conv_id = conversation_id if idx == 0 else None
+                parent_id = parent_message_id if idx == 0 else None
+                async for chunk in provider.stream_chat(
+                    messages,
+                    model_name,
+                    conversation_id=conv_id,
+                    parent_message_id=parent_id,
+                ):
                     stream_started = True
                     yield chunk
                 return

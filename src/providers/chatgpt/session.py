@@ -33,6 +33,8 @@ from src.core.emulation.stream_parser import (
 from .converter import (
     map_model,
     parse_chatgpt_sse,
+    extract_message_from_event,
+    is_ignored_chatgpt_message,
     chatgpt_event_to_openai_chunk,
     format_openai_chunk,
     build_non_streaming_response,
@@ -210,6 +212,9 @@ class ChatGPTProvider(BaseProvider):
                 role_emitted = False
                 buffered_chunks: list[str] = []
                 streaming_unlocked = not (requires_tool_check and attempt == 0)
+                slot_ignored: dict[int, bool] = {}
+                last_c: int | None = None
+                default_ignored = False
                 try:
                     async for raw_line in self._stream_raw_chat(
                         messages, target_model, conversation_id, parent_message_id, retry_sanitized=retry_sanitized
@@ -218,7 +223,28 @@ class ChatGPTProvider(BaseProvider):
                         if event is None:
                             continue
 
-                        chunk = chatgpt_event_to_openai_chunk(event, target_model, chunk_id)
+                        input_ids = getattr(self, "_input_message_ids", None)
+                        c_val = event.get("c")
+                        c_slot = c_val if isinstance(c_val, int) else None
+                        if c_slot is not None:
+                            last_c = c_slot
+
+                        msg_obj = extract_message_from_event(event)
+                        if msg_obj is not None:
+                            ignored = is_ignored_chatgpt_message(msg_obj, input_ids)
+                            if c_slot is not None:
+                                slot_ignored[c_slot] = ignored
+                            else:
+                                default_ignored = ignored
+                            if ignored:
+                                continue
+                        else:
+                            eff_c = c_slot if c_slot is not None else last_c
+                            ignored = slot_ignored.get(eff_c, default_ignored) if eff_c is not None else default_ignored
+                            if ignored and not event.get("done") and event.get("type") != "message_stream_complete":
+                                continue
+
+                        chunk = chatgpt_event_to_openai_chunk(event, target_model, chunk_id, input_ids)
                         if chunk is None:
                             continue
 
@@ -275,6 +301,9 @@ class ChatGPTProvider(BaseProvider):
 
                         if choices and choices[0].get("finish_reason"):
                             break
+
+                    if trace is not None:
+                        trace.upstream_accumulated_text = [content_tracker[0]] if content_tracker else []
 
                     if not streaming_unlocked:
                         full_text = content_tracker[0] if content_tracker else ""
@@ -373,6 +402,9 @@ class ChatGPTProvider(BaseProvider):
         try:
             for attempt in range(2):
                 full_content = ""
+                slot_ignored: dict[int, bool] = {}
+                last_c: int | None = None
+                default_ignored = False
                 try:
                     async for raw_line in self._stream_raw_chat(
                         messages, target_model, conversation_id, parent_message_id, retry_sanitized=retry_sanitized
@@ -381,7 +413,28 @@ class ChatGPTProvider(BaseProvider):
                         if not event or event.get("done"):
                             continue
 
-                        chunk = chatgpt_event_to_openai_chunk(event, target_model, "dummy")
+                        input_ids = getattr(self, "_input_message_ids", None)
+                        c_val = event.get("c")
+                        c_slot = c_val if isinstance(c_val, int) else None
+                        if c_slot is not None:
+                            last_c = c_slot
+
+                        msg_obj = extract_message_from_event(event)
+                        if msg_obj is not None:
+                            ignored = is_ignored_chatgpt_message(msg_obj, input_ids)
+                            if c_slot is not None:
+                                slot_ignored[c_slot] = ignored
+                            else:
+                                default_ignored = ignored
+                            if ignored:
+                                continue
+                        else:
+                            eff_c = c_slot if c_slot is not None else last_c
+                            ignored = slot_ignored.get(eff_c, default_ignored) if eff_c is not None else default_ignored
+                            if ignored and event.get("type") != "message_stream_complete":
+                                continue
+
+                        chunk = chatgpt_event_to_openai_chunk(event, target_model, "dummy", input_ids)
                         if chunk:
                             choices = chunk.get("choices", [])
                             if choices:
@@ -399,6 +452,8 @@ class ChatGPTProvider(BaseProvider):
 
                                 if choice.get("finish_reason"):
                                     finish_reason = choice["finish_reason"]
+                    if trace is not None:
+                        trace.upstream_accumulated_text = [full_content] if full_content else []
                     full_content = transpile_fenced_json_tool_calls(full_content)
                     if attempt == 0 and _is_chatgpt_missing_required_tool_call(messages, full_content):
                         log.warning(
@@ -467,6 +522,7 @@ class ChatGPTProvider(BaseProvider):
         self._build_number: str = "8338682"
         self._client_version: str = "prod-6e1773e1c0cf3d4b9ca4def1e4c24b9ac1fa26f4"
         self._geo_info: dict = {}
+        self._input_message_ids: set[str] = set()
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -743,8 +799,6 @@ class ChatGPTProvider(BaseProvider):
         Yields:
             Raw SSE data lines (e.g. 'data: {"message": {...}}')
         """
-        await self.ensure_ready()
-        
         max_retries = 2
         for attempt in range(max_retries + 1):
             await self.ensure_ready()
@@ -769,6 +823,9 @@ class ChatGPTProvider(BaseProvider):
             # If continuing a conversation, ChatGPT expects only the newest message
             if conversation_id and parent_message_id:
                 chatgpt_messages = chatgpt_messages[-1:]
+            self._input_message_ids = {
+                m["id"] for m in chatgpt_messages if isinstance(m, dict) and "id" in m
+            }
 
             body = {
                 "action": "next",
@@ -817,6 +874,9 @@ class ChatGPTProvider(BaseProvider):
                 "accept": "text/event-stream",
                 **self._sentinel_headers,
             }
+            # Sentinel requirements/proof/turnstile tokens are single-use per conversation POST;
+            # mark the current token as consumed so the next turn or retry fetches a fresh one.
+            self._token_fetched_at = 0.0
             
             if has_images:
                 prompt_text = ""
@@ -902,12 +962,23 @@ class ChatGPTProvider(BaseProvider):
                             f"CF-Ray: {resp.headers.get('cf-ray', 'n/a')}. "
                             f"Body ({len(body_bytes)}B): {body_bytes.decode('utf-8', errors='ignore')[:500]}"
                         )
-                        hard_reset = not bool(conversation_id)
-                        await self._reset_session(hard=hard_reset)
                         if resp.status_code == 403:
-                            # Cloudflare IP/device block cannot be bypassed by immediate retry.
+                            await self._reset_session(hard=True)
+                            conversation_id = None
+                            parent_message_id = None
+                            if attempt == 0 and max_retries >= 1:
+                                backoff = random.uniform(1.0, 2.0)
+                                log.warning(
+                                    "Session 403. Resetting device ID and retrying once after %.1fs...",
+                                    backoff,
+                                )
+                                await asyncio.sleep(backoff)
+                                continue
+                            # Cloudflare IP/device block cannot be bypassed by further retries.
                             # Fail fast so proxy can transparently fail over to Gemini without stalling client.
                             raise TokenExpiredError("Device flagged (403 Cloudflare block)")
+                        hard_reset = not bool(conversation_id)
+                        await self._reset_session(hard=hard_reset)
                         if attempt < max_retries:
                             # Back off briefly before retry on 401 token refresh
                             backoff = random.uniform(1.0, 2.5)

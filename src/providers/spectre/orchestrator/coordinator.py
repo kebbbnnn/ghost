@@ -67,6 +67,19 @@ class Coordinator:
         Falls back to the first available worker if parsing fails.
         """
         user_query = self._extract_user_query(messages)
+        if len(messages) > 2 and any(
+            isinstance(m.get("content"), str)
+            and any(tag in m["content"] for tag in ("<tool_result", "<invoke", "<tool_call"))
+            for m in messages
+        ):
+            target = self._model if self._model in self._available_workers else self._available_workers[0]
+            log.info("Spectre routing (multi-turn tool fast-path): → %s", target)
+            return RoutingDecision(
+                selected_model=target,
+                confidence=1.0,
+                reasoning="Multi-turn tool execution continuation fast-path",
+            )
+
         system_prompt = build_fast_routing_prompt(self._available_workers)
 
         coord_messages = [

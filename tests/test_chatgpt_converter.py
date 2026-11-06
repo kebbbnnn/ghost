@@ -2,6 +2,7 @@ import unittest
 from src.providers.chatgpt.converter import (
     parse_chatgpt_sse,
     chatgpt_event_to_openai_chunk,
+    is_ignored_chatgpt_message,
     map_model,
     format_openai_chunk,
     build_non_streaming_response,
@@ -179,6 +180,83 @@ class TestChatGPTConverter(unittest.TestCase):
             }
         }
         self.assertIsNone(chatgpt_event_to_openai_chunk(legacy_none, "auto", "chunk-3"))
+
+    def test_chatgpt_event_to_openai_chunk_ignores_reasoning_recap_and_thoughts(self):
+        # gpt-6 emits reasoning_recap with status=finished_successfully, end_turn=false before the actual response
+        recap_event = {
+            "v": {
+                "message": {
+                    "id": "msg-recap",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "reasoning_recap", "content": "Worked for a second"},
+                    "status": "finished_successfully",
+                    "end_turn": False,
+                    "recipient": "all",
+                }
+            },
+            "c": 5,
+        }
+        self.assertIsNone(chatgpt_event_to_openai_chunk(recap_event, "auto", "chunk-1"))
+
+        thoughts_event = {
+            "v": {
+                "message": {
+                    "id": "msg-thoughts",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "thoughts", "thoughts": [{"summary": "Thinking"}]},
+                    "status": "finished_successfully",
+                    "end_turn": False,
+                    "recipient": "all",
+                }
+            },
+            "c": 4,
+        }
+        self.assertIsNone(chatgpt_event_to_openai_chunk(thoughts_event, "auto", "chunk-1"))
+
+        commentary_event = {
+            "v": {
+                "message": {
+                    "id": "msg-comm",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "text", "parts": ["{\"cmd\": \"ls\"}"]},
+                    "status": "finished_successfully",
+                    "recipient": "functions.exec",
+                    "channel": "commentary",
+                }
+            }
+        }
+        self.assertIsNone(chatgpt_event_to_openai_chunk(commentary_event, "auto", "chunk-1"))
+
+        echoed_input_event = {
+            "v": {
+                "message": {
+                    "id": "echoed-assistant-id",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "text", "parts": ["Historical response"]},
+                    "status": "finished_successfully",
+                    "recipient": "all",
+                }
+            }
+        }
+        self.assertIsNone(
+            chatgpt_event_to_openai_chunk(
+                echoed_input_event, "auto", "chunk-1", input_message_ids={"echoed-assistant-id"}
+            )
+        )
+
+        # Final channel non-fragment message starts with is_visually_hidden_from_conversation=True
+        # before the first token patch removes it; must NOT be ignored.
+        final_channel_init_msg = {
+            "id": "final-msg-1",
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": [""]},
+            "status": "in_progress",
+            "end_turn": False,
+            "metadata": {"is_visually_hidden_from_conversation": True},
+            "recipient": "all",
+            "channel": "final",
+        }
+        self.assertFalse(is_ignored_chatgpt_message(final_channel_init_msg))
 
     def test_build_non_streaming_response(self):
         res = build_non_streaming_response("Test output", "auto", "stop")

@@ -55,7 +55,65 @@ def parse_chatgpt_sse(line: str) -> dict | None:
 
 
 
-def chatgpt_event_to_openai_chunk(event: dict, model: str, chunk_id: str) -> dict | None:
+def extract_message_from_event(event: dict) -> dict | None:
+    """Extract the message dict from a ChatGPT SSE event if this event initiates or replaces a message."""
+    if not isinstance(event, dict):
+        return None
+    msg = event.get("message")
+    if isinstance(msg, dict):
+        return msg
+    event_v = event.get("v")
+    if isinstance(event_v, dict):
+        msg = event_v.get("message")
+        if isinstance(msg, dict):
+            return msg
+        if event.get("p") == "/message" and "author" in event_v:
+            return event_v
+    elif isinstance(event_v, list):
+        for op in event_v:
+            if isinstance(op, dict):
+                op_v = op.get("v")
+                if isinstance(op_v, dict):
+                    if isinstance(op_v.get("message"), dict):
+                        return op_v["message"]
+                    if op.get("p") == "/message" and "author" in op_v:
+                        return op_v
+    return None
+
+
+def is_ignored_chatgpt_message(msg: dict, input_message_ids: set[str] | None = None) -> bool:
+    """Return True if a ChatGPT message object is an echoed input, internal thought/recap, or tool commentary."""
+    if not isinstance(msg, dict):
+        return True
+    if input_message_ids and msg.get("id") in input_message_ids:
+        return True
+    if msg.get("author", {}).get("role") != "assistant":
+        return True
+    if msg.get("channel") in ("commentary", "analysis"):
+        return True
+    if msg.get("recipient", "all") not in ("all", None, ""):
+        return True
+    metadata = msg.get("metadata") or {}
+    if isinstance(metadata, dict):
+        if metadata.get("is_message_fragment") is True:
+            return True
+        if metadata.get("is_visually_hidden_from_conversation") is True and msg.get("channel") != "final":
+            return True
+    content_obj = msg.get("content", {})
+    if not isinstance(content_obj, dict):
+        return True
+    content_type = content_obj.get("content_type")
+    if content_type not in ("text", "multimodal_text", None, ""):
+        return True
+    return False
+
+
+def chatgpt_event_to_openai_chunk(
+    event: dict,
+    model: str,
+    chunk_id: str,
+    input_message_ids: set[str] | None = None,
+) -> dict | None:
     """
     Convert a parsed ChatGPT SSE event into an OpenAI-compatible chunk dict.
     Returns None if the event carries no useful content.
@@ -161,14 +219,11 @@ def chatgpt_event_to_openai_chunk(event: dict, model: str, chunk_id: str) -> dic
         return None
 
     # --- Legacy format or message initiation: {"message": {...}} or {"v": {"message": {...}}} ---
-    msg = event.get("message")
-    if not msg and isinstance(event_v, dict):
-        msg = event_v.get("message")
-
+    msg = extract_message_from_event(event)
     if not msg:
         return None
 
-    if msg.get("author", {}).get("role") != "assistant":
+    if is_ignored_chatgpt_message(msg, input_message_ids):
         return None
 
     content_obj = msg.get("content", {})
@@ -181,14 +236,18 @@ def chatgpt_event_to_openai_chunk(event: dict, model: str, chunk_id: str) -> dic
     text_delta = "".join(text_parts)
 
     # Only assign finish_reason if this message is addressed to the user (not an internal tool recipient)
+    # and end_turn is not explicitly False (e.g. intermediate reasoning messages).
     recipient = msg.get("recipient", "all")
     status = msg.get("status", "")
+    end_turn = msg.get("end_turn")
+    is_v1_initiation = isinstance(event_v, dict) and "message" in event_v
     finish_reason = None
-    if recipient in ("all", None, ""):
-        if status in ("finished_successfully", "stopped"):
-            finish_reason = "stop"
-        elif status == "max_tokens":
-            finish_reason = "length"
+    if recipient in ("all", None, "") and end_turn is not False:
+        if not (is_v1_initiation and not text_delta and end_turn is not True):
+            if status in ("finished_successfully", "stopped"):
+                finish_reason = "stop"
+            elif status == "max_tokens":
+                finish_reason = "length"
 
     if not text_delta and not finish_reason:
         return None

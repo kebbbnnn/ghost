@@ -131,6 +131,32 @@ def transpile_gemini_code_reference(content: str, prompt: str = "") -> str:
 # Gemini batch-RPC → internal dict
 # ---------------------------------------------------------------------------
 
+_HALLUCINATED_TURN_RE = re.compile(
+    r"\n[ \t]*(?:\[(?:User|Human|Assistant|Access)\]:|\[User |<tool_result\b)",
+    re.IGNORECASE,
+)
+
+
+def _truncate_hallucinated_turns(content: str) -> str:
+    """Truncate hallucinated multi-turn role continuations ([User]:, [Assistant]:, [Access]:, <tool_result>) outside tool blocks."""
+    if not content:
+        return content
+    # Strip harmless leading '[Assistant]: ' prefix if model echoes its own role header at the very start
+    content = re.sub(r"^\s*\[Assistant\]:\s*", "", content, flags=re.IGNORECASE)
+    for m in _HALLUCINATED_TURN_RE.finditer(content):
+        pos = m.start()
+        prefix = content[:pos]
+        if not prefix.strip():
+            continue
+        open_tc = len(re.findall(r"<tool_call\b", prefix, re.IGNORECASE))
+        close_tc = len(re.findall(r"</tool_call>", prefix, re.IGNORECASE))
+        open_inv = len(re.findall(r"<invoke\b", prefix, re.IGNORECASE))
+        close_inv = len(re.findall(r"</invoke>", prefix, re.IGNORECASE))
+        if open_tc == close_tc and open_inv == close_inv:
+            return prefix.rstrip()
+    return content
+
+
 def parse_gemini_response(raw_text: str) -> dict:
     """
     Parse Gemini's batch-RPC response into a structured dict.
@@ -190,6 +216,7 @@ def parse_gemini_response(raw_text: str) -> dict:
                 if content:
                     # Clean trailing rogue closing braces/fences after complete tool tag
                     content = re.sub(r"(</(?:tool_call|invoke|[a-z]+)>)\s*[\}\]]+\s*$", r"\1", content)
+                    content = _truncate_hallucinated_turns(content)
                     if is_gemini_canned_refusal(content):
                         fallback_refusal = content
                     elif len(content) >= len(best_content):
@@ -277,9 +304,13 @@ def parse_streaming_chunks(raw_text: str):
 
             # Clean trailing rogue closing braces/fences after complete tool tag
             content = re.sub(r"(</(?:tool_call|invoke|[a-z]+)>)\s*[\}\]]+\s*$", r"\1", content)
+            content = _truncate_hallucinated_turns(content)
 
             # Ignore post-generation canned refusal overwrite if valid content was already yielded
             if prev_content and is_gemini_canned_refusal(content):
+                continue
+
+            if content == prev_content:
                 continue
 
             # Compute incremental delta

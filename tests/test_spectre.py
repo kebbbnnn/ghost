@@ -173,6 +173,52 @@ class TestSpectreResilience(unittest.IsolatedAsyncioTestCase):
             full = "".join(chunks)
             self.assertIn("Streamed from gemini", full)
 
+    async def test_coordinator_multiturn_tool_continuation_fast_path_and_session_forwarding(self):
+        """Multi-turn tool execution should skip redundant coordinator LLM calls and forward conversation_id/parent_message_id."""
+        coord_provider = MockProvider("auto", should_fail=True)  # Would fail if called!
+        coordinator = Coordinator(
+            coordinator_provider=coord_provider,
+            coordinator_model="auto",
+            available_workers=["auto", "gemini"],
+        )
+        messages = [
+            {"role": "system", "content": "You have tools."},
+            {"role": "user", "content": "Read file"},
+            {"role": "assistant", "content": '<invoke name="Read"><parameter name="file_path">a.py</parameter></invoke>'},
+            {"role": "user", "content": '<tool_result id="tu_1">print(1)</tool_result>'},
+        ]
+        decision = await coordinator.route(messages)
+        self.assertEqual(decision.selected_model, "auto")
+        self.assertIn("fast-path", decision.reasoning)
+
+        captured = {}
+
+        class SessionTrackingProvider(BaseProvider):
+            async def get_models(self):
+                return []
+
+            async def stream_chat(self, msgs, model, conversation_id=None, parent_message_id=None):
+                captured["conversation_id"] = conversation_id
+                captured["parent_message_id"] = parent_message_id
+                yield 'data: {"choices": [{"delta": {"content": "ok"}}]}\n\n'
+
+            async def non_streaming_chat(self, msgs, model, conversation_id=None, parent_message_id=None):
+                return {"choices": [{"message": {"content": "ok"}}]}
+
+        spectre = SpectreProvider()
+        spectre._coordinator = coordinator
+        spectre._initialized = True
+
+        with patch("src.providers.get_provider_for_model", return_value=SessionTrackingProvider()):
+            _ = [
+                c
+                async for c in spectre.stream_chat(
+                    messages, "spectre", conversation_id="conv-123", parent_message_id="msg-456"
+                )
+            ]
+        self.assertEqual(captured["conversation_id"], "conv-123")
+        self.assertEqual(captured["parent_message_id"], "msg-456")
+
 
 if __name__ == "__main__":
     unittest.main()

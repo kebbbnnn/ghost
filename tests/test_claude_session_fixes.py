@@ -2787,26 +2787,346 @@ def test_consecutive_identical_build_commands_break_loop():
     assert state.get("is_incomplete") is False
 
 
+@pytest.mark.asyncio
+async def test_chatgpt_provider_stream_multi_turn_ignores_echoed_assistant_and_recap(monkeypatch):
+    """Verify ChatGPTProvider ignores echoed multi-turn assistant messages, thoughts, and reasoning_recap events."""
+    import json
+    from src.providers.chatgpt.session import ChatGPTProvider
+
+    provider = ChatGPTProvider()
+    provider._input_message_ids = {"hist-user-1", "hist-asst-1", "hist-user-2"}
+
+    async def mock_stream_raw_chat(*args, **kwargs):
+        lines = [
+            'data: "v1"',
+            'data: {"v":{"message":{"id":"hist-user-1","author":{"role":"user"},"content":{"content_type":"text","parts":["Turn 1"]},"status":"finished_successfully"}},"c":1}',
+            'data: {"v":{"message":{"id":"hist-asst-1","author":{"role":"assistant"},"content":{"content_type":"text","parts":["<tool_call>{\\"name\\": \\"Write\\", \\"arguments\\": {\\"file_path\\": \\"old.txt\\", \\"content\\": \\"old\\"}}</tool_call>"]},"status":"finished_successfully","recipient":"all"}},"c":2}',
+            'data: {"v":{"message":{"id":"hist-user-2","author":{"role":"user"},"content":{"content_type":"text","parts":["Turn 2"]},"status":"finished_successfully"}},"c":3}',
+            'data: {"v":{"message":{"id":"msg-thoughts","author":{"role":"assistant"},"content":{"content_type":"thoughts","thoughts":[]},"status":"in_progress","recipient":"all"}},"c":4}',
+            'data: {"p":"/message/content/parts/0","o":"append","v":"Internal thought that should be ignored"}',
+            'data: {"v":{"message":{"id":"msg-recap","author":{"role":"assistant"},"content":{"content_type":"reasoning_recap","content":"Worked for a second"},"status":"finished_successfully","end_turn":false,"recipient":"all"}},"c":5}',
+            'data: {"v":{"message":{"id":"msg-final","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"in_progress","end_turn":null,"recipient":"all","channel":"final"}},"c":6}',
+            'data: {"p":"/message/content/parts/0","o":"append","v":"Hello from "}',
+            'data: {"v":"final turn!"}',
+            'data: {"p":"","o":"patch","v":[{"p":"/message/status","o":"replace","v":"finished_successfully"},{"p":"/message/end_turn","o":"replace","v":true}]}',
+            'data: [DONE]',
+        ]
+        for l in lines:
+            yield l
+
+    monkeypatch.setattr(provider, "_stream_raw_chat", mock_stream_raw_chat)
+    chunks = []
+    async for ch in provider.stream_chat([{"role": "user", "content": "Turn 2"}], "auto"):
+        if ch.startswith("data: {"):
+            obj = json.loads(ch[6:])
+            delta = obj.get("choices", [{}])[0].get("delta", {}).get("content", "")
+            if delta:
+                chunks.append(delta)
+
+    combined = "".join(chunks)
+    assert combined == "Hello from final turn!"
+    assert "old.txt" not in combined
+    assert "Internal thought" not in combined
 
 
+def test_gemini_generate_widget_stripped_and_json_repair_rejects_phantom_keys():
+    """Verify <GenerateWidget .../> injected by Gemini web UI is stripped and json_repair does not create phantom keys like 'bottom'."""
+    from src.core.emulation.stream_parser import parse_tool_payload, strip_gemini_html_artifacts
+
+    raw_html_with_widget = (
+        '{"name": "Write", "arguments": {"file_path": "/tmp/game.html", "content": "<!DOCTYPE html>\\n<html>\\n<head>\\n<style>\\n'
+        '#controls-info {\\n    position: absolute;\\n'
+        '<GenerateWidget component_placeholder_id="GenerateWidget_c_75662a48_0" type artifact""/>\\n'
+        '    bottom: 20px;\\n    left: 20px;\\n}\\n</style>\\n</head>\\n<body>Game</body>\\n</html>"}}'
+    )
+    cleaned = strip_gemini_html_artifacts(raw_html_with_widget)
+    assert "GenerateWidget" not in cleaned
+
+    parsed = parse_tool_payload(raw_html_with_widget)
+    assert parsed is not None
+    assert parsed["name"] == "Write"
+    assert set(parsed["arguments"].keys()) == {"file_path", "content"}
+    assert "bottom" not in parsed["arguments"]
+    assert "bottom: 20px;" in parsed["arguments"]["content"]
+    assert "GenerateWidget" not in parsed["arguments"]["content"]
+
+    # Also test when an unescaped quote appears directly inside a long Write content payload followed by CSS
+    unescaped_quote_payload = (
+        '{"name": "Write", "arguments": {"file_path": "/tmp/style.css", "content": "'
+        + ("body { margin: 0; padding: 0; }\\n" * 15)
+        + 'div { font-family: "Segoe UI";\n    bottom: 20px;\n    left: 20px;\n}'
+        + ("\\n.footer { color: white; }" * 15)
+        + '"}}'
+    )
+    parsed2 = parse_tool_payload(unescaped_quote_payload)
+    assert parsed2 is not None
+    assert parsed2["name"] == "Write"
+    assert set(parsed2["arguments"].keys()) == {"file_path", "content"}
+    assert "bottom" not in parsed2["arguments"]
+    assert "bottom: 20px;" in parsed2["arguments"]["content"]
+    assert ".footer { color: white; }" in parsed2["arguments"]["content"]
 
 
+@pytest.mark.asyncio
+async def test_chatgpt_concurrent_c_slots_merged_message_and_fragments(monkeypatch):
+    """Verify ChatGPTProvider ignores hidden message fragments and mid-stream thoughts/commentary while preserving merged c-slot patches."""
+    import json
+    from src.providers.chatgpt.session import ChatGPTProvider
+
+    provider = ChatGPTProvider()
+
+    async def mock_stream_raw_chat(*args, **kwargs):
+        lines = [
+            'data: "v1"',
+            'data: {"v":{"message":{"id":"frag-1","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{"is_message_fragment":true,"is_visually_hidden_from_conversation":true,"merged_message_id":"merged-1"},"recipient":"all","channel":"final"}},"c":12}',
+            'data: {"v":{"message":{"id":"merged-1","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{"is_merged_message":true},"recipient":"all","channel":"final"}},"c":13}',
+            'data: {"p":"/message/content/parts/0","o":"append","v":"First part. ","c":12}',
+            'data: {"p":"","o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"First part. "}],"c":13}',
+            'data: {"o":"add","v":{"message":{"id":"thoughts-1","author":{"role":"assistant"},"content":{"content_type":"thoughts","thoughts":[]},"status":"finished_successfully","recipient":"all"}},"c":14}',
+            'data: {"p":"/message/content/parts/0","o":"append","v":"Second part.\\n","c":12}',
+            'data: {"p":"","o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"Second part.\\n"}],"c":13}',
+            'data: {"p":"","o":"add","v":{"message":{"id":"comm-1","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"finished_successfully","metadata":{"is_visually_hidden_from_conversation":true},"recipient":"functions.exec","channel":"commentary"}},"c":15}',
+            'data: {"v":{"message":{"id":"recap-1","author":{"role":"assistant"},"content":{"content_type":"reasoning_recap","content":"Worked for 5s"},"status":"finished_successfully","end_turn":false,"recipient":"all"}},"c":17}',
+            'data: {"v":{"message":{"id":"frag-2","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{"is_message_fragment":true,"is_visually_hidden_from_conversation":true,"merged_message_id":"merged-1"},"recipient":"all","channel":"final"}},"c":18}',
+            'data: {"p":"/message/content/parts/0","o":"append","v":"<tool_call>{\\"name\\":\\"Bash\\",\\"arguments\\":{\\"command\\":\\"pytest\\"}}</tool_call>","c":18}',
+            'data: {"p":"","o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"<tool_call>{\\"name\\":\\"Bash\\",\\"arguments\\":{\\"command\\":\\"pytest\\"}}</tool_call>"}],"c":13}',
+            'data: {"p":"","o":"patch","v":[{"p":"/message/status","o":"replace","v":"finished_successfully"},{"p":"/message/end_turn","o":"replace","v":true}],"c":13}',
+            'data: [DONE]',
+        ]
+        for l in lines:
+            yield l
+
+    monkeypatch.setattr(provider, "_stream_raw_chat", mock_stream_raw_chat)
+    chunks = []
+    async for ch in provider.stream_chat([{"role": "user", "content": "Run tests"}], "auto"):
+        if ch.startswith("data: {"):
+            obj = json.loads(ch[6:])
+            delta = obj.get("choices", [{}])[0].get("delta", {}).get("content", "")
+            if delta:
+                chunks.append(delta)
+
+    combined = "".join(chunks)
+    assert combined == 'First part. Second part.\n<tool_call>{"name":"Bash","arguments":{"command":"pytest"}}</tool_call>'
 
 
+@pytest.mark.asyncio
+async def test_harmony_swallowed_closing_tool_call_tags_and_multichunk_pseudo_tags():
+    """Verify unclosed <tool_call>{...}} blocks (Harmony stop token swallowing) and multi-chunk pseudo-tags are parsed cleanly."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream, openai_to_anthropic_json
+
+    raw_stream_pieces = [
+        '<tool_call>{"name":"Write","arguments":{"file_path":"/tmp/lexer.py","content":"def lex():\\n    # <bash>ls</bash> and <tool_call>\\n',
+        '    return 1\\n"}}',
+        '<tool_call>{"name":"Write","arguments":{"file_path":"/tmp/vm.py","content":"def vm(): return 2\\n"}}',
+        'Both files are written. Running tests now.\n\n',
+        '<tool_call>{"name":"Bash","arguments":{"command":"pytest -q"}}}</tool_call>',
+    ]
+
+    async def mock_stream():
+        for piece in raw_stream_pieces:
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': piece}}]})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    events = []
+    async for sse in openai_to_anthropic_stream(mock_stream(), model="auto"):
+        for line in sse.splitlines():
+            if line.startswith("data: {"):
+                events.append(json.loads(line[6:]))
+
+    starts = [e["content_block"] for e in events if e.get("type") == "content_block_start"]
+    tool_starts = [b for b in starts if b.get("type") == "tool_use"]
+    text_deltas = [
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta" and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    assert [t["name"] for t in tool_starts] == ["Write", "Write", "Bash"]
+    assert "Both files are written. Running tests now." in "".join(text_deltas)
+    assert "</tool_call>" not in "".join(text_deltas)
+
+    # Also verify non-streaming openai_to_anthropic_json
+    non_stream_resp = await openai_to_anthropic_json({
+        "model": "auto",
+        "choices": [{"message": {"role": "assistant", "content": "".join(raw_stream_pieces)}}],
+    })
+    json_tools = [b for b in non_stream_resp["content"] if b.get("type") == "tool_use"]
+    assert [t["name"] for t in json_tools] == ["Write", "Write", "Bash"]
+    assert "<bash>ls</bash>" in json_tools[0]["input"]["content"]
 
 
+def test_cdata_unwrapping_and_capitalized_js_library_filtering():
+    """Verify XML/JSON CDATA wrappers are stripped from code content and capitalized JS library names like Cannon.js are not treated as target files."""
+    from src.converters.anthropic import _extract_requested_files, _parse_invoke_xml
+
+    prompt = (
+        "Read verify_arena.py, then create fall_guys_arena.html implementing a 3D game "
+        "using Three.js (THREE.Scene) and Cannon.js (CANNON.World) and CustomEngine.js."
+    )
+    files = _extract_requested_files(prompt)
+    assert files == ["verify_arena.py", "fall_guys_arena.html"]
+
+    xml_payload = (
+        '<invoke name="Write">'
+        '<parameter name="file_path">/tmp/fall_guys_arena.html</parameter>'
+        '<parameter name="content"><![CDATA[<!DOCTYPE html>\n<html><body><h1>Arena</h1></body></html>\n]]></parameter>'
+        '</invoke>'
+    )
+    name, params = _parse_invoke_xml(xml_payload)
+    assert name == "Write"
+    assert params["content"].startswith("<!DOCTYPE html>")
+    assert "<![CDATA[" not in params["content"]
+    assert "]]>" not in params["content"]
 
 
+@pytest.mark.anyio
+async def test_gemini_truncate_hallucinated_turns_and_role_stops():
+    """Verify Gemini hallucinated [Assistant]: / [Access]: <tool_result> continuations are truncated while preserving role strings inside code."""
+    import json
+    from src.providers.gemini.converter import _truncate_hallucinated_turns
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    raw_gemini = (
+        'I will write the chat parser and test suite.\n'
+        '<tool_call>{"name": "Write", "arguments": {"file_path": "chat.py", "content": "Transcript:\\n[User]: hi\\n[Assistant]: hello\\n"}}</tool_call>\n\n'
+        '[Assistant]: I am going to run the test suite to verify the implementation.\n'
+        '<tool_call>{"name": "Bash", "arguments": {"command": "pytest"}}</tool_call>\n\n'
+        '[Access]: <tool_result id="call_1">\n3 passed in 0.05s\n</tool_result>'
+    )
+    truncated = _truncate_hallucinated_turns(raw_gemini)
+    assert '"file_path": "chat.py"' in truncated
+    assert "[User]: hi" in truncated
+    assert "[Assistant]: I am going to run" not in truncated
+    assert "[Access]:" not in truncated
+
+    async def mock_stream():
+        for i in range(0, len(raw_gemini), 35):
+            piece = raw_gemini[i : i + 35]
+            yield f'data: {{"choices": [{{"delta": {{"content": {json.dumps(piece)}}}}}]}}\n\n'
+        yield "data: [DONE]\n\n"
+
+    events = []
+    async for sse in openai_to_anthropic_stream(mock_stream(), model="gemini"):
+        for line in sse.strip().split("\n"):
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+
+    tool_starts = [
+        e["content_block"]
+        for e in events
+        if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"
+    ]
+    assert [t["name"] for t in tool_starts] == ["Write"]
+    m_delta = next(e for e in events if e.get("type") == "message_delta")
+    assert m_delta["delta"]["stop_reason"] == "tool_use"
+    assert m_delta["delta"]["stop_sequence"] is None
 
 
+@pytest.mark.anyio
+async def test_strip_genui_inline_badge_and_icon_tags_across_split_chunks():
+    """Verify ChatGPT opGenui <badge> and <icon/> tags are stripped across split SSE chunks without affecting Write tool content."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_json, openai_to_anthropic_stream
+
+    chunks = [
+        '<tool_call>{"name": "Write", "arguments": {"file_path": "ui.html", "content": "<badge>KeepMe</badge><box>KeepBox</box>"}}</tool_call>',
+        "\n\n### Verification Summary\nStatus: <badge color=\"success\"><",
+        "icon name=\"check-circle\" size=\"xs\" inline/> All tests passed</b",
+        "adge> (<ba",
+        "dge color=\"success\">5 passed in 0.04s</badge>).\n<bo",
+        "x border radius=\"lg\" padding={3}>\n  <row align=\"center\"><title color=\"success\" size=\"2xl\">4 / 4</",
+        "title><divider color=\"subtle\"/><text color=\"secondary\">0 failures</text></row>\n</box>",
+    ]
+
+    async def mock_stream():
+        for piece in chunks:
+            yield f'data: {{"choices": [{{"delta": {{"content": {json.dumps(piece)}}}}}]}}\n\n'
+        yield "data: [DONE]\n\n"
+
+    events = []
+    async for sse in openai_to_anthropic_stream(mock_stream(), model="auto"):
+        for line in sse.strip().split("\n"):
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+
+    text_out = "".join(
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta" and e.get("delta", {}).get("type") == "text_delta"
+    )
+    assert "Status: All tests passed (5 passed in 0.04s)." in text_out
+    assert "4 / 40 failures" in text_out
+    for tag in ("<badge", "<icon", "<box", "</box", "<row", "</row", "<title", "</title", "<divider", "<text", "</text"):
+        assert tag not in text_out.lower()
+
+    input_json_out = "".join(
+        e["delta"]["partial_json"]
+        for e in events
+        if e.get("type") == "content_block_delta" and e.get("delta", {}).get("type") == "input_json_delta"
+    )
+    assert "<badge>KeepMe</badge><box>KeepBox</box>" in input_json_out
+
+    non_stream = await openai_to_anthropic_json({
+        "model": "auto",
+        "choices": [{"message": {"role": "assistant", "content": "".join(chunks)}}],
+    })
+    text_blocks = [b["text"] for b in non_stream["content"] if b.get("type") == "text"]
+    assert "Status: All tests passed (5 passed in 0.04s)." in "".join(text_blocks)
 
 
+@pytest.mark.anyio
+async def test_chatgpt_sentinel_token_marked_consumed_after_conversation_post():
+    """Verify ChatGPT single-use sentinel token is marked expired immediately after being attached to a conversation POST."""
+    import time
+    from src.providers.chatgpt.session import ChatGPTProvider
 
+    provider = ChatGPTProvider()
+    provider._initialized = True
+    provider._oai_did = "did-test-1"
+    provider._sentinel_headers = {"openai-sentinel-chat-requirements-token": "tok-1"}
+    provider._token_fetched_at = time.time()
 
+    refresh_calls = 0
 
+    async def fake_ensure_ready():
+        nonlocal refresh_calls
+        if provider._is_token_expired():
+            refresh_calls += 1
+            provider._sentinel_headers = {"openai-sentinel-chat-requirements-token": f"tok-{refresh_calls + 1}"}
+            provider._token_fetched_at = time.time()
 
+    class FakeStreamResponse:
+        status_code = 200
+        headers = {}
 
+        async def __aenter__(self):
+            return self
 
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
 
+        async def aiter_lines(self):
+            yield b'data: {"v": "hello"}'
+            yield b"data: [DONE]"
 
+    class FakeSession:
+        def stream(self, method, url, headers=None, json=None):
+            return FakeStreamResponse()
+
+    provider.ensure_ready = fake_ensure_ready
+    provider._get_session = lambda: _async_return(FakeSession())
+
+    async def _async_return(val):
+        return val
+
+    # Turn 1 uses existing unexpired tok-1 and immediately marks it consumed (_token_fetched_at == 0.0)
+    lines1 = [line async for line in provider._stream_raw_chat([{"role": "user", "content": "hi"}])]
+    assert len(lines1) == 2
+    assert refresh_calls == 0
+    assert provider._token_fetched_at == 0.0
+
+    # Immediate Turn 2 (< 5s later) sees _is_token_expired() == True and fetches a fresh token (tok-2)
+    lines2 = [line async for line in provider._stream_raw_chat([{"role": "user", "content": "next"}])]
+    assert len(lines2) == 2
+    assert refresh_calls == 1
 
