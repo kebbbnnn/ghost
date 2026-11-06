@@ -3130,3 +3130,78 @@ async def test_chatgpt_sentinel_token_marked_consumed_after_conversation_post():
     assert len(lines2) == 2
     assert refresh_calls == 1
 
+
+@pytest.mark.anyio
+async def test_genui_strip_preserves_fenced_code_and_tool_calls():
+    """Verify GenUI stripping removes opGenui tags from prose while preserving fenced code blocks, inline backticks, and tool calls."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream
+    from src.core.emulation.stream_parser import sanitize_genui_tags, strip_genui_inline_tags
+
+    raw = (
+        '<box><title variant="h3">Header</title></box>\n'
+        'Inline `<badge variant="success">keep-inline</badge>` example:\n'
+        '```html\n'
+        '<box variant="info">\n'
+        '  <title variant="h3">Keep In Code Fence</title>\n'
+        '  <badge variant="success">OK</badge>\n'
+        '</box>\n'
+        '```\n'
+        'Trailing <badge variant="warning">strip-me</badge>\n'
+        '<tool_call>\n'
+        '{"name": "Write", "arguments": {"file_path": "ui.html", "content": "<box><badge>keep-tool</badge></box>"}}\n'
+        '</tool_call>'
+    )
+    cleaned = strip_genui_inline_tags(raw)
+    assert "Header" in cleaned
+    assert '<title variant="h3">Header</title>' not in cleaned
+    assert '`<badge variant="success">keep-inline</badge>`' in cleaned
+    assert '<title variant="h3">Keep In Code Fence</title>' in cleaned
+    assert '<badge variant="success">OK</badge>' in cleaned
+    assert '<badge variant="warning">' not in cleaned
+    assert "strip-me" in cleaned
+    assert "<box><badge>keep-tool</badge></box>" in cleaned
+
+    sanitized = sanitize_genui_tags(raw)
+    assert '<title variant="h3">Keep In Code Fence</title>' in sanitized
+    assert "<box><badge>keep-tool</badge></box>" in sanitized
+
+    # Also verify streaming across split ``` fences, split </title> tags, and {#each [...] as item}...{/each} loops
+    stream_chunks = [
+        '<box><title variant="h3">Stream',
+        'Header</',
+        'title></box>\n``',
+        '`html\n<box><badge>in-fence</badge></box>\n``',
+        '`\n<badge variant="info">ProseBadge</badge>\n',
+        '02 seconds</text>\n  <divider color="subtle"/>\n  {#each ["Codec round-trip tests","Multi-row-group serialization"] as test',
+        '}\n    <row align="center" gap={2}>\n      <icon name="check-circle-filled" color="success" size="sm"/>\n      <text size="sm">{test}</text>\n    </row>\n  {/each}\n</',
+        'box>\nDone!',
+    ]
+
+    async def fake_stream():
+        for c in stream_chunks:
+            yield f'data: {json.dumps({"choices": [{"delta": {"content": c}}]})}\n\n'
+        yield "data: [DONE]\n\n"
+
+    text_deltas = []
+    async for ev in openai_to_anthropic_stream(fake_stream(), model="auto"):
+        for line in ev.splitlines():
+            if line.startswith("data: "):
+                obj = json.loads(line[6:])
+                if obj.get("type") == "content_block_delta" and obj.get("delta", {}).get("type") == "text_delta":
+                    text_deltas.append(obj["delta"]["text"])
+
+    combined = "".join(text_deltas)
+    assert "StreamHeader" in combined
+    assert "title>" not in combined
+    assert "<box><badge>in-fence</badge></box>" in combined
+    assert "ProseBadge" in combined
+    assert 'variant="info"' not in combined
+    assert "{#each" not in combined
+    assert "{/each}" not in combined
+    assert "{test}" not in combined
+    assert "- Codec round-trip tests" in combined
+    assert "- Multi-row-group serialization" in combined
+    assert "Done!" in combined
+
+

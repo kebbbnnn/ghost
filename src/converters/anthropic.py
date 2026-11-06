@@ -11,6 +11,7 @@ from src.core.emulation.stream_parser import (
     DEFAULT_ROLE_STOP_SEQUENCES,
     DIRECT_TOOL_TAGS,
     GENUI_PARTIAL_TAIL_RE,
+    ProseGenuiFilter,
     TOOL_OPEN_TAG_RE,
     _unwrap_autolinks_in_obj,
     ensure_closed_json_tool_calls,
@@ -1392,6 +1393,7 @@ async def openai_to_anthropic_stream(
     output_tokens_accumulated = 0
     captured_conversation_id: str | None = None
     captured_parent_message_id: str | None = None
+    prose_genui = ProseGenuiFilter()
 
     OPEN_TAGS = [f"<{t}" for t in ALL_TOOL_TAGS]
 
@@ -1499,7 +1501,7 @@ async def openai_to_anthropic_stream(
                                         matched_stop_sequence = s
                                         break
                                 if text_before and text_before.strip():
-                                    clean_before = strip_genui_inline_tags(unwrap_markdown_autolinks(text_before))
+                                    clean_before = prose_genui.clean(unwrap_markdown_autolinks(text_before))
                                     if clean_before:
                                         if active_block_type != "text":
                                             yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
@@ -1555,7 +1557,7 @@ async def openai_to_anthropic_stream(
                                     length_triggered = True
 
                             if text_before and text_before.strip():
-                                clean_before = strip_genui_inline_tags(unwrap_markdown_autolinks(text_before))
+                                clean_before = prose_genui.clean(unwrap_markdown_autolinks(text_before))
                                 if clean_before:
                                     if active_block_type != "text":
                                         yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
@@ -1576,11 +1578,7 @@ async def openai_to_anthropic_stream(
                         active_block_type = "tool_use"
                         active_tool_tag = matched_tag_name
                     else:
-                        # Strip any complete opGenui inline tags (<badge...>, </badge>, <icon.../>)
-                        buffer = strip_genui_inline_tags(buffer)
-                        if not buffer:
-                            break
-                        # Check lookahead prefix match across all open tags and partial opGenui tags
+                        # Check lookahead prefix match across all open tags, partial opGenui tags, and partial ``` fences
                         max_prefix_len = 0
                         for candidate_tag in ALL_TOOL_TAGS:
                             full_open = f"<{candidate_tag}"
@@ -1589,11 +1587,16 @@ async def openai_to_anthropic_stream(
                                     if l > max_prefix_len:
                                         max_prefix_len = l
                                     break
-                        m_genui_tail = GENUI_PARTIAL_TAIL_RE.search(buffer)
-                        if m_genui_tail:
-                            genui_prefix_len = len(buffer) - m_genui_tail.start()
-                            if genui_prefix_len > max_prefix_len:
-                                max_prefix_len = genui_prefix_len
+                        if not prose_genui.in_code_fence:
+                            m_genui_tail = GENUI_PARTIAL_TAIL_RE.search(buffer)
+                            if m_genui_tail:
+                                genui_prefix_len = len(buffer) - m_genui_tail.start()
+                                if genui_prefix_len > max_prefix_len:
+                                    max_prefix_len = genui_prefix_len
+                        if buffer.endswith("``") and not buffer.endswith("```"):
+                            max_prefix_len = max(max_prefix_len, 2)
+                        elif buffer.endswith("`") and not buffer.endswith("``"):
+                            max_prefix_len = max(max_prefix_len, 1)
 
                         if max_prefix_len > 0:
                             safe_text = buffer[:-max_prefix_len]
@@ -1620,7 +1623,7 @@ async def openai_to_anthropic_stream(
                                     safe_text = safe_text[:rem * 4]
                                     length_triggered = True
 
-                            safe_text = strip_genui_inline_tags(unwrap_markdown_autolinks(safe_text))
+                            safe_text = prose_genui.clean(unwrap_markdown_autolinks(safe_text))
                             if safe_text:
                                 if active_block_type != "text":
                                     yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
@@ -1849,7 +1852,7 @@ async def openai_to_anthropic_stream(
                         yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
                     active_block_type = None
         else:
-            clean_rem = strip_genui_inline_tags(unwrap_markdown_autolinks(buffer))
+            clean_rem = prose_genui.clean(unwrap_markdown_autolinks(buffer))
             clean_rem = re.sub(r"^(?:\s*[\}\]\>\`]+\s*)+", "", clean_rem)
             clean_rem = re.sub(r"^\s*```\s*$", "", clean_rem)
             has_substance = bool(re.search(r"[a-zA-Z0-9]", clean_rem))

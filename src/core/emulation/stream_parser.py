@@ -329,20 +329,116 @@ _GENUI_PREFIX_ALTERNATIVES = "|".join(
         reverse=True,
     )
 )
+_GENUI_SVELTE_PARTIAL_ALT = (
+    r"\{#each\b(?:(?!\{/each\})[\s\S]){0,1000}"
+    r"|\{(?:#(?:each|if)|:else|/(?:each|if))\b[^}]*"
+    r"|\{(?:#(?:e(?:a(?:c(?:h)?)?)?|i(?:f)?)?|\:(?:e(?:l(?:s(?:e)?)?)?)?|/(?:e(?:a(?:c(?:h)?)?)?|i(?:f)?)?)?"
+)
 GENUI_PARTIAL_TAIL_RE = re.compile(
-    rf"</?(?:(?:{'|'.join(_GENUI_TAG_NAMES)})(?:\s+[^>]*)?|{_GENUI_PREFIX_ALTERNATIVES})?$",
+    rf"(?:</?(?:(?:{'|'.join(_GENUI_TAG_NAMES)})(?:\s+[^>]*)?|{_GENUI_PREFIX_ALTERNATIVES})?|{_GENUI_SVELTE_PARTIAL_ALT})$",
     re.IGNORECASE,
 )
 
+_GENUI_EACH_BLOCK_RE = re.compile(
+    r"\{#each\s+(\[[\s\S]*?\])\s+as\s+([a-zA-Z_][a-zA-Z0-9_]*)(?:\s*,\s*([a-zA-Z_][a-zA-Z0-9_]*))?\s*\}([\s\S]*?)\{/each\}",
+    re.DOTALL,
+)
+_GENUI_DIRECTIVE_TAG_RE = re.compile(
+    r"\{(?:#each\b[^}]*|/each\b[^}]*|#if\b[^}]*|:else\b[^}]*|/if\b[^}]*)\}",
+)
+
+_GENUI_INLINE_MARKERS = (
+    "<badge", "</badge", "<box", "</box", "<row", "</row", "<callout", "</callout",
+    "<title ", "</title>", "<text ", "</text>", "<icon", "<divider",
+    "{#each", "{/each", "{#if", "{:else", "{/if",
+)
+
+# Segments that must never be rewritten by prose sanitizers: fenced code (closed or
+# still open at end of text), inline code spans, closed tool calls, and a trailing
+# unclosed <tool_call>/<invoke> block whose payload is still streaming.
+_PROTECTED_SEGMENT_RE = re.compile(
+    rf"```[\s\S]*?(?:```|$)|`[^`\n]*`|{CLOSED_TOOL_CALL_PATTERN}|<(?:tool_call|invoke)\b[\s\S]*$",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _map_outside_protected(text: str, transform) -> str:
+    """Apply transform only to prose segments, leaving code and tool-call payloads untouched."""
+    pieces: list[str] = []
+    last = 0
+    for m in _PROTECTED_SEGMENT_RE.finditer(text):
+        pieces.append(transform(text[last:m.start()]))
+        pieces.append(m.group(0))
+        last = m.end()
+    pieces.append(transform(text[last:]))
+    return "".join(pieces)
+
+
+def _expand_genui_each_match(m: re.Match) -> str:
+    arr_raw, item_var, idx_var, body_template = m.group(1), m.group(2), m.group(3), m.group(4)
+    try:
+        items = json.loads(arr_raw)
+    except Exception:
+        return GENUI_INLINE_TAG_RE.sub("", body_template)
+    if not isinstance(items, list):
+        return GENUI_INLINE_TAG_RE.sub("", body_template)
+    clean_body = GENUI_INLINE_TAG_RE.sub("", body_template)
+    rendered_lines: list[str] = []
+    for idx, item in enumerate(items):
+        rendered = clean_body
+        if idx_var:
+            rendered = rendered.replace(f"{{{idx_var}}}", str(idx))
+        if isinstance(item, dict):
+            for k, v in item.items():
+                rendered = rendered.replace(f"{{{item_var}.{k}}}", str(v))
+        else:
+            rendered = rendered.replace(f"{{{item_var}}}", str(item))
+        line = " ".join(rendered.split())
+        if line:
+            if not line.startswith(("-", "*", "•", "|")):
+                line = f"- {line}"
+            rendered_lines.append(line)
+    return "\n".join(rendered_lines)
+
+
+def _strip_genui_inline_prose(prose: str) -> str:
+    lower = prose.lower()
+    if not any(marker in lower for marker in _GENUI_INLINE_MARKERS):
+        return prose
+    if "{#each" in lower:
+        prose = _GENUI_EACH_BLOCK_RE.sub(_expand_genui_each_match, prose)
+    if "{#" in prose or "{/" in prose or "{:" in prose:
+        prose = _GENUI_DIRECTIVE_TAG_RE.sub("", prose)
+    return GENUI_INLINE_TAG_RE.sub("", prose)
+
 
 def strip_genui_inline_tags(text: str) -> str:
-    """Strip ChatGPT opGenui (model_dil_v2) inline/layout tags (<badge>, <box>, <row>, <title>, <text>, <icon/>, <divider/>) outside code blocks."""
-    if not text or "<" not in text:
+    """Strip ChatGPT opGenui (model_dil_v2) inline/layout tags (<badge>, <box>, <row>, <title>, <text>, <icon/>, <divider/>) and {#each} loops outside code and tool calls."""
+    if not text or ("<" not in text and "{#" not in text and "{/" not in text and "{:" not in text):
         return text
-    lower = text.lower()
-    if not any(t in lower for t in ("<badge", "</badge", "<box", "</box", "<row", "</row", "<callout", "</callout", "<title ", "</title>", "<text ", "</text>", "<icon", "<divider")):
-        return text
-    return GENUI_INLINE_TAG_RE.sub("", text)
+    return _map_outside_protected(text, _strip_genui_inline_prose)
+
+
+class ProseGenuiFilter:
+    """Streaming opGenui stripper that tracks markdown code-fence state across chunks,
+    so HTML/JSX shown inside ``` fences in the assistant's prose is never altered."""
+
+    FENCE = "```"
+
+    def __init__(self):
+        self.in_code_fence = False
+
+    def clean(self, text: str) -> str:
+        if not text:
+            return text
+        parts = text.split(self.FENCE)
+        for i, part in enumerate(parts):
+            part_in_code = self.in_code_fence if i % 2 == 0 else not self.in_code_fence
+            if not part_in_code:
+                parts[i] = strip_genui_inline_tags(part)
+        if (len(parts) - 1) % 2 == 1:
+            self.in_code_fence = not self.in_code_fence
+        return self.FENCE.join(parts)
 
 
 def sanitize_genui_tags(text: str) -> str:
@@ -396,7 +492,7 @@ def sanitize_genui_tags(text: str) -> str:
             return f"**{primary_val}** ({', '.join(remaining)})"
         return f"**{primary_val}**"
 
-    return GENUI_TAG_PATTERN.sub(replacer, text)
+    return _map_outside_protected(text, lambda prose: GENUI_TAG_PATTERN.sub(replacer, prose))
 
 
 def _escape_control_chars_in_json_strings(raw: str) -> str:
