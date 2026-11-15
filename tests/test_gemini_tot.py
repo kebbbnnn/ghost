@@ -40,6 +40,22 @@ def extract_stream_text(raw_sse: str) -> str:
     return text
 
 
+def extract_stream_reasoning(raw_sse: str) -> str:
+    reasoning = ""
+    for line in raw_sse.split("\n"):
+        line = line.strip()
+        if line.startswith("data: ") and not line.endswith("[DONE]"):
+            try:
+                data = json.loads(line[6:])
+                delta = data["choices"][0].get("delta", {})
+                rc = delta.get("reasoning_content")
+                if rc:
+                    reasoning += rc
+            except Exception:
+                pass
+    return reasoning
+
+
 def test_gemini_provider_get_models_includes_tot():
     async def _test():
         provider = GeminiProvider()
@@ -73,11 +89,11 @@ def test_tot_engine_full_run():
 
         full_stream_raw = "".join(chunks)
         reconstructed_text = extract_stream_text(full_stream_raw)
+        reconstructed_reasoning = extract_stream_reasoning(full_stream_raw)
 
-        assert "<thought>" in reconstructed_text
-        assert "Step 1/3" in reconstructed_text
-        assert "Step 2/3" in reconstructed_text
-        assert "Step 3/3" in reconstructed_text
+        assert "Step 1/3" in reconstructed_reasoning
+        assert "Step 2/3" in reconstructed_reasoning
+        assert "Step 3/3" in reconstructed_reasoning
         assert "The computed answer is 42" in reconstructed_text
         assert '"finish_reason": "stop"' in full_stream_raw
 
@@ -103,9 +119,9 @@ def test_tot_engine_rate_limit_fallback():
 
         full_stream_raw = "".join(chunks)
         reconstructed_text = extract_stream_text(full_stream_raw)
+        reconstructed_reasoning = extract_stream_reasoning(full_stream_raw)
 
-        assert "<thought>" in reconstructed_text
-        assert "Rate limit reached at step 2" in reconstructed_text
+        assert "Rate limit reached at step 2" in reconstructed_reasoning
         assert "Partial Synthesis Solution" in reconstructed_text
 
     asyncio.run(_test())
@@ -166,8 +182,10 @@ def test_gemini_provider_non_streaming_tot():
 
         assert resp["object"] == "chat.completion"
         assert resp["model"] == "gemini-tree-of-thoughts"
-        content = resp["choices"][0]["message"]["content"]
-        assert "<thought>" in content
+        message = resp["choices"][0]["message"]
+        content = message["content"]
+        reasoning_content = message.get("reasoning_content", "")
+        assert "Step 1/1" in reasoning_content
         assert "Final Solution: 42" in content
         assert resp["choices"][0]["finish_reason"] == "stop"
 
@@ -211,4 +229,55 @@ def test_gemini_converter_streaming_is_final():
     assert chunks[0]["content"] == "Chunk 1"
     assert chunks[1]["is_final"] is True
     assert chunks[1]["content"] == "Chunk 1 and Chunk 2"
+
+
+def test_tot_strips_assistant_thoughts_from_history():
+    """Verify prior <thought> blocks in assistant history are stripped so Gemini does not imitate them during synthesis."""
+    engine = TreeOfThoughtsEngine(send_func=AsyncMock(), max_depth=1)
+    messages = [
+        {"role": "system", "content": "CRITICAL MODE: TOOL_CALL_REQUIRED."},
+        {"role": "user", "content": "Fix paxos_cluster.py and proposer.py"},
+        {
+            "role": "assistant",
+            "content": (
+                "<thought>\n[Step 1/1] Candidate Thoughts:\nThought 1: Read test_paxos.py\n</thought>\n"
+                '<invoke name="Read">\n  <parameter name="file_path">test_paxos.py</parameter>\n</invoke>'
+            ),
+        },
+        {"role": "user", "content": '<tool_result id="t1">FAILED test_paxos.py:10: AssertionError</tool_result>'},
+    ]
+    user_query = engine._extract_user_query(messages)
+    assert "[Step 1/1] Candidate Thoughts" not in user_query
+    assert '<invoke name="Read">' in user_query
+
+    full_ctx, req_tc = engine._extract_full_synthesis_context(messages)
+    assert req_tc is True
+    assert "[Step 1/1] Candidate Thoughts" not in full_ctx
+    assert '<invoke name="Read">' in full_ctx
+
+
+def test_tot_workflow_recovery_prefers_unread_file():
+    """Verify synthesize_workflow_recovery_tool_call selects unread files from ToT winning path or prompt instead of re-reading test_paxos.py."""
+    from src.core.emulation.stream_parser import synthesize_workflow_recovery_tool_call
+
+    messages = [
+        {"role": "user", "content": "Fix bugs in acceptor.py, proposer.py, paxos_cluster.py and run test_paxos.py"},
+        {
+            "role": "assistant",
+            "content": '<invoke name="Read">\n  <parameter name="file_path">test_paxos.py</parameter>\n</invoke>',
+        },
+        {
+            "role": "user",
+            "content": '<tool_result id="1" is_error="true">test_paxos.py:10: AssertionError\nFAILED test_paxos.py</tool_result>',
+        },
+    ]
+    synth_prompt = (
+        "CRITICAL MODE: TOOL_CALL_REQUIRED.\n"
+        "[TREE OF THOUGHTS WINNING REASONING PATH]:\n"
+        "Step 1: Read `paxos_cluster.py` to inspect log application."
+    )
+    recovered = synthesize_workflow_recovery_tool_call(synth_prompt, messages)
+    assert 'paxos_cluster.py' in recovered
+    assert 'test_paxos.py' not in recovered
+
 

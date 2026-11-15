@@ -223,6 +223,8 @@ def build_worker_prompt(
     subtask: str,
     original_query: str,
     prior_outputs: dict[int, str] | None = None,
+    system_directive: str | None = None,
+    is_final_step: bool = False,
 ) -> list[dict]:
     """
     Build the message list for a worker model executing a workflow step.
@@ -232,8 +234,22 @@ def build_worker_prompt(
         original_query: The user's original query (always included as context).
         prior_outputs: Dict mapping step_id → output content from prior steps
                        (only those in this step's access_list).
+        system_directive: Optional workspace/tool system directive from original request.
+        is_final_step: Whether this step is the terminal step of the workflow.
     """
-    messages = [{"role": "system", "content": WORKER_STEP_SYSTEM}]
+    if system_directive and is_final_step:
+        sys_content = f"{WORKER_STEP_SYSTEM}\n\n{system_directive}"
+    elif system_directive and not is_final_step:
+        sys_content = (
+            f"{WORKER_STEP_SYSTEM}\n\n"
+            "IMPORTANT: This is an intermediate planning/review step. "
+            "Provide your architectural plan, code design, or bug analysis in clear markdown/code. "
+            "Do NOT emit <tool_call> or <invoke> XML tags in this intermediate step."
+        )
+    else:
+        sys_content = WORKER_STEP_SYSTEM
+
+    messages = [{"role": "system", "content": sys_content}]
 
     # Build context from prior step outputs
     context_parts = []
@@ -250,6 +266,12 @@ def build_worker_prompt(
     if context_parts:
         user_parts.append("\nContext from prior steps:\n" + "\n\n".join(context_parts))
     user_parts.append(f"\nYour assigned subtask:\n{subtask}")
+    if system_directive and is_final_step:
+        user_parts.append(
+            "\nIMPORTANT: You are executing the final step of the workflow in a tool-enabled workspace. "
+            "Guided by the prior step outputs above, execute the required workspace actions right now by "
+            "emitting `<invoke>` or `<tool_call>` XML blocks directly!"
+        )
 
     messages.append({"role": "user", "content": "\n".join(user_parts)})
     return messages

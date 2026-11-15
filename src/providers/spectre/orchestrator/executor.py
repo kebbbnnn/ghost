@@ -59,6 +59,8 @@ class WorkflowExecutor:
         """
         layers = workflow.get_execution_layers()
         results: dict[int, WorkerResult] = {}
+        final_step = workflow.steps[-1]
+        system_directive = self._extract_tool_system_directive(workflow)
 
         log.info(
             "Executing workflow: %d steps in %d layers",
@@ -74,7 +76,13 @@ class WorkflowExecutor:
 
             # Run all steps in this layer concurrently
             tasks = [
-                self._execute_step(step, workflow.original_query, results)
+                self._execute_step(
+                    step,
+                    workflow.original_query,
+                    results,
+                    system_directive=system_directive,
+                    is_final_step=(step.step_id == final_step.step_id),
+                )
                 for step in layer
             ]
             layer_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -123,6 +131,7 @@ class WorkflowExecutor:
 
         # Find the final step
         final_step = workflow.steps[-1]
+        system_directive = self._extract_tool_system_directive(workflow)
 
         # Execute all layers except the one containing the final step
         for layer_idx, layer in enumerate(layers):
@@ -133,7 +142,13 @@ class WorkflowExecutor:
             # Execute non-final steps in this layer
             if non_final_steps:
                 tasks = [
-                    self._execute_step(step, workflow.original_query, results)
+                    self._execute_step(
+                        step,
+                        workflow.original_query,
+                        results,
+                        system_directive=system_directive,
+                        is_final_step=False,
+                    )
                     for step in non_final_steps
                 ]
                 layer_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -151,11 +166,32 @@ class WorkflowExecutor:
                     else:
                         results[step.step_id] = result
                         log.info(result.summary)
+                        if result.success and result.content:
+                            reasoning_note = (
+                                f"[Spectre-Ultra Step {step.step_id} ({result.worker_model})]:\n"
+                                f"{result.content.strip()}\n\n"
+                            )
+                            reasoning_chunk = {
+                                "id": chunk_id,
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": "spectre-ultra",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"reasoning_content": reasoning_note},
+                                    "finish_reason": None,
+                                }],
+                            }
+                            yield f"data: {json.dumps(reasoning_chunk)}\n\n"
 
             # If this layer contains the final step, stream it
             if has_final:
                 async for chunk in self._stream_step(
-                    final_step, workflow.original_query, results, chunk_id
+                    final_step,
+                    workflow.original_query,
+                    results,
+                    chunk_id,
+                    system_directive=system_directive,
                 ):
                     yield chunk
                 return
@@ -173,6 +209,8 @@ class WorkflowExecutor:
         step: WorkflowStep,
         original_query: str,
         prior_results: dict[int, WorkerResult],
+        system_directive: str | None = None,
+        is_final_step: bool = False,
     ) -> WorkerResult:
         """Execute a single workflow step (non-streaming) with fallback to alternate workers."""
         start = time.monotonic()
@@ -188,6 +226,8 @@ class WorkflowExecutor:
             subtask=step.subtask,
             original_query=original_query,
             prior_outputs=prior_outputs if prior_outputs else None,
+            system_directive=system_directive,
+            is_final_step=is_final_step,
         )
 
         workers_to_try = [step.worker_model] + [
@@ -224,6 +264,7 @@ class WorkflowExecutor:
         original_query: str,
         prior_results: dict[int, WorkerResult],
         chunk_id: str,
+        system_directive: str | None = None,
     ):
         """Execute a workflow step with streaming output and worker fallback."""
         # Assemble context from access list
@@ -237,6 +278,8 @@ class WorkflowExecutor:
             subtask=step.subtask,
             original_query=original_query,
             prior_outputs=prior_outputs if prior_outputs else None,
+            system_directive=system_directive,
+            is_final_step=True,
         )
 
         workers_to_try = [step.worker_model] + [
@@ -269,6 +312,19 @@ class WorkflowExecutor:
     # ------------------------------------------------------------------
     # Utility
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_tool_system_directive(workflow: Workflow) -> str | None:
+        """Extract system directive from workflow.metadata['original_messages'] if tool calling is required."""
+        orig_msgs = workflow.metadata.get("original_messages") if isinstance(workflow.metadata, dict) else None
+        if not isinstance(orig_msgs, list):
+            return None
+        for m in orig_msgs:
+            if isinstance(m, dict) and m.get("role") == "system":
+                c = m.get("content", "")
+                if isinstance(c, str) and ("CRITICAL MODE: TOOL_CALL_REQUIRED" in c or "<tools>" in c):
+                    return c
+        return None
 
     @staticmethod
     def _extract_content(response: dict) -> str:

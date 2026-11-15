@@ -135,7 +135,7 @@ class SpectreProvider(BaseProvider):
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
         try:
-            if mode == OrchestratorMode.FAST:
+            if mode == OrchestratorMode.FAST or self._is_tool_continuation(messages):
                 async for chunk in self._stream_fast(
                     messages,
                     chunk_id,
@@ -165,7 +165,7 @@ class SpectreProvider(BaseProvider):
         self._ensure_initialized()
         mode = self._resolve_mode(model)
 
-        if mode == OrchestratorMode.FAST:
+        if mode == OrchestratorMode.FAST or self._is_tool_continuation(messages):
             content = await self._execute_fast(
                 messages,
                 conversation_id=conversation_id,
@@ -300,6 +300,15 @@ class SpectreProvider(BaseProvider):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_tool_continuation(messages: list[dict]) -> bool:
+        """Return True if messages represent a mid-turn tool execution continuation."""
+        return len(messages) > 2 and any(
+            isinstance(m.get("content"), str)
+            and any(tag in m["content"] for tag in ("<tool_result", "[Tool Results]:", "<invoke", "<tool_call"))
+            for m in messages
+        )
 
     @staticmethod
     def _resolve_mode(model: str) -> OrchestratorMode:

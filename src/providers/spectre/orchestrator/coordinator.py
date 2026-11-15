@@ -133,6 +133,7 @@ class Coordinator:
             )
             raw = self._extract_content(response)
             workflow = self._parse_workflow(raw, user_query)
+            workflow.metadata["original_messages"] = messages
             log.info(
                 "Spectre-Ultra workflow generated: %d steps, topology: %s",
                 len(workflow.steps),
@@ -142,7 +143,9 @@ class Coordinator:
 
         except Exception as e:
             log.warning("Coordinator workflow generation failed (%s), using fallback", e)
-            return self._fallback_workflow(user_query)
+            wf = self._fallback_workflow(user_query)
+            wf.metadata["original_messages"] = messages
+            return wf
 
     # ------------------------------------------------------------------
     # Parsing helpers

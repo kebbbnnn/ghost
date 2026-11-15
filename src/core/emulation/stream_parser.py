@@ -244,6 +244,31 @@ def synthesize_workflow_recovery_tool_call(prompt: str, messages: list[dict] | N
         )
         search_text = f"{search_text}\n{msgs_text}".strip()
 
+    # Collect files already read via Read tool calls so recovery does not repeatedly re-read the same file
+    read_matches = re.findall(
+        r'<invoke name="Read">\s*<parameter name="file_path">([^<\n]+)</parameter>|"name":\s*"Read"[^}]*"file_path":\s*"([^"]+)"',
+        search_text,
+    )
+    already_read_basenames = {
+        (m[0] or m[1]).strip().split("/")[-1]
+        for m in read_matches
+        if (m[0] or m[1]).strip()
+    }
+
+    # 0. If a Tree of Thoughts winning reasoning path is present, honor its explicit file/test target
+    if prompt and "[TREE OF THOUGHTS WINNING REASONING PATH]:" in prompt:
+        tot_section = prompt.split("[TREE OF THOUGHTS WINNING REASONING PATH]:", 1)[1]
+        tot_files = [
+            f for f in re.findall(r'`([a-zA-Z0-9_\-\./]+\.py)`|\b([a-zA-Z0-9_\-\./]+\.py)\b', tot_section)
+            for f in (f[0] or f[1],)
+            if f and "site-packages" not in f
+        ]
+        unread_tot_files = [f for f in tot_files if f.split("/")[-1] not in already_read_basenames]
+        if unread_tot_files:
+            return f'<invoke name="Read">\n  <parameter name="file_path">{unread_tot_files[0]}</parameter>\n</invoke>'
+        if re.search(r"\b(?:run|execute)\s+`?pytest`?\b", tot_section, re.IGNORECASE):
+            return '<invoke name="Bash">\n  <parameter name="command">pytest</parameter>\n</invoke>'
+
     # 1. If an actual coding test failure / traceback was detected in tool results or execution:
     has_test_or_tool_error = (
         '<tool_result' in search_text
@@ -259,6 +284,19 @@ def synthesize_workflow_recovery_tool_call(prompt: str, messages: list[dict] | N
             (m[0] or m[1]) for m in matches
             if (m[0] or m[1]) and "site-packages" not in (m[0] or m[1]) and not (m[0] or m[1]).startswith("<") and not (m[0] or m[1]).endswith("/conftest.py")
         ]
+        unread_py_files = [f for f in py_files if f.split("/")[-1] not in already_read_basenames]
+        if unread_py_files:
+            return f'<invoke name="Read">\n  <parameter name="file_path">{unread_py_files[-1]}</parameter>\n</invoke>'
+        if already_read_basenames:
+            all_mentioned_py = [
+                m for m in re.findall(r'\b([a-zA-Z0-9_\-\./]+\.py)\b', search_text)
+                if "site-packages" not in m
+                and not m.endswith("/conftest.py")
+                and m not in ("setup.py", "conftest.py")
+                and m.split("/")[-1] not in already_read_basenames
+            ]
+            if all_mentioned_py:
+                return f'<invoke name="Read">\n  <parameter name="file_path">{all_mentioned_py[0]}</parameter>\n</invoke>'
         if py_files:
             failed_file = py_files[-1]
             return f'<invoke name="Read">\n  <parameter name="file_path">{failed_file}</parameter>\n</invoke>'
@@ -318,10 +356,10 @@ def _unwrap_autolinks_in_obj(obj: Any) -> Any:
 
 
 GENUI_INLINE_TAG_RE = re.compile(
-    r"</?(?:badge|box|row|callout)(?:\s+[^>]*)?>|<(?:title|text)\s+[^>]*>|</(?:title|text)>|<(?:icon|divider)(?:\s+[^>]*)?/>\s*",
+    r"</?(?:badge|box|row|callout|grid|grid-item)(?:\s+[^>]*)?>|<(?:title|text)\s+[^>]*>|</(?:title|text)>|<(?:icon|divider)(?:\s+[^>]*)?/>\s*",
     re.IGNORECASE,
 )
-_GENUI_TAG_NAMES = ("badge", "box", "row", "callout", "title", "text", "icon", "divider")
+_GENUI_TAG_NAMES = ("badge", "box", "row", "callout", "grid", "grid-item", "title", "text", "icon", "divider")
 _GENUI_PREFIX_ALTERNATIVES = "|".join(
     sorted(
         {name[:i] for name in _GENUI_TAG_NAMES for i in range(1, len(name) + 1)},
@@ -349,6 +387,7 @@ _GENUI_DIRECTIVE_TAG_RE = re.compile(
 
 _GENUI_INLINE_MARKERS = (
     "<badge", "</badge", "<box", "</box", "<row", "</row", "<callout", "</callout",
+    "<grid", "</grid", "<grid-item", "</grid-item",
     "<title ", "</title>", "<text ", "</text>", "<icon", "<divider",
     "{#each", "{/each", "{#if", "{:else", "{/if",
 )
@@ -1516,7 +1555,16 @@ class StreamEmulationProcessor:
                 continue
 
             delta = choices[0].get("delta", {})
+            reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
             text_delta = delta.get("content", "")
+
+            if reasoning_delta:
+                role_attr = {"role": "assistant"} if not self.first_chunk_sent else {}
+                self.first_chunk_sent = True
+                yield self._build_chunk(
+                    delta={"reasoning_content": reasoning_delta, **role_attr},
+                    finish_reason=None,
+                )
 
             # If there's content text, process it through the state machine
             if text_delta:

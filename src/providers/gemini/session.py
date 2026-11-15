@@ -117,7 +117,19 @@ class GeminiProvider(BaseProvider):
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
         if model == "gemini-tree-of-thoughts":
-            engine = TreeOfThoughtsEngine(send_func=self._send_message)
+            is_tool_turn = any(
+                isinstance(m.get("content"), str)
+                and any(
+                    tag in m["content"]
+                    for tag in ("CRITICAL MODE: TOOL_CALL_REQUIRED", "<tool_result", "[Tool Results]:", "<invoke", "<tool_call")
+                )
+                for m in messages
+            )
+            engine = (
+                TreeOfThoughtsEngine(send_func=self._send_message, max_depth=1)
+                if is_tool_turn
+                else TreeOfThoughtsEngine(send_func=self._send_message)
+            )
             async for sse_chunk in engine.run(messages, chunk_id, model=model):
                 yield sse_chunk
             return
@@ -226,7 +238,19 @@ class GeminiProvider(BaseProvider):
         parent_message_id: str | None = None,
     ) -> dict:
         if model == "gemini-tree-of-thoughts":
-            engine = TreeOfThoughtsEngine(send_func=self._send_message)
+            is_tool_turn = any(
+                isinstance(m.get("content"), str)
+                and any(
+                    tag in m["content"]
+                    for tag in ("CRITICAL MODE: TOOL_CALL_REQUIRED", "<tool_result", "[Tool Results]:", "<invoke", "<tool_call")
+                )
+                for m in messages
+            )
+            engine = (
+                TreeOfThoughtsEngine(send_func=self._send_message, max_depth=1)
+                if is_tool_turn
+                else TreeOfThoughtsEngine(send_func=self._send_message)
+            )
             full_content: list[str] = []
             full_reasoning: list[str] = []
             chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"

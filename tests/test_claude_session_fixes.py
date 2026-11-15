@@ -3262,4 +3262,41 @@ async def test_openai_to_anthropic_json_multi_thought_blocks():
     assert res2["content"][1]["text"] == "The final optimal answer is Multi-Paxos."
 
 
+@pytest.mark.anyio
+async def test_genui_grid_and_closing_fence_tail_holdback():
+    """Verify <grid>, <grid-item>, and <box> split across SSE chunks right after a closing code fence are stripped."""
+    import json
+    from src.converters.anthropic import openai_to_anthropic_stream
+
+    stream_chunks = [
+        "```bash\npython -",
+        "m pytest -v\n```\n\n<box border radius=\"lg\" padding={3} gap",
+        "={3}>\n  <grid columns={2} gap={3}>\n    <grid-item>\n      <text size=\"sm\" weight=\"medium\">4 Source & Test Files</text>\n    </grid-item>\n  </grid>\n</box>",
+    ]
+
+    async def fake_stream():
+        for c in stream_chunks:
+            yield f'data: {json.dumps({"choices": [{"delta": {"content": c}}]})}\n\n'
+        yield "data: [DONE]\n\n"
+
+    text_deltas = []
+    async for ev in openai_to_anthropic_stream(fake_stream(), model="auto"):
+        for line in ev.splitlines():
+            if line.startswith("data: "):
+                obj = json.loads(line[6:])
+                if obj.get("type") == "content_block_delta" and obj.get("delta", {}).get("type") == "text_delta":
+                    text_deltas.append(obj["delta"]["text"])
+
+    combined = "".join(text_deltas)
+    assert "```bash\npython -m pytest -v\n```" in combined
+    assert "4 Source & Test Files" in combined
+    assert "<box" not in combined
+    assert "</box>" not in combined
+    assert "<grid" not in combined
+    assert "</grid>" not in combined
+    assert "<grid-item>" not in combined
+    assert "</grid-item>" not in combined
+
+
+
 
