@@ -26,7 +26,7 @@ import time
 import typing
 import uuid
 
-from src.core.provider import BaseProvider
+from ghost.core.provider import BaseProvider
 from .orchestrator.coordinator import Coordinator
 from .orchestrator.executor import WorkflowExecutor
 from .orchestrator.types import OrchestratorMode
@@ -50,10 +50,17 @@ class SpectreProvider(BaseProvider):
     plugs into Ghost's routing without any server changes.
     """
 
-    def __init__(self):
+    def __init__(self, provider_resolver: typing.Callable[[str], BaseProvider | None] | None = None):
         self._coordinator: Coordinator | None = None
         self._executor: WorkflowExecutor | None = None
+        self._provider_resolver = provider_resolver
         self._initialized = False
+
+    def _resolve_provider(self, model_name: str) -> BaseProvider | None:
+        if self._provider_resolver is not None:
+            return self._provider_resolver(model_name)
+        from ghost.providers import get_provider_for_model
+        return get_provider_for_model(model_name)
 
     def _ensure_initialized(self):
         """
@@ -63,8 +70,6 @@ class SpectreProvider(BaseProvider):
         """
         if self._initialized:
             return
-
-        from src.providers import get_provider_for_model
 
         # Read config from environment
         coordinator_model = os.environ.get(
@@ -78,7 +83,7 @@ class SpectreProvider(BaseProvider):
         )
 
         # Resolve the coordinator provider
-        coordinator_provider = get_provider_for_model(coordinator_model)
+        coordinator_provider = self._resolve_provider(coordinator_model)
         if not coordinator_provider:
             raise RuntimeError(
                 f"Spectre: cannot find provider for coordinator model '{coordinator_model}'"
@@ -91,7 +96,7 @@ class SpectreProvider(BaseProvider):
         )
 
         self._executor = WorkflowExecutor(
-            provider_resolver=get_provider_for_model,
+            provider_resolver=self._resolve_provider,
             available_workers=workers,
         )
 
@@ -198,8 +203,6 @@ class SpectreProvider(BaseProvider):
         parent_message_id: str | None = None,
     ) -> str:
         """Fast mode: route to a single worker and return its response with fallback."""
-        from src.providers import get_provider_for_model
-
         decision = await self._coordinator.route(messages)
         log.info("Spectre fast-mode: routed to %s", decision.selected_model)
 
@@ -208,7 +211,7 @@ class SpectreProvider(BaseProvider):
         ]
         last_exc = None
         for idx, model_name in enumerate(workers_to_try):
-            provider = get_provider_for_model(model_name)
+            provider = self._resolve_provider(model_name)
             if not provider:
                 continue
             try:
@@ -240,8 +243,6 @@ class SpectreProvider(BaseProvider):
         parent_message_id: str | None = None,
     ):
         """Fast mode streaming: route to a single worker and stream its output with fallback."""
-        from src.providers import get_provider_for_model
-
         decision = await self._coordinator.route(messages)
         log.info("Spectre fast-mode: routing to %s", decision.selected_model)
 
@@ -250,7 +251,7 @@ class SpectreProvider(BaseProvider):
         ]
         last_exc = None
         for idx, model_name in enumerate(workers_to_try):
-            provider = get_provider_for_model(model_name)
+            provider = self._resolve_provider(model_name)
             if not provider:
                 continue
             try:

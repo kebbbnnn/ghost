@@ -163,12 +163,13 @@ class TestServerTelemetryDebounce(unittest.TestCase):
 
     def test_no_per_token_broadcast_in_server(self):
         """Confirm the old per-token broadcast call was removed from server.py."""
-        with open("src/server.py") as f:
-            content = f.read()
-        # The old code did: await broadcast_event("request_token", ...) inside the loop
-        # This should no longer exist
-        self.assertNotIn(
-            '"request_token"',
-            content,
-            "Per-token broadcast should be removed from server.py"
-        )
+        for path in ("ghost/server.py", "ghost/engine.py"):
+            with open(path) as f:
+                content = f.read()
+            # The old code did: await broadcast_event("request_token", ...) inside the loop
+            # This should no longer exist
+            self.assertNotIn(
+                '"request_token"',
+                content,
+                f"Per-token broadcast should be removed from {path}"
+            )

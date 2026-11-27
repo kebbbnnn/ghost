@@ -4,7 +4,7 @@ import re
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple, Union
 
-from src.core.emulation.stream_parser import (
+from ghost.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
     CLOSED_TOOL_CALL_PATTERN,
     CLOSED_TOOL_CALL_RE,
@@ -25,7 +25,7 @@ from src.core.emulation.stream_parser import (
     strip_genui_inline_tags,
     unwrap_markdown_autolinks,
 )
-from src.providers.gemini.converter import is_gemini_canned_refusal
+from ghost.providers.gemini.converter import is_gemini_canned_refusal
 
 # Discovery / inspection tools in coding harnesses (like Claude Code) that are intermediate
 # steps in a multi-step agent loop rather than terminal answer-producing tools.

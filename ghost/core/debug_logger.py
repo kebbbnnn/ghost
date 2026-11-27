@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Any
 
-from src.core.config import RAW_LOG_FILE, RAW_LOG_LATEST_FILE, RAW_LOGGING_ENABLED
+from ghost.core.config import RAW_LOG_FILE, RAW_LOG_LATEST_FILE, RAW_LOGGING_ENABLED
 
 log = logging.getLogger(__name__)
 
@@ -156,11 +156,19 @@ def _extract_readable_prompt(payload: Any) -> str:
 class RequestTrace:
     """Captures the full lifecycle of a single request from client to upstream and back."""
 
-    def __init__(self, request_id: str, endpoint: str, model: str = "", stream: bool = False):
+    def __init__(
+        self,
+        request_id: str,
+        endpoint: str,
+        model: str = "",
+        stream: bool = False,
+        enabled: bool | None = None,
+    ):
         self.request_id = request_id
         self.endpoint = endpoint
         self.model = model
         self.stream = stream
+        self.enabled = enabled
         self.start_time = time.time()
         self.end_time: float | None = None
 
@@ -346,7 +354,8 @@ class RequestTrace:
         self.finished = True
         self.end_time = time.time()
 
-        if not RAW_LOGGING_ENABLED:
+        is_enabled = RAW_LOGGING_ENABLED if self.enabled is None else self.enabled
+        if not is_enabled:
             return
         if "PYTEST_CURRENT_TEST" in os.environ and RAW_LOG_FILE == _DEFAULT_RAW_LOG_FILE:
             return
@@ -374,9 +383,15 @@ class RequestTrace:
 current_trace: contextvars.ContextVar[RequestTrace | None] = contextvars.ContextVar("current_trace", default=None)
 
 
-def start_trace(request_id: str, endpoint: str, model: str = "", stream: bool = False) -> RequestTrace:
+def start_trace(
+    request_id: str,
+    endpoint: str,
+    model: str = "",
+    stream: bool = False,
+    enabled: bool | None = None,
+) -> RequestTrace:
     """Create a new RequestTrace and bind it to the current async context."""
-    trace = RequestTrace(request_id, endpoint, model=model, stream=stream)
+    trace = RequestTrace(request_id, endpoint, model=model, stream=stream, enabled=enabled)
     current_trace.set(trace)
     return trace
 

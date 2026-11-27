@@ -19,7 +19,7 @@ import logging
 import time
 import uuid
 
-from src.core.provider import BaseProvider
+from ghost.core.provider import BaseProvider
 from .types import Workflow, WorkflowStep, WorkerResult
 from .prompts import build_worker_prompt
 

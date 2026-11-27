@@ -408,8 +408,12 @@ class EmulationPipeline:
         Intercepts provider SSE stream, extracting tool calls and enforcing parameter limits.
         """
         processor = StreamEmulationProcessor(context)
-        async for chunk in processor.process_stream(raw_stream):
-            yield chunk
+        inner = processor.process_stream(raw_stream)
+        try:
+            async for chunk in inner:
+                yield chunk
+        finally:
+            await inner.aclose()
 
     @classmethod
     def wrap_non_streaming(cls, raw_response: dict, context: dict) -> dict:

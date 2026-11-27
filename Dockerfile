@@ -38,6 +38,8 @@ COPY --from=builder /install /usr/local
 WORKDIR /app
 
 # Copy application source and static dashboard assets
+COPY pyproject.toml ./
+COPY ghost/ ./ghost/
 COPY src/ ./src/
 COPY examples/gui/dashboard/public ./examples/gui/dashboard/public
 
@@ -55,4 +57,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')" || exit 1
 
 # Run the FastAPI server
-CMD ["python", "-m", "src.server"]
+CMD ["python", "-m", "ghost.server"]

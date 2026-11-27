@@ -21,9 +21,9 @@ from typing import AsyncIterator
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import HTTPError
 
-from src.core.provider import BaseProvider
-from src.core.exceptions import RateLimitError, TokenExpiredError
-from src.core.emulation.stream_parser import (
+from ghost.core.provider import BaseProvider
+from ghost.core.exceptions import RateLimitError, TokenExpiredError
+from ghost.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
     CLOSED_TOOL_CALL_RE,
     TOOL_OPEN_TAG_RE,
@@ -47,7 +47,7 @@ from .sentinel.token_generator import (
 )
 
 from .uploader import preprocess_images
-from src.core.debug_logger import get_current_trace, start_trace
+from ghost.core.debug_logger import get_current_trace, start_trace
 
 log = logging.getLogger(__name__)
 

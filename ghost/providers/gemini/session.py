@@ -26,9 +26,9 @@ import urllib.parse
 
 import httpx
 
-from src.core.provider import BaseProvider
-from src.core.exceptions import RateLimitError, TokenExpiredError, ProviderError
-from src.core.emulation.stream_parser import (
+from ghost.core.provider import BaseProvider
+from ghost.core.exceptions import RateLimitError, TokenExpiredError, ProviderError
+from ghost.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
     CLOSED_TOOL_CALL_RE,
     TOOL_OPEN_TAG_RE,
@@ -44,7 +44,7 @@ from .converter import (
     format_openai_chunk,
 )
 from .tot import TreeOfThoughtsEngine
-from src.core.debug_logger import get_current_trace
+from ghost.core.debug_logger import get_current_trace
 
 log = logging.getLogger(__name__)
 

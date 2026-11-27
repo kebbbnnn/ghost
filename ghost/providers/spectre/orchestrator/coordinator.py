@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any
 
-from src.core.provider import BaseProvider
+from ghost.core.provider import BaseProvider
 from .types import (
     OrchestratorMode,
     RoutingDecision,

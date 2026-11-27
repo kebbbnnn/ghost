@@ -17,9 +17,8 @@ import uuid
 from typing import Any
 
 import httpx
-from PIL import Image
 from curl_cffi.requests import AsyncSession
-from src.core.exceptions import RateLimitError, TokenExpiredError
+from ghost.core.exceptions import RateLimitError, TokenExpiredError
 
 log = logging.getLogger(__name__)
 
@@ -242,8 +241,13 @@ async def _resolve_image(
 def _get_image_dimensions(data: bytes) -> tuple[int, int]:
     """
     Extract (width, height) from raw image bytes using Pillow.
-    Returns (0, 0) if dimensions cannot be determined.
+    Returns (0, 0) if Pillow is unavailable or dimensions cannot be determined.
     """
+    try:
+        from PIL import Image
+    except ImportError:
+        log.warning("Pillow not installed; install 'ghost[vision]' to extract image dimensions")
+        return 0, 0
     try:
         with Image.open(io.BytesIO(data)) as img:
             return img.size  # (width, height)

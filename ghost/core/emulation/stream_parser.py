@@ -1520,58 +1520,66 @@ class StreamEmulationProcessor:
         self, raw_stream: AsyncGenerator[str, None]
     ) -> AsyncGenerator[str, None]:
         """Consumes provider SSE lines and yields emulated OpenAI SSE strings."""
-        async for line in raw_stream:
-            if self.stop_triggered or self.length_triggered:
-                break
+        try:
+            async for line in raw_stream:
+                if self.stop_triggered or self.length_triggered:
+                    break
 
-            line_str = line.strip()
-            if not line_str.startswith("data: "):
-                continue
+                line_str = line.strip()
+                if not line_str.startswith("data: "):
+                    continue
 
-            payload = line_str[6:].strip()
-            if payload == "[DONE]":
-                break
+                payload = line_str[6:].strip()
+                if payload == "[DONE]":
+                    break
 
-            try:
-                chunk_dict = json.loads(payload)
-            except Exception:
-                continue
+                try:
+                    chunk_dict = json.loads(payload)
+                except Exception:
+                    continue
 
-            if not isinstance(chunk_dict, dict):
-                continue
+                if not isinstance(chunk_dict, dict):
+                    continue
 
-            # Capture chunk_id and model from upstream if available
-            if "id" in chunk_dict and chunk_dict["id"]:
-                self.chunk_id = chunk_dict["id"]
-            if "model" in chunk_dict and chunk_dict["model"]:
-                self.model = chunk_dict["model"]
-            if "conversation_id" in chunk_dict and chunk_dict["conversation_id"]:
-                self.conversation_id = chunk_dict["conversation_id"]
-            if "parent_message_id" in chunk_dict and chunk_dict["parent_message_id"]:
-                self.parent_message_id = chunk_dict["parent_message_id"]
+                # Capture chunk_id and model from upstream if available
+                if "id" in chunk_dict and chunk_dict["id"]:
+                    self.chunk_id = chunk_dict["id"]
+                if "model" in chunk_dict and chunk_dict["model"]:
+                    self.model = chunk_dict["model"]
+                if "conversation_id" in chunk_dict and chunk_dict["conversation_id"]:
+                    self.conversation_id = chunk_dict["conversation_id"]
+                if "parent_message_id" in chunk_dict and chunk_dict["parent_message_id"]:
+                    self.parent_message_id = chunk_dict["parent_message_id"]
 
-            choices = chunk_dict.get("choices", [])
-            if not choices:
-                continue
+                choices = chunk_dict.get("choices", [])
+                if not choices:
+                    continue
 
-            delta = choices[0].get("delta", {})
-            reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
-            text_delta = delta.get("content", "")
+                delta = choices[0].get("delta", {})
+                reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+                text_delta = delta.get("content", "")
 
-            if reasoning_delta:
-                role_attr = {"role": "assistant"} if not self.first_chunk_sent else {}
-                self.first_chunk_sent = True
-                yield self._build_chunk(
-                    delta={"reasoning_content": reasoning_delta, **role_attr},
-                    finish_reason=None,
-                )
+                if reasoning_delta:
+                    role_attr = {"role": "assistant"} if not self.first_chunk_sent else {}
+                    self.first_chunk_sent = True
+                    yield self._build_chunk(
+                        delta={"reasoning_content": reasoning_delta, **role_attr},
+                        finish_reason=None,
+                    )
 
-            # If there's content text, process it through the state machine
-            if text_delta:
-                async for sse_chunk in self._feed_text(text_delta):
-                    yield sse_chunk
-                    if self.stop_triggered or self.length_triggered:
-                        break
+                # If there's content text, process it through the state machine
+                if text_delta:
+                    async for sse_chunk in self._feed_text(text_delta):
+                        yield sse_chunk
+                        if self.stop_triggered or self.length_triggered:
+                            break
+        finally:
+            aclose = getattr(raw_stream, "aclose", None)
+            if callable(aclose):
+                try:
+                    await aclose()
+                except Exception:
+                    pass
 
         # Stream ended or truncated: flush buffers and emit final chunks
         async for sse_chunk in self._finalize():

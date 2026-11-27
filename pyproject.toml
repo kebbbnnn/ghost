@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghost"
+version = "2.1.0"
+description = "Embeddable multi-provider LLM client & OpenAI/Anthropic-compatible proxy (ChatGPT, Gemini, Spectre) with zero server required"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "ISC" }
+dependencies = [
+    "curl-cffi>=0.6.2",
+    "httpx[http2]>=0.27.0",
+    "pydantic>=2.6.0",
+    "json-repair>=0.30.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "python-multipart>=0.0.6",
+    "python-dotenv>=1.0.0",
+]
+vision = [
+    "Pillow>=10.0.0",
+]
+video = [
+    "opencv-python-headless>=4.8.0",
+    "numpy>=1.24.0",
+]
+gui = [
+    "pywebview>=5.1",
+    "pyobjc-framework-ApplicationServices; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
+]
+openai = [
+    "openai>=1.0.0",
+]
+anthropic = [
+    "anthropic>=0.25.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+all = [
+    "ghost[server,vision,video,gui,openai,anthropic]",
+]
+
+[project.scripts]
+ghost-server = "ghost.server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ghost*"]
+exclude = ["src*", "tests*", "examples*", "docs*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_default_fixture_loop_scope = "function"

@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 
-from src.core.emulation.stream_parser import (
+from ghost.core.emulation.stream_parser import (
     ALL_TOOL_TAGS,
     strip_gemini_html_artifacts,
     strip_googleusercontent_artifacts,

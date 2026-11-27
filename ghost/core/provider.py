@@ -57,3 +57,10 @@ class BaseProvider(ABC):
         Base implementation does nothing.
         """
         pass
+
+    async def close(self):
+        """
+        Close underlying network sessions and release resources.
+        Base implementation does nothing.
+        """
+        pass

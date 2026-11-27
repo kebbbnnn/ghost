@@ -11,9 +11,9 @@ import re
 import time
 import typing
 
-from src.core.exceptions import RateLimitError, ProviderError
+from ghost.core.exceptions import RateLimitError, ProviderError
 from .converter import parse_gemini_response, format_openai_chunk, _split_into_tokens
-from src.core.emulation.stream_parser import (
+from ghost.core.emulation.stream_parser import (
     CLOSED_TOOL_CALL_RE,
     synthesize_workflow_recovery_tool_call,
     transpile_fenced_json_tool_calls,
@@ -287,7 +287,6 @@ class TreeOfThoughtsEngine:
             f"Do NOT emit <tool_call> or <invoke> XML tags in this evaluation step.\n"
         )
 
-    def _build_synthesis_prompt(self, query: str, path: list[str]) -> str:
     def _build_synthesis_prompt(
         self, query: str, path: list[str], requires_tool_call: bool = False
     ) -> str:

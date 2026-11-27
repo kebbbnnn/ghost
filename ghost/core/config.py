@@ -4,10 +4,14 @@ config.py — Centralized path configuration for Ghost.
 All runtime data (threads, etc.) is stored under DATA_DIR,
 which defaults to `./data` relative to the project root. Override with
 the GHOST_DATA_DIR (or legacy GHOSTTUNNEL_DATA_DIR) environment variable.
+
+Importing this module has no filesystem side effects; server entrypoints
+call ``ensure_data_dir()`` explicitly when persistence is needed.
 """
 import os
+import sys
 
-# Project root = two levels up from src/core/config.py
+# Project root = two levels up from ghost/core/config.py
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 DATA_DIR = os.environ.get(
@@ -32,15 +36,15 @@ RAW_LOGGING_ENABLED = os.environ.get(
     os.environ.get("GHOSTTUNNEL_RAW_LOGGING", "true"),
 ).lower() in ("true", "1", "yes", "on")
 
-# Ensure the data directory exists on import
-os.makedirs(DATA_DIR, exist_ok=True)
 
-if not os.path.exists(THREADS_FILE):
-    threads_json = os.environ.get("GHOST_THREADS_JSON", os.environ.get("GHOSTTUNNEL_THREADS_JSON"))
-    if threads_json:
-        try:
-            with open(THREADS_FILE, "w", encoding="utf-8") as f:
-                f.write(threads_json.strip())
-        except Exception as e:
-            import sys
-            print(f"Failed to bootstrap threads.json from GHOST_THREADS_JSON: {e}", file=sys.stderr)
+def ensure_data_dir() -> None:
+    """Create DATA_DIR and bootstrap THREADS_FILE from env if configured."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if not os.path.exists(THREADS_FILE):
+        threads_json = os.environ.get("GHOST_THREADS_JSON", os.environ.get("GHOSTTUNNEL_THREADS_JSON"))
+        if threads_json:
+            try:
+                with open(THREADS_FILE, "w", encoding="utf-8") as f:
+                    f.write(threads_json.strip())
+            except Exception as e:
+                print(f"Failed to bootstrap threads.json from GHOST_THREADS_JSON: {e}", file=sys.stderr)
