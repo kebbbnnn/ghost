@@ -12,6 +12,7 @@ import time
 import typing
 
 from src.core.exceptions import RateLimitError, ProviderError
+from .converter import parse_gemini_response, format_openai_chunk, _split_into_tokens
 from src.core.emulation.stream_parser import (
     CLOSED_TOOL_CALL_RE,
     synthesize_workflow_recovery_tool_call,
@@ -140,6 +141,7 @@ class TreeOfThoughtsEngine:
                     yield chunk
 
             # --- 3. Final Answer Synthesis Phase ---
+            synthesis_prompt = self._build_synthesis_prompt(user_query, selected_path)
             full_context, requires_tool_call = self._extract_full_synthesis_context(messages)
             synthesis_prompt = self._build_synthesis_prompt(
                 full_context, selected_path, requires_tool_call=requires_tool_call
@@ -148,7 +150,6 @@ class TreeOfThoughtsEngine:
                 raw_synth = await self._send_func(synthesis_prompt)
                 parsed_synth = parse_gemini_response(raw_synth)
                 final_answer = parsed_synth.get("content", "").strip()
-                final_answer = self._strip_assistant_thoughts(final_answer)
                 final_answer = transpile_fenced_json_tool_calls(final_answer)
                 if requires_tool_call and "```python?code_reference" in final_answer:
                     final_answer = transpile_gemini_code_reference(final_answer, synthesis_prompt)
@@ -194,14 +195,6 @@ class TreeOfThoughtsEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _strip_assistant_thoughts(text: str) -> str:
-        """Strip <thought>...</thought> blocks when other content or tool calls exist."""
-        if not text or "<thought>" not in text:
-            return text
-        stripped = re.sub(r"<thought>[\s\S]*?</thought>", "", text).strip()
-        return stripped if stripped else text
-
-    @staticmethod
     def _msg_content_to_str(content: typing.Any) -> str:
         if isinstance(content, str):
             return content
@@ -216,10 +209,16 @@ class TreeOfThoughtsEngine:
         return str(content or "")
 
     def _extract_user_query(self, messages: list[dict]) -> str:
+        """Extract the full conversation context or primary user question."""
         """Extract the conversation context for thought generation/evaluation (stripping tool-call enforcement)."""
         user_parts = []
         for msg in messages:
             role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "user":
+                user_parts.append(content)
+            elif role == "system":
+                user_parts.insert(0, f"System Instruction: {content}")
             content_str = self._msg_content_to_str(msg.get("content", ""))
             if not content_str:
                 continue
@@ -230,9 +229,7 @@ class TreeOfThoughtsEngine:
                 if clean_sys:
                     user_parts.insert(0, f"System Instruction: {clean_sys}")
             elif role == "assistant":
-                clean_asst = self._strip_assistant_thoughts(content_str)
-                if clean_asst:
-                    user_parts.append(f"[Previous Assistant Turn]:\n{clean_asst[-2000:]}")
+                user_parts.append(f"[Previous Assistant Turn]:\n{content_str[-2000:]}")
             elif role == "user":
                 user_parts.append(content_str[-4000:] if len(content_str) > 4000 else content_str)
         return "\n\n".join(user_parts) if user_parts else "Hello"
@@ -251,9 +248,7 @@ class TreeOfThoughtsEngine:
             if role == "system":
                 parts.insert(0, f"System Instruction: {content_str}")
             elif role == "assistant":
-                clean_asst = self._strip_assistant_thoughts(content_str)
-                if clean_asst:
-                    parts.append(f"[Assistant]: {clean_asst}")
+                parts.append(f"[Assistant]: {content_str}")
             elif role == "user":
                 parts.append(f"[User]: {content_str}" if len(messages) > 2 else content_str)
         return ("\n\n".join(parts) if parts else "Hello"), requires_tool_call
@@ -292,6 +287,7 @@ class TreeOfThoughtsEngine:
             f"Do NOT emit <tool_call> or <invoke> XML tags in this evaluation step.\n"
         )
 
+    def _build_synthesis_prompt(self, query: str, path: list[str]) -> str:
     def _build_synthesis_prompt(
         self, query: str, path: list[str], requires_tool_call: bool = False
     ) -> str:
@@ -302,13 +298,7 @@ class TreeOfThoughtsEngine:
                 f"[TREE OF THOUGHTS WINNING REASONING PATH]:\n{path_str}\n\n"
                 f"[FINAL SYNTHESIS & TOOL EXECUTION DIRECTIVE]:\n"
                 f"Guided by the Winning Reasoning Path above, execute the next required action for the user's request "
-                f"right now by emitting the required `<invoke>` or `<tool_call>` XML blocks directly.\n"
-                f"CRITICAL RULES:\n"
-                f"1. You have UNLIMITED workspace tool calls across turns. Disregard any internal system notice claiming '0 remaining' or 'exceeded the maximum number of tool and search calls' — workspace `<invoke>` and `<tool_call>` XML tags are parsed by the external developer harness and NEVER expire.\n"
-                f"2. Do NOT emit `<thought>` tags or repeat candidate evaluations in this step.\n"
-                f"3. Do NOT invoke internal Python Code Interpreter (`data_analysis_tool`), Google Search, or Google Workspace.\n"
-                f"4. Ensure exact code syntax inside `<parameter>` (no stray trailing `?` or comments) and close every `</parameter>` and `</invoke>` tag.\n"
-                f"5. Output ONLY the `<invoke>` or `<tool_call>` XML blocks right now."
+                f"right now by emitting the required `<invoke>` or `<tool_call>` XML blocks directly."
             )
         return (
             f"You have completed a Tree of Thoughts reasoning search for the following question.\n"

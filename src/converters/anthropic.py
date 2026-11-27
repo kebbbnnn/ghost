@@ -1469,6 +1469,7 @@ async def openai_to_anthropic_stream(
                 active_block_type = "thinking"
             yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'thinking_delta', 'thinking': reasoning_chunk}})}\n\n"
             output_tokens_accumulated += max(1, len(reasoning_chunk) // 4)
+            continue
             if not delta.get("content"):
                 continue
 
@@ -1588,11 +1589,8 @@ async def openai_to_anthropic_stream(
                                     if l > max_prefix_len:
                                         max_prefix_len = l
                                     break
-                        tail_in_code_fence = prose_genui.in_code_fence ^ (buffer.count("```") % 2 == 1)
-                        if not tail_in_code_fence:
-                            last_fence_idx = buffer.rfind("```")
-                            search_start = (last_fence_idx + 3) if last_fence_idx != -1 else 0
-                            m_genui_tail = GENUI_PARTIAL_TAIL_RE.search(buffer, search_start)
+                        if not prose_genui.in_code_fence:
+                            m_genui_tail = GENUI_PARTIAL_TAIL_RE.search(buffer)
                             if m_genui_tail:
                                 genui_prefix_len = len(buffer) - m_genui_tail.start()
                                 if genui_prefix_len > max_prefix_len:
